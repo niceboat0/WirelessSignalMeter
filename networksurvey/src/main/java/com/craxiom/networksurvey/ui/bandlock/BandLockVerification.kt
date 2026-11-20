@@ -1,0 +1,229 @@
+package com.craxiom.networksurvey.ui.bandlock
+
+import java.io.File
+
+internal enum class LockWriteKind {
+    Probe,
+    Apply,
+    RestoreLteBands,
+    UnlockNrBands,
+    ClearLock,
+    ChangeMode,
+    Console,
+}
+
+internal enum class WriteDecision {
+    Allowed,
+    Busy,
+    NotLiveConfirmed,
+    BackupMissing,
+    BackupUnreadable,
+    BackupCorrupt,
+    BackupMismatch,
+}
+
+internal enum class BackupFileState { Missing, NotRegular, Unreadable, UnexpectedSize, Empty, Usable }
+
+internal data class DeviceIdentity(val model: String, val soc: String, val fingerprint: String)
+
+internal data class CachedProbe(
+    val channel: String,
+    val caps: List<Pair<String, Boolean>>,
+    val readyHint: Boolean,
+    val lteBackupHint: Boolean,
+    val nrBackupHint: Boolean,
+)
+
+internal data class FileView(
+    val exists: Boolean,
+    val isRegular: Boolean,
+    val readable: Boolean,
+    val bytes: ByteArray?,
+)
+
+internal object BandLockVerification {
+    const val LTE_BACKUP = "lte-original.bin"
+    const val NR_BACKUP = "nr-original.bin"
+    const val NR_NSA_BACKUP = "nr-nsa-original.bin"
+    const val ORIGIN_NAME = "backup-origin"
+    const val LTE_BACKUP_BYTES = 8
+    const val NR_BACKUP_BYTES = 64
+
+    fun cacheKey(versionCode: Int, fingerprint: String, soc: String) =
+        "probe:$versionCode:$fingerprint:$soc"
+
+    fun cacheApplies(storedKey: String?, currentKey: String): Boolean =
+        !storedKey.isNullOrEmpty() && storedKey == currentKey
+
+    fun parseCachedProbe(text: String): CachedProbe? {
+        val trimmed = text.trim()
+        return if (trimmed.startsWith("{")) parseLegacyJsonCache(trimmed) else parsePropertyCache(trimmed)
+    }
+
+    fun encodeCache(probe: CachedProbe, liveReady: Boolean, lteBackup: Boolean, nrBackup: Boolean): String? {
+        if (!safeToken(probe.channel) || probe.caps.any { !safeToken(it.first) }) return null
+        return buildString {
+            appendLine("ready=$liveReady")
+            appendLine("channel=${probe.channel}")
+            appendLine("lte_backup=$lteBackup")
+            appendLine("nr_backup=$nrBackup")
+            probe.caps.forEach { (key, value) -> appendLine("cap.$key=$value") }
+        }
+    }
+
+    private fun parsePropertyCache(text: String): CachedProbe? {
+        val values = text.lineSequence()
+            .map { it.trimEnd('\r') }
+            .filter { it.isNotEmpty() && !it.startsWith("#") }
+            .mapNotNull { line ->
+                val split = line.indexOf('=')
+                if (split <= 0) null else line.substring(0, split) to line.substring(split + 1)
+            }
+            .toMap()
+        val channel = values["channel"]?.takeIf(::safeToken) ?: return null
+        val ready = values["ready"]?.toBooleanStrictOrNull() ?: return null
+        val caps = values.mapNotNull { (key, value) ->
+            key.removePrefix("cap.").takeIf { key.startsWith("cap.") && safeToken(it) }?.let { name ->
+                name to (value.toBooleanStrictOrNull() ?: return@mapNotNull null)
+            }
+        }
+        return CachedProbe(
+            channel = channel,
+            caps = caps,
+            readyHint = ready,
+            lteBackupHint = values["lte_backup"]?.toBooleanStrictOrNull() ?: false,
+            nrBackupHint = values["nr_backup"]?.toBooleanStrictOrNull() ?: false,
+        )
+    }
+
+    private fun parseLegacyJsonCache(text: String): CachedProbe? {
+        val ready = jsonBoolean(text, "ready") ?: return null
+        val channel = jsonString(text, "channel")?.takeIf(::safeToken) ?: return null
+        val capsBlock = Regex("\"caps\"\\s*:\\s*\\{([^}]*)\\}").find(text)?.groupValues?.get(1).orEmpty()
+        val caps = Regex("\"([^\"]+)\"\\s*:\\s*(true|false)").findAll(capsBlock).map { match ->
+            match.groupValues[1] to match.groupValues[2].toBooleanStrict()
+        }.toList()
+        return CachedProbe(
+            channel = channel,
+            caps = caps,
+            readyHint = ready,
+            lteBackupHint = jsonBoolean(text, "lte_backup") ?: false,
+            nrBackupHint = jsonBoolean(text, "nr_backup") ?: false,
+        )
+    }
+
+    private fun jsonBoolean(text: String, name: String): Boolean? =
+        Regex("\"" + Regex.escape(name) + "\"\\s*:\\s*(true|false)").find(text)?.groupValues?.get(1)?.toBooleanStrict()
+
+    private fun jsonString(text: String, name: String): String? =
+        Regex("\"" + Regex.escape(name) + "\"\\s*:\\s*\"([^\"\\\\]*)\"").find(text)?.groupValues?.get(1)
+
+    fun writeKind(command: BandLockCommand): LockWriteKind =
+        when (command.arguments.firstOrNull()) {
+            "probe" -> LockWriteKind.Probe
+            "lte-band-restore" -> LockWriteKind.RestoreLteBands
+            "nr-band-restore" -> LockWriteKind.UnlockNrBands
+            "lte-freq-clear", "nr-freq-clear", "lte-cell-clear", "nr-cell-clear" -> LockWriteKind.ClearLock
+            "mode" -> LockWriteKind.ChangeMode
+            "lte-band", "nr-band", "lte-freq", "nr-freq", "lte-cell", "nr-cell" -> LockWriteKind.Apply
+            else -> LockWriteKind.Console
+        }
+
+    fun inspectBackup(view: FileView, expectedSize: Int): BackupFileState {
+        if (!view.exists) return BackupFileState.Missing
+        if (!view.isRegular) return BackupFileState.NotRegular
+        if (!view.readable || view.bytes == null) return BackupFileState.Unreadable
+        if (view.bytes.size != expectedSize) return BackupFileState.UnexpectedSize
+        if (view.bytes.all { it == 0.toByte() }) return BackupFileState.Empty
+        return BackupFileState.Usable
+    }
+
+    fun inspectBackup(file: File, expectedSize: Int): BackupFileState {
+        val exists = file.exists()
+        val regular = exists && file.isFile
+        val readable = regular && file.canRead()
+        val bytes = if (readable) runCatching { file.readBytes() }.getOrNull() else null
+        return inspectBackup(FileView(exists, regular, readable && bytes != null, bytes), expectedSize)
+    }
+
+    fun encodeOrigin(identity: DeviceIdentity): String? {
+        if (!safeToken(identity.model) || !safeToken(identity.soc) || !safeToken(identity.fingerprint)) return null
+        return "model=${identity.model}\nsoc=${identity.soc}\nfingerprint=${identity.fingerprint}\n"
+    }
+
+    fun parseOrigin(text: String): DeviceIdentity? {
+        val values = text.lineSequence()
+            .map { it.trimEnd('\r') }
+            .filter { it.isNotEmpty() && !it.startsWith("#") }
+            .mapNotNull { line ->
+                val split = line.indexOf('=')
+                if (split <= 0) null else line.substring(0, split) to line.substring(split + 1)
+            }
+            .toMap()
+        val model = values["model"]?.takeIf(::safeToken) ?: return null
+        val soc = values["soc"]?.takeIf(::safeToken) ?: return null
+        val fingerprint = values["fingerprint"]?.takeIf(::safeToken) ?: return null
+        return DeviceIdentity(model, soc, fingerprint)
+    }
+
+    fun originMatches(saved: DeviceIdentity, current: DeviceIdentity): Boolean =
+        saved.model == current.model && saved.soc == current.soc && saved.fingerprint == current.fingerprint
+
+    fun readOrigin(directory: File): DeviceIdentity? {
+        val file = File(directory, ORIGIN_NAME)
+        if (!file.isFile) return null
+        return runCatching { parseOrigin(file.readText()) }.getOrNull()
+    }
+
+    fun decideWrite(
+        availability: LockAvailability,
+        busy: Boolean,
+        kind: LockWriteKind,
+        lteBackup: BackupFileState = BackupFileState.Missing,
+        origin: DeviceIdentity? = null,
+        current: DeviceIdentity? = null,
+    ): WriteDecision {
+        if (kind == LockWriteKind.Probe) return if (busy) WriteDecision.Busy else WriteDecision.Allowed
+        if (busy) return WriteDecision.Busy
+        if (availability != LockAvailability.Ready) return WriteDecision.NotLiveConfirmed
+        if (kind != LockWriteKind.RestoreLteBands) return WriteDecision.Allowed
+        if (origin != null && current != null && !originMatches(origin, current)) return WriteDecision.BackupMismatch
+        return when (lteBackup) {
+            BackupFileState.Usable -> WriteDecision.Allowed
+            BackupFileState.Missing -> WriteDecision.BackupMissing
+            BackupFileState.Unreadable, BackupFileState.NotRegular -> WriteDecision.BackupUnreadable
+            BackupFileState.UnexpectedSize, BackupFileState.Empty -> WriteDecision.BackupCorrupt
+        }
+    }
+
+    fun resultMessage(decision: WriteDecision): Int? = when (decision) {
+        WriteDecision.Allowed, WriteDecision.Busy -> null
+        WriteDecision.NotLiveConfirmed -> com.craxiom.networksurvey.R.string.lock_write_blocked_unconfirmed
+        WriteDecision.BackupMissing -> com.craxiom.networksurvey.R.string.lock_restore_blocked_missing
+        WriteDecision.BackupUnreadable -> com.craxiom.networksurvey.R.string.lock_restore_blocked_unreadable
+        WriteDecision.BackupCorrupt -> com.craxiom.networksurvey.R.string.lock_restore_blocked_corrupt
+        WriteDecision.BackupMismatch -> com.craxiom.networksurvey.R.string.lock_restore_blocked_mismatch
+    }
+
+    fun rootRevoked(output: String): Boolean =
+        output.lineSequence().any { it.trim() == "Root authorization is required." }
+
+    fun backupCaption(
+        availability: LockAvailability,
+        radio: LockRadio,
+        confirmed: Boolean,
+        cachedHint: Boolean,
+    ): BackupCaption = when {
+        availability == LockAvailability.Cached || availability == LockAvailability.Unchecked ||
+            availability == LockAvailability.Checking ->
+            if (cachedHint) BackupCaption.CachedHint else BackupCaption.NeedsRecheck
+        radio == LockRadio.Nr && !confirmed -> BackupCaption.NrUnlockWithoutBackup
+        confirmed -> BackupCaption.Confirmed
+        else -> BackupCaption.Needed
+    }
+
+    private fun safeToken(value: String): Boolean =
+        value.isNotEmpty() && value.length <= 256 && '\n' !in value && '\r' !in value
+}
+
+internal enum class BackupCaption { CachedHint, NeedsRecheck, Confirmed, Needed, NrUnlockWithoutBackup }

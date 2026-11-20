@@ -16,6 +16,82 @@
 
 static uint32_t client_id, transaction = 0x80;
 static int router = -1, state_dir = -1;
+static int have_device;
+static char device_model[256], device_soc[256], device_fingerprint[256];
+
+static int write_backup_origin(void) {
+    int n, ok, fd;
+    char buf[1024];
+    if (!have_device) return 0;
+    fd = openat(state_dir, "backup-origin", O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+    if (fd < 0) return 0;
+    n = snprintf(buf, sizeof(buf), "model=%s\nsoc=%s\nfingerprint=%s\n",
+        device_model, device_soc, device_fingerprint);
+    ok = n > 0 && n < (int)sizeof(buf) && write(fd, buf, (size_t)n) == n && fsync(fd) == 0;
+    close(fd);
+    if (!ok) {
+        unlinkat(state_dir, "backup-origin", 0);
+        return 0;
+    }
+    fsync(state_dir);
+    return 0;
+}
+
+static int origin_line(const char *text, const char *key, char *dst, size_t cap) {
+    size_t k = strlen(key);
+    const char *p = text;
+    while (*p) {
+        const char *end = strchr(p, '\n');
+        size_t len = end ? (size_t)(end - p) : strlen(p);
+        if (len > k && !strncmp(p, key, k) && p[k] == '=') {
+            size_t v = len - k - 1;
+            if (!v || v >= cap) return 1;
+            memcpy(dst, p + k + 1, v);
+            dst[v] = 0;
+            if (dst[v - 1] == '\r') dst[v - 1] = 0;
+            return 0;
+        }
+        p = end ? end + 1 : p + len;
+    }
+    return 1;
+}
+
+static int backup_origin_conflict(void) {
+    char buf[1024], model[256], soc[256], fingerprint[256];
+    ssize_t n;
+    int fd;
+    if (!have_device) return 0;
+    fd = openat(state_dir, "backup-origin", O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0) return 0;
+    n = read(fd, buf, sizeof(buf) - 1);
+    close(fd);
+    if (n <= 0) return 1;
+    buf[n] = 0;
+    if (origin_line(buf, "model", model, sizeof(model)) ||
+        origin_line(buf, "soc", soc, sizeof(soc)) ||
+        origin_line(buf, "fingerprint", fingerprint, sizeof(fingerprint)))
+        return 1;
+    return strcmp(model, device_model) || strcmp(soc, device_soc) ||
+        strcmp(fingerprint, device_fingerprint);
+}
+
+static int load_session_identity(void) {
+    char buf[1024];
+    ssize_t n;
+    int fd = openat(state_dir, "session-identity", O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0) return 0;
+    n = read(fd, buf, sizeof(buf) - 1);
+    close(fd);
+    unlinkat(state_dir, "session-identity", 0);
+    if (n <= 0) return 1;
+    buf[n] = 0;
+    if (origin_line(buf, "model", device_model, sizeof(device_model)) ||
+        origin_line(buf, "soc", device_soc, sizeof(device_soc)) ||
+        origin_line(buf, "fingerprint", device_fingerprint, sizeof(device_fingerprint)))
+        return 1;
+    have_device = 1;
+    return 0;
+}
 
 static int fail(const char *message) {
     fprintf(stderr, "%s\n", message);
@@ -183,6 +259,7 @@ static int backup_mask(const char *path, const char *name, int bytes) {
         return fail("Cannot persist the original band backup; no band changes were made.");
     }
     if (fsync(state_dir)) return fail("Cannot sync the backup directory; no band changes were made.");
+    write_backup_origin();
     puts("Original band mask backed up.");
     return 0;
 }
@@ -222,8 +299,10 @@ static int reboot_modem(void) {
 static int lte_band_command(const char *bands, int restore) {
     uint8_t mask[8] = {0};
     if (restore) {
-        if (restore_mask("lte-original.bin", 8, mask) && read_mask(LB_LTE_BANDS, 8, mask))
-            return fail("No original LTE band mask is available. A modem restart clears the instant lock.");
+        if (backup_origin_conflict())
+            return fail("The band backup does not match this device. Restore was not applied.");
+        if (restore_mask("lte-original.bin", 8, mask))
+            return fail("No usable original LTE band backup. Restore was not applied.");
     } else {
         if (!lb_bands(bands, 64, mask, 8)) return fail("Invalid band list.");
         uint8_t probe[8];
@@ -245,6 +324,7 @@ static int lte_band_command(const char *bands, int restore) {
                     return fail("Cannot persist the original LTE backup. No band changes were made.");
                 }
                 if (fsync(state_dir)) return fail("Cannot sync the LTE backup directory. No band changes were made.");
+                write_backup_origin();
                 puts("Original LTE band mask backed up.");
             }
         }
@@ -555,6 +635,7 @@ int main(int argc, char **argv) {
     if (argc < 4 || strcmp(argv[1], "--state-dir")) return fail("Missing private state directory.");
     state_dir = open(argv[2], O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
     if (state_dir < 0) return fail("Cannot open the private backup directory.");
+    if (load_session_identity()) return fail("Invalid device identity.");
     int lock = openat(state_dir, "operation.lock", O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0600);
     if (lock < 0 || flock(lock, LOCK_EX | LOCK_NB)) return fail("Another lock operation is in progress.");
     if (connect_router()) return 2;

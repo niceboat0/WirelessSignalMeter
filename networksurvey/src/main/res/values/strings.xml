@@ -209,6 +209,15 @@
     <string name="lock_channel_caps">Channel %1$s · %2$s</string>
     <string name="lock_checking">Checking Root and DIAG</string>
     <string name="lock_unchecked">Device not checked</string>
+    <string name="lock_cached_unconfirmed">Previous check must be confirmed again before lock or restore</string>
+    <string name="lock_cached_channel">Last channel %1$s; confirm with a fresh check</string>
+    <string name="lock_backup_cached">A previous check recorded a band backup. Confirm the file is still present after a fresh device check before restoring.</string>
+    <string name="lock_nr_unlock_without_backup">NR band unlock writes the full default band set and does not need a local backup.</string>
+    <string name="lock_restore_blocked_missing">No usable original band backup was found. Restore was not applied.</string>
+    <string name="lock_restore_blocked_unreadable">The original band backup could not be read. Restore was not applied.</string>
+    <string name="lock_restore_blocked_corrupt">The original band backup is damaged or the wrong size. Restore was not applied.</string>
+    <string name="lock_restore_blocked_mismatch">The band backup does not match this device. Restore was not applied.</string>
+    <string name="lock_write_blocked_unconfirmed">This device has not been rechecked in the current session. No change was applied.</string>
     <string name="lock_unavailable">Root authorization or the supported Qualcomm DIAG channel is unavailable</string>
     <string name="lock_working">Operation in progress</string>
     <string name="lock_scope">Qualcomm diag-router · primary modem stack. SIM selection is unavailable.</string>

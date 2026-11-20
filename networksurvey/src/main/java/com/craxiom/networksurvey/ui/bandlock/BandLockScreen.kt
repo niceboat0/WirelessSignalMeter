@@ -151,6 +151,7 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
                     Text(model.device, style = MaterialTheme.typography.titleSmall)
                     Text(stringResource(when {
                         state.availability == LockAvailability.Unchecked -> R.string.lock_unchecked
+                        state.availability == LockAvailability.Cached -> R.string.lock_cached_unconfirmed
                         state.availability == LockAvailability.Checking -> R.string.lock_checking
                         operating -> R.string.lock_working
                         state.availability == LockAvailability.Ready && state.profile.level == LockSupportLevel.Verified -> R.string.lock_ready
@@ -184,8 +185,14 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            } else if (state.availability == LockAvailability.Cached && state.channel.isNotEmpty()) {
+                Text(
+                    stringResource(R.string.lock_cached_channel, state.channel),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
-            if (operating) LinearProgressIndicator(Modifier.fillMaxWidth())
+            if (state.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
             state.result?.let { Text(stringResource(it), style = MaterialTheme.typography.bodyMedium) }
             Text(stringResource(R.string.lock_scope), style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -287,17 +294,27 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
                 Text(applyLabel)
             }
             val hasBackup = if (radio == LockRadio.Lte) state.lteBackup else state.nrBackup
+            val backupHint = if (radio == LockRadio.Lte) state.lteBackupHint else state.nrBackupHint
+            val restoreNeedsBackup = target == LockTarget.Bands && radio == LockRadio.Lte
             val restoreLabel = stringResource(if (target == LockTarget.Bands) R.string.lock_restore_bands else R.string.lock_clear)
             OutlinedButton(
                 onClick = { pending = BandLockCommand.restore(radio, target); confirmation = "$restoreLabel · $radioLabel · $targetLabel" },
-                enabled = enabled && (target != LockTarget.Bands || hasBackup),
+                enabled = enabled && (!restoreNeedsBackup || hasBackup),
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Icon(Icons.Rounded.LockOpen, contentDescription = null, modifier = Modifier.padding(end = 8.dp))
                 Text(restoreLabel)
             }
             if (target == LockTarget.Bands) Text(
-                stringResource(if (hasBackup) R.string.lock_backup_available else R.string.lock_backup_needed),
+                stringResource(when (BandLockVerification.backupCaption(
+                    state.availability, radio, hasBackup, backupHint,
+                )) {
+                    BackupCaption.CachedHint -> R.string.lock_backup_cached
+                    BackupCaption.NeedsRecheck -> R.string.lock_cached_unconfirmed
+                    BackupCaption.NrUnlockWithoutBackup -> R.string.lock_nr_unlock_without_backup
+                    BackupCaption.Confirmed -> R.string.lock_backup_available
+                    BackupCaption.Needed -> R.string.lock_backup_needed
+                }),
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             HorizontalDivider()
