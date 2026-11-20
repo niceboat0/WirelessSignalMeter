@@ -15,13 +15,12 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import org.json.JSONObject
 import java.io.File
 import java.io.IOException
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
 
-internal enum class LockAvailability { Unchecked, Checking, Ready, Unavailable }
+internal enum class LockAvailability { Unchecked, Cached, Checking, Ready, Unavailable }
 internal data class BandLockState(
     val availability: LockAvailability = LockAvailability.Unchecked,
     val busy: Boolean = false,
@@ -30,6 +29,8 @@ internal data class BandLockState(
     val profile: BandLockProfile = BandLockProfile(LockSupportLevel.Unsupported, "unknown", reason = "unchecked"),
     val lteBackup: Boolean = false,
     val nrBackup: Boolean = false,
+    val lteBackupHint: Boolean = false,
+    val nrBackupHint: Boolean = false,
     val appliedMode: LockNetworkMode? = null,
     val result: Int? = null,
     val log: String = "",
@@ -40,41 +41,45 @@ internal class BandLockViewModel(application: Application) : AndroidViewModel(ap
     private val mutableState = MutableStateFlow(BandLockState())
     val state = mutableState.asStateFlow()
     val device = "${Build.MANUFACTURER} ${Build.MODEL} · ${Build.SOC_MODEL}"
+    private val identity = DeviceIdentity(Build.MODEL, Build.SOC_MODEL, Build.FINGERPRINT)
     private val probeCache = app.getSharedPreferences("band_lock_probe", 0)
-    private val probeCacheKey = "probe:${BuildConfig.VERSION_CODE}:${Build.FINGERPRINT}:${Build.SOC_MODEL}"
+    private val probeCacheKey = BandLockVerification.cacheKey(
+        BuildConfig.VERSION_CODE, Build.FINGERPRINT, Build.SOC_MODEL,
+    )
     @Volatile private var process: Process? = null
 
     init {
         restoreProbe()?.let { mutableState.value = it }
+        refresh()
     }
+
+    private fun backupDirectory(): File = File(app.noBackupFilesDir, "band-lock")
 
     private fun restoreProbe(): BandLockState? {
         val stored = probeCache.getString(probeCacheKey, null) ?: return null
-        return runCatching {
-            val cached = JSONObject(stored)
-            val channel = cached.getString("channel")
-            val rawCaps = cached.getJSONObject("caps")
-            val caps = rawCaps.keys().asSequence().map { it to rawCaps.getBoolean(it) }.toList()
-            val profile = classify(channel.takeIf { cached.getBoolean("ready") }, caps)
-            BandLockState(
-                availability = if (profile.canLock) LockAvailability.Ready else LockAvailability.Unavailable,
-                channel = channel,
-                caps = caps,
-                profile = profile,
-                lteBackup = cached.getBoolean("lte_backup"),
-                nrBackup = cached.getBoolean("nr_backup"),
-            )
-        }.getOrNull()
+        val cached = BandLockVerification.parseCachedProbe(stored) ?: return null
+        return displayCached(cached)
+    }
+
+    private fun displayCached(cached: CachedProbe): BandLockState {
+        val profile = classify(cached.channel.takeIf { cached.readyHint }, cached.caps)
+        return BandLockState(
+            availability = LockAvailability.Cached,
+            channel = cached.channel,
+            caps = cached.caps,
+            profile = profile,
+            lteBackup = false,
+            nrBackup = false,
+            lteBackupHint = cached.lteBackupHint,
+            nrBackupHint = cached.nrBackupHint,
+        )
     }
 
     private fun saveProbe(state: BandLockState) {
-        val value = JSONObject()
-            .put("ready", state.availability == LockAvailability.Ready)
-            .put("channel", state.channel)
-            .put("caps", JSONObject(state.caps.toMap()))
-            .put("lte_backup", state.lteBackup)
-            .put("nr_backup", state.nrBackup)
-        probeCache.edit().putString(probeCacheKey, value.toString()).apply()
+        if (state.availability != LockAvailability.Ready) return
+        val probe = CachedProbe(state.channel, state.caps, true, state.lteBackup, state.nrBackup)
+        val encoded = BandLockVerification.encodeCache(probe, true, state.lteBackup, state.nrBackup) ?: return
+        probeCache.edit().putString(probeCacheKey, encoded).apply()
     }
 
     private fun classify(channel: String?, caps: List<Pair<String, Boolean>>) = BandLockProfiles.classify(
@@ -85,9 +90,26 @@ internal class BandLockViewModel(application: Application) : AndroidViewModel(ap
     fun clearLog() { if (!mutableState.value.busy) mutableState.value = mutableState.value.copy(log = "") }
 
     fun run(command: BandLockCommand, fromConsole: Boolean = false) {
-        if (mutableState.value.busy) return
-        val probe = command.arguments.firstOrNull() == "probe"
-        if (!probe && mutableState.value.availability != LockAvailability.Ready) return
+        val current = mutableState.value
+        val kind = BandLockVerification.writeKind(command)
+        val lteBackupState = BandLockVerification.inspectBackup(
+            File(backupDirectory(), BandLockVerification.LTE_BACKUP), BandLockVerification.LTE_BACKUP_BYTES,
+        )
+        val decision = BandLockVerification.decideWrite(
+            current.availability, current.busy, kind, lteBackupState,
+            BandLockVerification.readOrigin(backupDirectory()), identity,
+        )
+        if (decision == WriteDecision.Busy) return
+        if (decision != WriteDecision.Allowed) {
+            mutableState.update {
+                it.copy(
+                    result = BandLockVerification.resultMessage(decision),
+                    lteBackup = if (kind == LockWriteKind.RestoreLteBands) false else it.lteBackup,
+                )
+            }
+            return
+        }
+        val probe = kind == LockWriteKind.Probe
         mutableState.update {
             it.copy(busy = true, result = null, availability = if (probe) LockAvailability.Checking else it.availability)
         }
@@ -95,31 +117,50 @@ internal class BandLockViewModel(application: Application) : AndroidViewModel(ap
             try {
                 val execution = withContext(Dispatchers.IO) { command.executeWithMode(execute = ::execute) }
                 val outcome = execution.outcome
-                val current = mutableState.value
+                val snapshot = mutableState.value
                 val ready = outcome.exit == 0 && outcome.output.lineSequence().any { it == "RESULT ready" }
                 val accepted = outcome.accepted
+                val revoked = BandLockVerification.rootRevoked(outcome.output) || outcome.channelUnavailable
                 val probedChannel = if (probe) outcome.output.lineSequence()
                     .firstOrNull { it.startsWith("CHANNEL ") }
-                    ?.removePrefix("CHANNEL ")?.trim().orEmpty() else current.channel
-                val probedCaps = if (probe) parseCaps(outcome.output) else current.caps
-                val profile = if (probe) classify(probedChannel.takeIf { ready }, probedCaps) else current.profile
-                mutableState.value = current.copy(
+                    ?.removePrefix("CHANNEL ")?.trim().orEmpty() else snapshot.channel
+                val probedCaps = if (probe) parseCaps(outcome.output) else snapshot.caps
+                val profile = if (probe) classify(probedChannel.takeIf { ready }, probedCaps) else snapshot.profile
+                val directory = backupDirectory()
+                val lteFile = BandLockVerification.inspectBackup(
+                    File(directory, BandLockVerification.LTE_BACKUP), BandLockVerification.LTE_BACKUP_BYTES,
+                )
+                val nrFile = BandLockVerification.inspectBackup(
+                    File(directory, BandLockVerification.NR_BACKUP), BandLockVerification.NR_BACKUP_BYTES,
+                )
+                val lteConfirmed = lteFile == BackupFileState.Usable &&
+                    if (probe && ready) outcome.output.contains("BACKUP lte 1") else
+                        snapshot.lteBackup || (accepted && command.arguments.first() == "lte-band")
+                val nrConfirmed = nrFile == BackupFileState.Usable &&
+                    if (probe && ready) outcome.output.contains("BACKUP nr 1") else
+                        snapshot.nrBackup || (accepted && command.arguments.first() == "nr-band")
+                val availability = when {
+                    probe && revoked -> LockAvailability.Unavailable
+                    probe && ready && profile.canLock -> LockAvailability.Ready
+                    probe -> LockAvailability.Unavailable
+                    revoked -> LockAvailability.Unavailable
+                    else -> snapshot.availability
+                }
+                mutableState.value = snapshot.copy(
                     busy = false,
-                    availability = if (probe) {
-                        if (ready && profile.canLock) LockAvailability.Ready else LockAvailability.Unavailable
-                    } else current.availability,
-                    channel = if (probe) probedChannel else current.channel,
-                    caps = if (probe) probedCaps else current.caps,
+                    availability = availability,
+                    channel = if (probe) probedChannel else snapshot.channel,
+                    caps = if (probe) probedCaps else snapshot.caps,
                     profile = profile,
-                    lteBackup = if (probe && ready) outcome.output.contains("BACKUP lte 1") else
-                        current.lteBackup || (accepted && command.arguments.first() == "lte-band"),
-                    nrBackup = if (probe && ready) outcome.output.contains("BACKUP nr 1") else
-                        current.nrBackup || (accepted && command.arguments.first() == "nr-band"),
+                    lteBackup = lteConfirmed && availability == LockAvailability.Ready,
+                    nrBackup = nrConfirmed && availability == LockAvailability.Ready,
+                    lteBackupHint = if (probe) lteConfirmed else snapshot.lteBackupHint || lteConfirmed,
+                    nrBackupHint = if (probe) nrConfirmed else snapshot.nrBackupHint || nrConfirmed,
                     appliedMode = when {
                         execution.modeConfirmed == true -> command.modeAfterLock
                         accepted && command.arguments.first() == "mode" ->
                             LockNetworkMode.entries.firstOrNull { it.argument == command.arguments.getOrNull(1) }
-                        else -> current.appliedMode
+                        else -> snapshot.appliedMode
                     },
                     result = when {
                         fromConsole || probe -> null
@@ -130,20 +171,26 @@ internal class BandLockViewModel(application: Application) : AndroidViewModel(ap
                         else -> R.string.lock_failed
                     },
                 )
-                if (probe || accepted) saveProbe(mutableState.value)
+                if (availability == LockAvailability.Ready) saveProbe(mutableState.value)
+                else if (probe) probeCache.edit().remove(probeCacheKey).apply()
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
                 appendLog(error.message ?: error.javaClass.simpleName)
                 mutableState.value = mutableState.value.copy(
                     busy = false,
-                    availability = if (probe) LockAvailability.Unavailable else mutableState.value.availability,
-                    profile = if (probe) BandLockProfiles.classify(
-                        Build.MANUFACTURER, Build.MODEL, Build.SOC_MODEL, Build.HARDWARE, null, 0,
-                    ) else mutableState.value.profile,
-                    result = if (fromConsole || probe) null else R.string.lock_failed,
+                    availability = if (BandLockVerification.writeKind(command) == LockWriteKind.Probe)
+                        LockAvailability.Unavailable else mutableState.value.availability,
+                    profile = if (BandLockVerification.writeKind(command) == LockWriteKind.Probe)
+                        BandLockProfiles.classify(
+                            Build.MANUFACTURER, Build.MODEL, Build.SOC_MODEL, Build.HARDWARE, null, 0,
+                        ) else mutableState.value.profile,
+                    result = if (fromConsole || BandLockVerification.writeKind(command) == LockWriteKind.Probe) null
+                    else R.string.lock_failed,
                 )
-                if (probe) probeCache.edit().remove(probeCacheKey).apply()
+                if (BandLockVerification.writeKind(command) == LockWriteKind.Probe) {
+                    probeCache.edit().remove(probeCacheKey).apply()
+                }
             } finally {
                 mutableState.value = mutableState.value.copy(busy = false)
             }
@@ -166,9 +213,11 @@ internal class BandLockViewModel(application: Application) : AndroidViewModel(ap
     private suspend fun runHelper(command: BandLockCommand): BandLockOutcome {
         val helper = File(app.applicationInfo.nativeLibraryDir, "libwireless_band_lock.so")
         if (!helper.isFile) throw IOException("The lock helper is unavailable for this ABI.")
-        val directory = File(app.noBackupFilesDir, "band-lock")
+        val directory = backupDirectory()
         if (!directory.isDirectory && !directory.mkdirs()) throw IOException("Cannot open the private backup directory.")
         fun quote(text: String) = "'" + text.replace("'", "'\\''") + "'"
+        val session = File(directory, "session-identity")
+        BandLockVerification.encodeOrigin(identity)?.let { session.writeText(it) }
         val arguments = listOf(helper.absolutePath, "--state-dir", directory.absolutePath) + command.arguments
         appendLog("${LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm:ss"))} > ${command.arguments.joinToString(" ")}")
         val running = ProcessBuilder("su", "-c", "exec " + arguments.joinToString(" ", transform = ::quote))
@@ -204,6 +253,7 @@ internal class BandLockViewModel(application: Application) : AndroidViewModel(ap
             if (pending.isNotEmpty()) appendLog(pending.toString())
             return BandLockOutcome(running.waitFor(), output.toString())
         } finally {
+            session.delete()
             running.destroy()
             process = null
             running.inputStream.close()
@@ -225,4 +275,5 @@ internal class BandLockViewModel(application: Application) : AndroidViewModel(ap
         process?.destroy()
         super.onCleared()
     }
+
 }
