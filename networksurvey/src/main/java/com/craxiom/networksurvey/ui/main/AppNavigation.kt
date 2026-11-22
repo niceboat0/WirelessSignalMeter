@@ -221,14 +221,6 @@ fun NavGraphBuilder.mainGraph(
             )
         }
 
-        composable(NavOption.Wifi.name) {
-            WifiToolScreen(mainNavController)
-        }
-
-        composable(NavOption.Gnss.name) {
-            GnssToolScreen(onBack = { mainNavController.navigateUp() })
-        }
-
         composable(NavOption.RoadCoverage.name) {
             RoadCoverageScreen(onBack = { mainNavController.navigateUp() })
         }
@@ -290,8 +282,6 @@ enum class NavOption {
     TowerMap,
     RoadCoverage,
     BandLock,
-    Wifi,
-    Gnss,
     Signaling,
     WifiSpectrum,
     WifiDetails,

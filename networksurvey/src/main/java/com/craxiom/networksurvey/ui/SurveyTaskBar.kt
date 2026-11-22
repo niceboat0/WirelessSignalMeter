@@ -6,8 +6,10 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.craxiom.networksurvey.R
 import com.craxiom.networksurvey.db.SurveyTaskStore
 import com.craxiom.networksurvey.model.SurveyTask
 import kotlinx.coroutines.Dispatchers
@@ -35,24 +37,26 @@ internal fun SurveyTaskBar() {
     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             Column(Modifier.weight(1f)) {
-                Text(task?.name ?: "未开始任务", style = MaterialTheme.typography.labelLarge,
+                Text(task?.name ?: stringResource(R.string.road_task_idle), style = MaterialTheme.typography.titleSmall,
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
-                task?.let { Text(it.id, style = MaterialTheme.typography.labelSmall, maxLines = 1,
-                    overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                task?.let {
+                    Text(stringResource(R.string.road_task_running), style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
             }
-            TextButton(enabled = !busy && store != null, onClick = {
+            if (task == null) Button(enabled = !busy && store != null, onClick = {
                 name = ""
                 needLog = false
                 edit = true
-            }) { Text("新任务") }
-            if (task != null) TextButton(enabled = !busy, onClick = {
+            }) { Text(stringResource(R.string.road_task_new)) }
+            else OutlinedButton(enabled = !busy, onClick = {
                 busy = true
                 scope.launch {
                     try { withContext(Dispatchers.IO) { store?.finish() } }
                     catch (_: android.database.SQLException) { error = true }
                     finally { busy = false }
                 }
-            }) { Text("结束") }
+            }) { Text(stringResource(R.string.road_task_finish)) }
         }
         if (error) Text("无法保存任务，请检查存储空间", color = MaterialTheme.colorScheme.error,
             style = MaterialTheme.typography.bodySmall)

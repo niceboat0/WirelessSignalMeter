@@ -214,15 +214,21 @@
     <string name="road_weak_sections">弱覆盖路段（%1$d）</string>
     <string name="road_start_recording">继续自动打点</string>
     <string name="road_stop_recording">暂停打点并加载路线</string>
+    <string name="road_options">回放选项</string>
+    <string name="road_statistics">统计</string>
+    <string name="road_task_idle">无进行中的任务</string>
+    <string name="road_task_running">进行中</string>
+    <string name="road_task_new">新建任务</string>
+    <string name="road_task_finish">结束任务</string>
+    <string name="road_task_history">历史任务</string>
+    <string name="road_task_events">事件</string>
+    <string name="lock_tab_controls">锁定</string>
+    <string name="lock_tab_advanced">高级</string>
     <string name="road_choose_track">选择路线</string>
     <string name="road_sim">卡 %1$d</string>
     <string name="tool_tower_map_description">基站与扇区分布、当前小区连线、实时轨迹打点</string>
-    <string name="tool_gnss_title">GNSS 卫星</string>
-    <string name="tool_gnss_description">卫星天空图、可见星座与载噪比</string>
     <string name="tool_speed_test_title">服务器测速</string>
     <string name="tool_speed_test_description">从服务器获取节点，测量网络速率</string>
-    <string name="tool_wifi_title">Wi-Fi 信号</string>
-    <string name="tool_wifi_description">附近 Wi-Fi、信号强度与信道占用</string>
     <string name="wifi_title">Wi-Fi</string>
     <string name="bluetooth_title">蓝牙</string>
     <string name="gnss_title">GNSS</string>
@@ -954,7 +960,6 @@
     <string name="diag_serving_neighbors">服务小区与邻区</string>
     <string name="diag_more_neighbors">展开其余 %1$d 个邻区</string>
     <string name="diag_fewer_neighbors">收起邻区</string>
-    <string name="diag_visible_messages">%1$d 条消息</string>
     <string name="diag_parameter">参数</string>
     <string name="diag_uplink">上行</string>
     <string name="diag_downlink">下行</string>
@@ -1032,7 +1037,7 @@
     <string name="diag_export_save">选择保存位置</string>
     <string name="diag_export_saved">诊断日志已保存</string>
     <string name="diag_export_failed">诊断日志保存失败</string>
-    <string name="diag_neighbor_distance">距手机约 %1$d 米</string>
+    <string name="diag_neighbor_distance">%1$d 米</string>
     <string name="diag_neighbor_beam_sinr">%1$s 波束 SINR</string>
     <string name="diag_neighbor_android_source">Android 系统</string>
     <string name="diag_mr_failed">这条 MR 的测量字段未能解析。可导出诊断日志排查。</string>
@@ -1045,7 +1050,7 @@
     <string name="diag_bg_notification_text">熄屏或切到其他应用后仍会继续采集。强制停止应用后采集会结束。</string>
     <string name="diag_bg_stop">停止采集</string>
     <string name="diag_bg_title">后台采集</string>
-    <string name="diag_bg_subtitle">仅当测试任务正在采集时，离开应用后才可通过通知在后台继续录制。此开关不会单独开始采集。没有运行中的任务时，只能在应用内查看当前数据。强制停止应用后无法保持。</string>
+    <string name="diag_bg_subtitle">切到后台或熄屏后继续 DIAG 实时监听。仅测试任务可录制 QMDL。</string>
     <string name="diag_overlay_title">采集悬浮窗</string>
     <string name="diag_overlay_subtitle">显示可拖动的小型状态窗。需要系统“显示在其他应用上层”权限，应用不会自动跳转设置页。</string>
     <string name="diag_overlay_need_permission">在系统设置中允许“显示在其他应用上层”之前，悬浮窗不会开启。本应用不会自动打开该页面。</string>
@@ -1121,9 +1126,9 @@
     <string name="diag_overlay_listening">实时查看</string>
     <string name="diag_overlay_standby">待机</string>
     <string name="diag_bg_notification_title_task">测试任务采集中</string>
-    <string name="diag_bg_notification_text_task">正在录制测试任务的 DIAG 数据。仅在开启后台采集时，离开应用后才会继续。</string>
-    <string name="diag_bg_notification_title_listen">实时查看</string>
-    <string name="diag_bg_notification_text_listen">当前仅查看实时数据，没有测试任务在录制。</string>
+    <string name="diag_bg_notification_text_task">正在为测试任务采集 DIAG 数据。</string>
+    <string name="diag_bg_notification_title_listen">DIAG 实时监听</string>
+    <string name="diag_bg_notification_text_listen">正在监听基带数据，未录制测试任务。</string>
 
 
 </resources>

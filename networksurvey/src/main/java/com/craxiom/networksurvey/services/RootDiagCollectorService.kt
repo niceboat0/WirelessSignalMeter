@@ -54,11 +54,15 @@ class RootDiagCollectorService : Service() {
     override fun onCreate() {
         super.onCreate()
         Application.createNotificationChannel(this)
-        startInForeground()
-        runningState.value = true
+        if (!startInForeground()) {
+            serviceState.value = State.Idle
+            stopSelf()
+            return
+        }
+        serviceState.value = State.Running
         scope.launch {
             DiagOverlayState.snapshot.collect { snap ->
-                if (snap.status != notificationMode && !foregroundFailed.value) {
+                if (snap.status != notificationMode) {
                     notificationMode = snap.status
                     updateNotification(snap)
                 }
@@ -76,33 +80,34 @@ class RootDiagCollectorService : Service() {
             }
             ACTION_REFRESH_OVERLAY -> maybeShowOverlay()
         }
-        startInForeground()
-        return START_STICKY
+        return START_NOT_STICKY
     }
 
     override fun onDestroy() {
-        runningState.value = false
+        serviceState.value = State.Idle
         hideOverlay()
         scope.cancel()
         super.onDestroy()
     }
 
-    private fun startInForeground() {
+    private fun startInForeground(): Boolean {
         val snapshot = DiagOverlayState.snapshot.value
         val notification = buildNotification(snapshot)
         try {
             if (Build.VERSION.SDK_INT >= 29) {
                 ServiceCompat.startForeground(
                     this, NOTIFICATION_ID, notification,
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
+                    if (Build.VERSION.SDK_INT >= 34) ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                    else ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
                 )
             } else {
                 startForeground(NOTIFICATION_ID, notification)
             }
             notificationMode = snapshot.status
+            return true
         } catch (error: RuntimeException) {
             Timber.w(error, "Unable to start the DIAG foreground service")
-            foregroundFailed.value = true
+            return false
         }
     }
 
@@ -151,7 +156,7 @@ class RootDiagCollectorService : Service() {
             setOnClickListener {
                 RootDiagPrefs.setOverlayWanted(this@RootDiagCollectorService, false)
                 hideOverlay()
-                if (notificationMode != "task") stopSelf()
+                if (notificationMode != "task" && !RootDiagPrefs.backgroundEnabled(this@RootDiagCollectorService)) stopSelf()
             }
         }
         val card = LinearLayout(this).apply {
@@ -273,29 +278,32 @@ class RootDiagCollectorService : Service() {
         const val ACTION_STOP = "com.craxiom.networksurvey.action.STOP_ROOT_DIAG"
         const val ACTION_REFRESH_OVERLAY = "com.craxiom.networksurvey.action.REFRESH_OVERLAY"
         const val NOTIFICATION_ID = 42
-        private val runningState = MutableStateFlow(false)
-        val running = runningState.asStateFlow()
+        internal enum class State { Idle, Starting, Running }
+        private val serviceState = MutableStateFlow(State.Idle)
+        internal val state = serviceState.asStateFlow()
         val stopRequested = MutableStateFlow(false)
-        val foregroundFailed = MutableStateFlow(false)
+        internal val isMaintained get() = serviceState.value != State.Idle
 
         fun start(context: Context) {
-            stopRequested.value = false
-            foregroundFailed.value = false
+            if (isMaintained) return
             val intent = Intent(context, RootDiagCollectorService::class.java)
+            serviceState.value = State.Starting
             try {
                 if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(intent) else context.startService(intent)
             } catch (error: RuntimeException) {
                 Timber.w(error, "Unable to launch the DIAG foreground service")
-                foregroundFailed.value = true
+                serviceState.value = State.Idle
             }
         }
 
         fun stop(context: Context) {
+            if (!isMaintained) return
             context.stopService(Intent(context, RootDiagCollectorService::class.java))
+            serviceState.value = State.Idle
         }
 
         fun refreshOverlay(context: Context) {
-            if (running.value) {
+            if (serviceState.value == State.Running) {
                 context.startService(Intent(context, RootDiagCollectorService::class.java).setAction(ACTION_REFRESH_OVERLAY))
             }
         }

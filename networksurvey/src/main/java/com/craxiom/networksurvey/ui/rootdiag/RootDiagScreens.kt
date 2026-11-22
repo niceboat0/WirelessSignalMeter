@@ -308,7 +308,6 @@ private fun DiagRecord.matches(filter: ProtocolFilter, includeDiagnostics: Boole
 @Composable
 internal fun SignalingScreen(viewModel: RootDiagViewModel, onBack: () -> Unit) {
     val status by viewModel.signal.collectAsStateWithLifecycle()
-    val capability by viewModel.capability.collectAsStateWithLifecycle()
     val records by viewModel.signaling.collectAsStateWithLifecycle()
     val qmdl by viewModel.qmdl.collectAsStateWithLifecycle()
     val collectionMode by viewModel.collectionMode.collectAsStateWithLifecycle()
@@ -415,6 +414,17 @@ internal fun SignalingScreen(viewModel: RootDiagViewModel, onBack: () -> Unit) {
                     DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                         val running = status.status in setOf(RootDiagStatus.Checking, RootDiagStatus.Starting, RootDiagStatus.Running)
                         DropdownMenuItem(
+                            text = { Text(stringResource(R.string.diag_follow_latest)) },
+                            trailingIcon = { androidx.compose.material3.Checkbox(checked = followLatest, onCheckedChange = null) },
+                            onClick = { menuOpen = false; followLatest = !followLatest },
+                        )
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.diag_clear_short)) },
+                            enabled = records.isNotEmpty(),
+                            onClick = { menuOpen = false; viewModel.clearSignaling() },
+                        )
+                        HorizontalDivider()
+                        DropdownMenuItem(
                             text = { Text(stringResource(if (qmdl.phase == QmdlPhase.Idle) R.string.diag_qmdl_start else R.string.diag_qmdl_stop)) },
                             enabled = qmdl.phase == QmdlPhase.Recording ||
                                 qmdl.phase == QmdlPhase.Idle && !qmdl.recovering &&
@@ -510,23 +520,13 @@ internal fun SignalingScreen(viewModel: RootDiagViewModel, onBack: () -> Unit) {
                     shape = DashboardCardDefaults.smallShape,
                 )
             }
-            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween) {
-                Column(Modifier.weight(1f).padding(vertical = 4.dp)) {
-                    Text(stringResource(R.string.diag_visible_messages, visible.size),
-                        style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    if (status.status != RootDiagStatus.Running) Text(
-                        status.failureReason?.let { capabilityReasonText(it) } ?: stringResource(status.status.title),
-                        style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text(imsStatusLine(capability.imsStatus), style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                SignalListAction(stringResource(R.string.diag_follow_latest), Modifier, selected = followLatest) {
-                    followLatest = !followLatest
-                }
-                SignalListAction(stringResource(R.string.diag_clear_short), Modifier, enabled = records.isNotEmpty()) {
-                    viewModel.clearSignaling()
-                }
+            if (status.status != RootDiagStatus.Running) {
+                Text(
+                    status.failureReason?.let { capabilityReasonText(it) } ?: stringResource(status.status.title),
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             LazyColumn(

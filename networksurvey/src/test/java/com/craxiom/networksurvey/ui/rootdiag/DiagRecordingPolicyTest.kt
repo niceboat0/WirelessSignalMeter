@@ -51,16 +51,17 @@ class DiagRecordingPolicyTest {
     }
 
     @Test
-    fun backgroundSwitchKeepsOnlyARunningTask() {
+    fun backgroundSwitchKeepsLiveDiagWithoutCreatingARecording() {
         val recording = DiagRecordingPolicy.mode(true, false, true, false)
         assertEquals(DiagRecordingPolicy.Mode.TaskRecording, recording)
-        assertTrue(DiagRecordingPolicy.shouldHoldService(recording, overlayWanted = false))
+        assertTrue(DiagRecordingPolicy.shouldHoldService(recording, backgroundEnabled = true, overlayWanted = false))
 
         val noTask = DiagRecordingPolicy.mode(false, false, true, false)
-        assertEquals(DiagRecordingPolicy.Mode.Idle, noTask)
-        assertFalse(DiagRecordingPolicy.shouldListen(noTask))
+        assertEquals(DiagRecordingPolicy.Mode.LiveView, noTask)
+        assertTrue(DiagRecordingPolicy.shouldListen(noTask))
         assertFalse(DiagRecordingPolicy.shouldRecord(noTask))
-        assertFalse(DiagRecordingPolicy.shouldHoldService(noTask, overlayWanted = true))
+        assertNull(DiagRecordingPolicy.recordingTaskId(noTask, null, manual = true, blockedTaskId = null))
+        assertTrue(DiagRecordingPolicy.shouldHoldService(noTask, backgroundEnabled = true, overlayWanted = false))
     }
 
     @Test
@@ -68,7 +69,7 @@ class DiagRecordingPolicyTest {
         val mode = DiagRecordingPolicy.mode(true, false, false, false)
         assertEquals(DiagRecordingPolicy.Mode.Idle, mode)
         assertFalse(DiagRecordingPolicy.shouldRecord(mode))
-        assertFalse(DiagRecordingPolicy.shouldHoldService(mode, true))
+        assertFalse(DiagRecordingPolicy.shouldHoldService(mode, backgroundEnabled = false, overlayWanted = true))
     }
 
     @Test
@@ -81,10 +82,18 @@ class DiagRecordingPolicyTest {
     }
 
     @Test
-    fun liveViewHoldsServiceOnlyForOverlay() {
+    fun foregroundLiveViewHoldsServiceForBackgroundOrOverlay() {
         val live = DiagRecordingPolicy.Mode.LiveView
-        assertTrue(DiagRecordingPolicy.shouldHoldService(live, overlayWanted = true))
-        assertFalse(DiagRecordingPolicy.shouldHoldService(live, overlayWanted = false))
+        assertTrue(DiagRecordingPolicy.shouldHoldService(live, backgroundEnabled = false, overlayWanted = true))
+        assertTrue(DiagRecordingPolicy.shouldHoldService(live, backgroundEnabled = true, overlayWanted = false))
+        assertFalse(DiagRecordingPolicy.shouldHoldService(live, backgroundEnabled = false, overlayWanted = false))
+    }
+
+    @Test
+    fun leavingWithoutBackgroundStopsLiveView() {
+        val mode = DiagRecordingPolicy.mode(false, false, false, false)
+        assertFalse(DiagRecordingPolicy.shouldListen(mode))
+        assertFalse(DiagRecordingPolicy.shouldRecord(mode))
     }
 }
 

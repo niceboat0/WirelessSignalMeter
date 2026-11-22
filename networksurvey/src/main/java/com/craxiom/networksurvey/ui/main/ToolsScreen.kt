@@ -17,13 +17,11 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowForward
-import androidx.compose.material.icons.rounded.GpsFixed
 import androidx.compose.material.icons.rounded.Map
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Timeline
 import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.rounded.Sensors
-import androidx.compose.material.icons.rounded.Wifi
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -49,9 +47,7 @@ internal fun ToolsScreen(
     onOpenMap: () -> Unit,
     onOpenRoadCoverage: () -> Unit,
     onOpenBandLock: () -> Unit,
-    onOpenGnss: () -> Unit,
     onOpenSpeedTest: () -> Unit,
-    onOpenWifi: () -> Unit,
     onOpenSignaling: () -> Unit,
 ) {
     val colors = MaterialTheme.colorScheme
@@ -83,20 +79,8 @@ internal fun ToolsScreen(
             }
             item {
                 ToolCard(
-                    R.string.tool_gnss_title, R.string.tool_gnss_description,
-                    Icons.Rounded.GpsFixed, if (light) Color(0xFF267546) else Color(0xFF8DD9A0), onOpenGnss,
-                )
-            }
-            item {
-                ToolCard(
                     R.string.tool_speed_test_title, R.string.tool_speed_test_description,
                     Icons.Rounded.Speed, if (light) Color(0xFF25669C) else Color(0xFF9ACBFF), onOpenSpeedTest,
-                )
-            }
-            item {
-                ToolCard(
-                    R.string.tool_wifi_title, R.string.tool_wifi_description,
-                    Icons.Rounded.Wifi, if (light) Color(0xFF007775) else Color(0xFF80D7D1), onOpenWifi,
                 )
             }
             item {

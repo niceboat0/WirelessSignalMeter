@@ -160,14 +160,8 @@ fun HomeScreen(
                             onOpenRoadCoverage = {
                                 mainNavController.navigate(NavOption.RoadCoverage.name) { launchSingleTop = true }
                             },
-                            onOpenGnss = {
-                                mainNavController.navigate(NavOption.Gnss.name) { launchSingleTop = true }
-                            },
                             onOpenSpeedTest = {
                                 mainNavController.navigate(NavDrawerOption.SpeedTest.name) { launchSingleTop = true }
-                            },
-                            onOpenWifi = {
-                                mainNavController.navigate(NavOption.Wifi.name) { launchSingleTop = true }
                             },
                             onOpenSignaling = {
                                 mainNavController.navigate(NavOption.Signaling.name) { launchSingleTop = true }

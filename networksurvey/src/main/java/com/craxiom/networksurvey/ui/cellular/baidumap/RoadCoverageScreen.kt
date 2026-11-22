@@ -26,10 +26,18 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.MoreVert
+import androidx.compose.material.icons.rounded.Pause
+import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
@@ -103,6 +111,7 @@ internal fun RoadCoverageScreen(onBack: () -> Unit) {
     var replayTaskId by remember { mutableStateOf<String?>(null) }
     var taskHistory by remember { mutableStateOf<List<SurveyTask>>(emptyList()) }
     var chooseTask by remember { mutableStateOf(false) }
+    var replayMenu by remember { mutableStateOf(false) }
     var timeline by remember { mutableStateOf(false) }
     var links by remember { mutableStateOf<List<RoadEventLink>>(emptyList()) }
     var eventLimited by remember { mutableStateOf(false) }
@@ -282,6 +291,7 @@ internal fun RoadCoverageScreen(onBack: () -> Unit) {
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding)) {
             SurveyTaskBar()
+            HorizontalDivider()
             Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                 TextButton(enabled = !imported, modifier = Modifier.weight(1f), onClick = {
                     scope.launch {
@@ -293,21 +303,44 @@ internal fun RoadCoverageScreen(onBack: () -> Unit) {
                         }
                     }
                 }) {
-                    Text(taskHistory.firstOrNull { it.id == replayTaskId }?.name ?: "历史打点 / 选择任务",
+                    Text(taskHistory.firstOrNull { it.id == replayTaskId }?.name ?: stringResource(R.string.road_task_history),
                         maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
                 }
                 TextButton(enabled = !imported && replayTaskId != null, onClick = { playing = false; eventRefresh++; timeline = true }) {
-                    Text("事件 ${links.size}")
+                    Text(stringResource(R.string.road_task_events))
                 }
-            }
-            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                TextButton(enabled = !busy, onClick = {
-                    importCsv.launch(arrayOf("text/*", "application/csv", "application/vnd.ms-excel", "application/octet-stream"))
-                }) { Text(stringResource(R.string.road_import)) }
-                TextButton(enabled = !busy, onClick = ::loadSaved) { Text(stringResource(R.string.road_reload)) }
-                TextButton(enabled = !busy && track != null, onClick = {
-                    export.launch("wireless-route-${track?.startTime}.csv")
-                }) { Text(stringResource(R.string.road_export)) }
+                Box {
+                    IconButton(onClick = { replayMenu = true }) {
+                        Icon(Icons.Rounded.MoreVert, stringResource(R.string.road_options))
+                    }
+                    DropdownMenu(expanded = replayMenu, onDismissRequest = { replayMenu = false }) {
+                        DropdownMenuItem(text = { Text(stringResource(R.string.road_reload)) }, enabled = !busy,
+                            onClick = { replayMenu = false; loadSaved() })
+                        DropdownMenuItem(text = { Text(stringResource(R.string.road_import)) }, enabled = !busy,
+                            onClick = {
+                                replayMenu = false
+                                importCsv.launch(arrayOf("text/*", "application/csv", "application/vnd.ms-excel", "application/octet-stream"))
+                            })
+                        DropdownMenuItem(text = { Text(stringResource(R.string.road_export)) }, enabled = !busy && track != null,
+                            onClick = { replayMenu = false; export.launch("wireless-route-${track?.startTime}.csv") })
+                        if (!imported) DropdownMenuItem(
+                            text = { Text(stringResource(if (tracking) R.string.road_stop_recording else R.string.road_start_recording)) },
+                            enabled = !busy,
+                            onClick = {
+                                replayMenu = false
+                                if (tracking) {
+                                    MapTrack.setEnabled(context, false)
+                                    tracking = false
+                                    loadSaved()
+                                } else launchIo(R.string.road_read_failed) {
+                                    withContext(Dispatchers.IO) { SurveyTaskStore.get(context).ensure() }
+                                    MapTrack.setEnabled(context, true)
+                                    tracking = true
+                                }
+                            },
+                        )
+                    }
+                }
             }
             if (track == null) {
                 Box(Modifier.weight(1f).fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
@@ -334,11 +367,14 @@ internal fun RoadCoverageScreen(onBack: () -> Unit) {
                     modifier = Modifier.weight(1f).fillMaxWidth())
                 Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        TextButton(enabled = track.samples.size > 1, onClick = {
+                        IconButton(enabled = track.samples.size > 1, onClick = {
                             if (!playing && selectedSample == track.samples.lastIndex) selectedSample = 0
                             focusSample = -1
                             playing = !playing
-                        }) { Text(stringResource(if (playing) R.string.road_pause else R.string.road_play)) }
+                        }) {
+                            Icon(if (playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                                stringResource(if (playing) R.string.road_pause else R.string.road_play))
+                        }
                         Slider(
                             value = selectedSample.toFloat(),
                             onValueChange = {
@@ -378,35 +414,15 @@ internal fun RoadCoverageScreen(onBack: () -> Unit) {
                             Modifier.clickable { timeline = true }, style = MaterialTheme.typography.labelMedium)
                     }
                     report?.let { result ->
-                        val percent = if (result.samplesWithRsrp == 0) "—" else
-                            "${formatRoadValue(result.weakSamples * 100.0 / result.samplesWithRsrp)}%"
-                        val average = result.averageRsrp?.let { "${formatRoadValue(it)} dBm" } ?: "—"
-                        Text(stringResource(R.string.road_summary, track.samples.size, formatRoadValue(result.distanceMeters / 1000)),
-                            style = MaterialTheme.typography.bodySmall)
-                        Text(stringResource(R.string.road_weak_summary, average, percent),
-                            style = MaterialTheme.typography.bodySmall)
-                        TextButton(enabled = result.weakSections.isNotEmpty(), onClick = { showWeakSections = true }) {
-                            Text(stringResource(R.string.road_weak_sections, result.weakSections.size))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(stringResource(R.string.road_summary, track.samples.size, formatRoadValue(result.distanceMeters / 1000)),
+                                Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                            TextButton(onClick = { showWeakSections = true }) {
+                                Text(stringResource(R.string.road_statistics))
+                            }
                         }
                     }
                 }
-            }
-            if (!imported) TextButton(
-                enabled = !busy,
-                onClick = {
-                    if (tracking) {
-                        tracking = false
-                        MapTrack.setEnabled(context, false)
-                        loadSaved()
-                    } else launchIo(R.string.road_read_failed) {
-                        withContext(Dispatchers.IO) { SurveyTaskStore.get(context).ensure() }
-                        MapTrack.setEnabled(context, true)
-                        tracking = true
-                    }
-                },
-                modifier = Modifier.align(Alignment.CenterHorizontally),
-            ) {
-                Text(stringResource(if (tracking) R.string.road_stop_recording else R.string.road_start_recording))
             }
         }
     }
@@ -463,9 +479,19 @@ internal fun RoadCoverageScreen(onBack: () -> Unit) {
     )
     if (showWeakSections && track != null) AlertDialog(
         onDismissRequest = { showWeakSections = false },
-        title = { Text(stringResource(R.string.road_weak_sections, report?.weakSections?.size ?: 0)) },
+        title = { Text(stringResource(R.string.road_statistics)) },
         text = {
             LazyColumn(Modifier.heightIn(max = 360.dp)) {
+                report?.let { result ->
+                    item {
+                        val percent = if (result.samplesWithRsrp == 0) "\u2014" else
+                            "${formatRoadValue(result.weakSamples * 100.0 / result.samplesWithRsrp)}%"
+                        val average = result.averageRsrp?.let { "${formatRoadValue(it)} dBm" } ?: "\u2014"
+                        Text(stringResource(R.string.road_weak_summary, average, percent))
+                        Text(stringResource(R.string.road_weak_sections, result.weakSections.size),
+                            Modifier.padding(top = 12.dp), style = MaterialTheme.typography.titleSmall)
+                    }
+                }
                 itemsIndexed(report?.weakSections.orEmpty()) { _, section ->
                     val start = roadClock.format(Instant.ofEpochMilli(track.samples[section.firstIndex].time))
                     val end = roadClock.format(Instant.ofEpochMilli(track.samples[section.lastIndex].time))

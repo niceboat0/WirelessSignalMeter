@@ -266,15 +266,21 @@
     <string name="road_weak_sections">Weak coverage sections (%1$d)</string>
     <string name="road_start_recording">Resume automatic points</string>
     <string name="road_stop_recording">Pause points and load route</string>
+    <string name="road_options">Replay options</string>
+    <string name="road_statistics">Statistics</string>
+    <string name="road_task_idle">No active task</string>
+    <string name="road_task_running">In progress</string>
+    <string name="road_task_new">New task</string>
+    <string name="road_task_finish">End task</string>
+    <string name="road_task_history">Task history</string>
+    <string name="road_task_events">Events</string>
+    <string name="lock_tab_controls">Lock</string>
+    <string name="lock_tab_advanced">Advanced</string>
     <string name="road_choose_track">Choose a route</string>
     <string name="road_sim">SIM %1$d</string>
     <string name="tool_tower_map_description">Cell sites, sectors, and live survey tracks</string>
-    <string name="tool_gnss_title">GNSS satellites</string>
-    <string name="tool_gnss_description">Sky view, constellations, and carrier-to-noise ratios</string>
     <string name="tool_speed_test_title">Server speed test</string>
     <string name="tool_speed_test_description">Measure network speed with server-provided test nodes</string>
-    <string name="tool_wifi_title">Wi-Fi signal</string>
-    <string name="tool_wifi_description">Nearby networks, signal strength, and channel usage</string>
     <string name="wifi_title">Wi-Fi</string>
     <string name="bluetooth_title">Bluetooth</string>
     <string name="gnss_title">GNSS</string>
@@ -1362,7 +1368,6 @@
     <string name="diag_follow_latest">Follow</string>
     <string name="diag_search_messages">Search message names</string>
     <string name="diag_message_count">Showing %1$d of %2$d messages</string>
-    <string name="diag_visible_messages">%1$d messages</string>
     <string name="diag_clear_short">Clear</string>
     <string name="diag_message_options">Signaling options</string>
     <string name="diag_show_diagnostics">Show events and unknown packets</string>
@@ -1417,7 +1422,7 @@
     <string name="diag_export_save">Choose save location</string>
     <string name="diag_export_saved">Diagnostic log saved</string>
     <string name="diag_export_failed">Could not save the diagnostic log</string>
-    <string name="diag_neighbor_distance">About %1$d m from the handset</string>
+    <string name="diag_neighbor_distance">%1$d m</string>
     <string name="diag_neighbor_beam_sinr">%1$s beam SINR</string>
     <string name="diag_neighbor_android_source">Android system</string>
     <string name="diag_mr_failed">The measurement fields could not be decoded. Export the diagnostic log to investigate this report.</string>
@@ -1430,7 +1435,7 @@
     <string name="diag_bg_notification_text">Collection continues after the screen is off or the app is switched away. Force-stop still ends it.</string>
     <string name="diag_bg_stop">Stop collection</string>
     <string name="diag_bg_title">Background collection</string>
-    <string name="diag_bg_subtitle">If a test task is already recording, keep it running in the background with a notification when you leave the app. This switch does not start recording by itself. Without a running task, you can only view live data in the app. Force-stop still ends it.</string>
+    <string name="diag_bg_subtitle">Keep live DIAG running when the app leaves the screen. QMDL recording still requires a test task.</string>
     <string name="diag_overlay_title">Collection overlay</string>
     <string name="diag_overlay_subtitle">Show a small, draggable status window. This needs the system overlay permission; it is not opened automatically.</string>
     <string name="diag_overlay_need_permission">The overlay stays off until you grant “Display over other apps” in system settings. This app will not open that page by itself.</string>
@@ -1506,9 +1511,9 @@
     <string name="diag_overlay_listening">Live view</string>
     <string name="diag_overlay_standby">Standby</string>
     <string name="diag_bg_notification_title_task">Test task collecting</string>
-    <string name="diag_bg_notification_text_task">A test task is recording DIAG data. Leaving the app continues only if background collection is enabled.</string>
-    <string name="diag_bg_notification_title_listen">Live view</string>
-    <string name="diag_bg_notification_text_listen">Showing live data. No test task is recording.</string>
+    <string name="diag_bg_notification_text_task">Collecting DIAG data for a test task.</string>
+    <string name="diag_bg_notification_title_listen">Live DIAG</string>
+    <string name="diag_bg_notification_text_listen">Listening for modem data. No test task is recording.</string>
 
 
 </resources>

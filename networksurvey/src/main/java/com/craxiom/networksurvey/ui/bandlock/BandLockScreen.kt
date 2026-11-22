@@ -82,6 +82,9 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
     }
     var radio by rememberSaveable { mutableStateOf(LockRadio.Lte) }
     var target by rememberSaveable { mutableStateOf(LockTarget.Bands) }
+    var advanced by rememberSaveable { mutableStateOf(false) }
+    val lockScroll = rememberScrollState()
+    val advancedScroll = rememberScrollState()
     var networkMode by rememberSaveable { mutableStateOf(state.appliedMode ?: LockNetworkMode.Auto) }
     LaunchedEffect(state.appliedMode) { state.appliedMode?.let { networkMode = it } }
     var lteBands by rememberSaveable { mutableStateOf("") }
@@ -137,18 +140,26 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
     Scaffold(
         contentWindowInsets = WindowInsets.safeDrawing,
         topBar = {
-            TitleBar(stringResource(R.string.tool_band_lock_title), compact = true,
-                onBackClick = onBack.takeUnless { operating })
+            Column {
+                TitleBar(stringResource(R.string.tool_band_lock_title), compact = true,
+                    onBackClick = onBack.takeUnless { operating })
+                TabRow(selectedTabIndex = if (advanced) 1 else 0) {
+                    Tab(selected = !advanced, onClick = { advanced = false }, enabled = !state.busy,
+                        text = { Text(stringResource(R.string.lock_tab_controls)) })
+                    Tab(selected = advanced, onClick = { advanced = true }, enabled = !state.busy,
+                        text = { Text(stringResource(R.string.lock_tab_advanced)) })
+                }
+            }
         },
     ) { padding ->
         Column(
             Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding)
-                .verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp),
+                .verticalScroll(if (advanced) advancedScroll else lockScroll).padding(horizontal = 16.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text(model.device, style = MaterialTheme.typography.titleSmall)
+                    if (advanced) Text(model.device, style = MaterialTheme.typography.titleSmall)
                     Text(stringResource(when {
                         state.availability == LockAvailability.Unchecked -> R.string.lock_unchecked
                         state.availability == LockAvailability.Checking -> R.string.lock_checking
@@ -174,9 +185,7 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
                 }
                 LockIconButton(R.string.lock_refresh, Icons.Rounded.Refresh, !state.busy, model::refresh)
             }
-            /* Multi-device capability card: which transport the helper bound and
-             * which lock items the modem answers for. */
-            if (state.availability == LockAvailability.Ready &&
+            if (advanced && state.availability == LockAvailability.Ready &&
                 (state.channel.isNotEmpty() || state.caps.isNotEmpty())) {
                 Text(
                     stringResource(R.string.lock_channel_caps,
@@ -185,20 +194,32 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+            if (advanced) Text(stringResource(R.string.lock_scope), style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
             if (operating) LinearProgressIndicator(Modifier.fillMaxWidth())
             state.result?.let { Text(stringResource(it), style = MaterialTheme.typography.bodyMedium) }
-            Text(stringResource(R.string.lock_scope), style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
             HorizontalDivider()
-            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                LockRadio.entries.forEachIndexed { index, item ->
-                    SegmentedButton(
-                        radio == item, { radio = item }, SegmentedButtonDefaults.itemShape(index, 2),
-                        enabled = !state.busy,
-                    ) { Text(if (item == LockRadio.Lte) "4G · LTE" else "5G · NR") }
+            if (!advanced) Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                    LockRadio.entries.forEachIndexed { index, item ->
+                        SegmentedButton(
+                            radio == item, { radio = item }, SegmentedButtonDefaults.itemShape(index, 2),
+                            enabled = !state.busy,
+                        ) { Text(if (item == LockRadio.Lte) "4G · LTE" else "5G · NR") }
+                    }
+            }
+            TabRow(target.ordinal) {
+                LockTarget.entries.forEach { item ->
+                    Tab(target == item, { target = item }, enabled = !state.busy, text = {
+                        Text(stringResource(when (item) {
+                            LockTarget.Bands -> R.string.lock_bands
+                            LockTarget.Frequency -> R.string.lock_frequency
+                            LockTarget.Cell -> R.string.lock_cell
+                        }))
+                    })
                 }
             }
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            if (target != LockTarget.Bands) Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text(stringResource(R.string.lock_current_cell), style = MaterialTheme.typography.labelLarge)
                     Text(serving?.let {
@@ -224,17 +245,6 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
                             nrBand = it.optInt("band", 0).takeIf { band -> band > 0 }?.toString().orEmpty()
                         }
                     }
-                }
-            }
-            TabRow(target.ordinal) {
-                LockTarget.entries.forEach { item ->
-                    Tab(target == item, { target = item }, enabled = !state.busy, text = {
-                        Text(stringResource(when (item) {
-                            LockTarget.Bands -> R.string.lock_bands
-                            LockTarget.Frequency -> R.string.lock_frequency
-                            LockTarget.Cell -> R.string.lock_cell
-                        }))
-                    })
                 }
             }
             if (target == LockTarget.Bands) {
@@ -300,19 +310,19 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
                 stringResource(if (hasBackup) R.string.lock_backup_available else R.string.lock_backup_needed),
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            HorizontalDivider()
-            Text(stringResource(R.string.lock_network_mode), style = MaterialTheme.typography.titleSmall)
-            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                LockNetworkMode.entries.forEachIndexed { index, mode ->
-                    SegmentedButton(networkMode == mode, { networkMode = mode },
-                        SegmentedButtonDefaults.itemShape(index, 3), enabled = !state.busy) {
-                        Text(when (mode) {
-                            LockNetworkMode.Auto -> stringResource(R.string.lock_mode_auto)
-                            LockNetworkMode.Lte -> "LTE"
-                            LockNetworkMode.Nr -> "NR"
-                        })
+            } else Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(stringResource(R.string.lock_network_mode), style = MaterialTheme.typography.titleSmall)
+                SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                    LockNetworkMode.entries.forEachIndexed { index, mode ->
+                        SegmentedButton(networkMode == mode, { networkMode = mode },
+                            SegmentedButtonDefaults.itemShape(index, 3), enabled = !state.busy) {
+                            Text(when (mode) {
+                                LockNetworkMode.Auto -> stringResource(R.string.lock_mode_auto)
+                                LockNetworkMode.Lte -> "LTE"
+                                LockNetworkMode.Nr -> "NR"
+                            })
+                        }
                     }
-                }
             }
             val modeLabel = stringResource(R.string.lock_apply_mode)
             val modeValue = if (networkMode == LockNetworkMode.Auto) stringResource(R.string.lock_mode_auto) else networkMode.argument.uppercase()
@@ -347,6 +357,7 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
                 Text(state.log.ifEmpty { stringResource(R.string.lock_log_empty) },
                     Modifier.fillMaxWidth().padding(bottom = 16.dp), style = MaterialTheme.typography.bodySmall,
                     fontFamily = FontFamily.Monospace)
+            }
             }
         }
     }

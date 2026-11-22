@@ -6,8 +6,7 @@ import java.io.IOException
 
 /**
  * Live viewing and test-task recording are separate.
- * A background-collection preference only keeps an already running
- * test task recording after the UI is left; it never starts a session.
+ * Background collection can keep the live stream up without opening a recording.
  */
 internal object DiagRecordingPolicy {
     enum class Mode { Idle, LiveView, TaskRecording }
@@ -18,10 +17,8 @@ internal object DiagRecordingPolicy {
         backgroundAllowed: Boolean,
         paused: Boolean,
     ): Mode {
-        if (paused) return Mode.Idle
-        if (taskRunning && (foreground || backgroundAllowed)) return Mode.TaskRecording
-        if (foreground) return Mode.LiveView
-        return Mode.Idle
+        if (paused || (!foreground && !backgroundAllowed)) return Mode.Idle
+        return if (taskRunning) Mode.TaskRecording else Mode.LiveView
     }
 
     fun shouldListen(mode: Mode): Boolean = mode != Mode.Idle
@@ -32,9 +29,9 @@ internal object DiagRecordingPolicy {
         task?.takeIf { shouldRecord(mode) && it.endedAt == null &&
             (manual || (it.needLog && it.id != blockedTaskId)) }?.id
 
-    fun shouldHoldService(mode: Mode, overlayWanted: Boolean): Boolean = when (mode) {
+    fun shouldHoldService(mode: Mode, backgroundEnabled: Boolean, overlayWanted: Boolean): Boolean = when (mode) {
         Mode.TaskRecording -> true
-        Mode.LiveView -> overlayWanted
+        Mode.LiveView -> backgroundEnabled || overlayWanted
         Mode.Idle -> false
     }
 

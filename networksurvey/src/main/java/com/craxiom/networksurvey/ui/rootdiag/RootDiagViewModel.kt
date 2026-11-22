@@ -182,6 +182,11 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
             }
         }
         viewModelScope.launch {
+            RootDiagCollectorService.state.collect {
+                if (!RootDiagCollectorService.isMaintained && !foreground && capture != null) applyCollectionPolicy()
+            }
+        }
+        viewModelScope.launch {
             val store = withContext(Dispatchers.IO) {
                 runCatching { SurveyTaskStore.get(app) }.onFailure {
                     timber.log.Timber.w(it, "Could not open diagnostic task store")
@@ -475,7 +480,7 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
     private fun currentMode(): DiagRecordingPolicy.Mode = DiagRecordingPolicy.mode(
         taskRunning = activeTask != null,
         foreground = foreground,
-        backgroundAllowed = RootDiagPrefs.backgroundEnabled(app),
+        backgroundAllowed = RootDiagPrefs.backgroundEnabled(app) && RootDiagCollectorService.isMaintained,
         paused = pausedByUser,
     )
 
@@ -554,10 +559,11 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
         val active = status == RootDiagStatus.Checking || status == RootDiagStatus.Starting ||
             status == RootDiagStatus.Running
         val mode = currentMode()
-        val hold = DiagRecordingPolicy.shouldListen(mode) &&
-            DiagRecordingPolicy.shouldHoldService(mode, RootDiagPrefs.overlayWanted(app))
+        val hold = DiagRecordingPolicy.shouldHoldService(
+            mode, RootDiagPrefs.backgroundEnabled(app), RootDiagPrefs.overlayWanted(app),
+        )
         if (active && hold) {
-            if (!RootDiagCollectorService.running.value && foreground) RootDiagCollectorService.start(app)
+            if (!RootDiagCollectorService.isMaintained && foreground) RootDiagCollectorService.start(app)
         } else {
             RootDiagCollectorService.stop(app)
         }
