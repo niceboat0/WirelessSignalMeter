@@ -167,7 +167,17 @@ Windows 下使用项目 NDK 直接执行协议、原始掩码备份与恢复测�
 `qmdl2_test.c` 校验容器字节布局（8 字节 magic、记录类型 1、payload 长度、秒/微秒字段、
 DIAG_LOG_F 前导与数组原样拷贝），`test_nr_config_host.ps1` 里的 `test_qmdl2_records`
 用 stub 校验挂接：开始录制即写 magic、记录不外泄 HDLC 转义、时间戳取墙钟、关闭干净。
-采集器默认仍是 v1 容器，`--qmdl2` 才切换；App 侧录制固定传 `--qmdl2`。
+
+采集器默认仍写 v1 容器，`--qmdl2` 才切换，**App 不传该参数**（保持 v1）。原因是实测的
+容器兼容性差异：
+
+| 容器 | SCAT 2.1.2 解析 | 说明 |
+|---|---|---|
+| v1（HDLC + CRC + `0x7e`） | **5/5 包，CRC 零报错** | SCAT 的 dump reader 按 `0x7e` 切帧后解转义、校 CRC；QXDM 系同样可开 |
+| QMDL2（`QMDL`+02 头 + 记录） | **0/5 包** | SCAT 无 QMDL2 解析器，文件里没有 `0x7e` 分隔符，切不出帧 |
+
+v1 的每包时间戳来自 DIAG log 头的 64 位字段（`<BBHHHQ` 的 Q），不依赖容器头。QMDL2 的
+记录头只是额外加一层 wall-clock。需要用 QXDM/QCAT 单独验证 QMDL2 时才显式传 `--qmdl2`。
 
 ## 海外服务清理后的数据库迁移
 

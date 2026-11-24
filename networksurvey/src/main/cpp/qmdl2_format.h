@@ -1,13 +1,12 @@
 /* QMDL2 container writer.
  *
- * The recorder in root_diag.c historically emitted the v1 container: a stream
- * of HDLC frames (0x7e ... 0x7e) holding a 4-byte DIAG_LOG_F preamble and a
- * CRC-16/X-25 trailer. That container has no absolute timestamp, so a file
- * cannot be aligned with anything else afterwards - which is exactly what
- * ticket/field analysis needs.
+ * The recorder in root_diag.c emits the v1 container by default: a stream of
+ * HDLC frames (0x7e ... 0x7e) holding a 4-byte DIAG_LOG_F preamble, a
+ * CRC-16/X-25 trailer and, inside the DIAG log header, a 64-bit packet
+ * timestamp. That is what SCAT and the QCSuper lineage read, so it stays the
+ * default and the app keeps calling the collector without a flag.
  *
- * QMDL2 is the container modern Qualcomm tooling reads (QXDM, QCAT) and the
- * one QCSuper-lineage tools emit by default:
+ * QMDL2 is the newer container QXDM/QCAT can open:
  *
  *   file header : "QMDL" 02 00 00 00                      (8 bytes)
  *   record      : type u32 (=1, DIAG log)
@@ -15,6 +14,10 @@
  *                 sec  u32  Unix time, seconds
  *                 usec u32  Unix time, microseconds
  *                 payload   the DIAG_LOG_F packet
+ *
+ * Measured on SCAT 2.1.2: a v1 file yields 5/5 packets with no CRC error, a
+ * QMDL2 file yields 0/5 - SCAT's dump reader splits on 0x7e and has no QMDL2
+ * parser, so QMDL2 is opt-in (--qmdl2) and not a replacement.
  *
  * The payload deliberately keeps the same 4-byte preamble the v1 writer uses
  * (0x10, 0x00, length low, length high) followed by the raw record bytes, so
