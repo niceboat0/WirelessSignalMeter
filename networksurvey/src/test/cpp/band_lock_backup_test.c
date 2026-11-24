@@ -15,6 +15,7 @@ static int stored, nsa_stored, nsa_readable, read_error, open_error, write_error
 static int marker, nsa_corrupt, readback_error, mismatch, put_error, remove_error;
 static int reads, creates, writes, file_syncs, dir_syncs, unlinks, removes, cm, efs, restarts, restart_observed;
 static int wrote_primary, wrote_nsa;
+static int origin_writes, origin_conflict, origin_write_error;
 static uint8_t saved[64], primary_written[64], nsa_written[64];
 
 void *memset(void *target, int value, size_t size) {
@@ -41,6 +42,7 @@ static void reset(void) {
     marker = nsa_corrupt = readback_error = mismatch = put_error = remove_error = 0;
     reads = creates = writes = file_syncs = dir_syncs = unlinks = removes = cm = efs = restarts = restart_observed = 0;
     wrote_primary = wrote_nsa = 0;
+    origin_writes = origin_conflict = origin_write_error = 0;
     memset(saved, 0, sizeof(saved));
 }
 
@@ -133,6 +135,8 @@ static int exchange(const uint8_t *data, int bytes, int kind, uint32_t tag, int 
     return 0;
 }
 static int reboot_modem(int observe) { restarts++; restart_observed = observe; return 0; }
+static int write_backup_origin(void) { origin_writes++; return origin_write_error; }
+static int backup_origin_conflict(void) { return origin_conflict; }
 
 /* The runner generates this include from the actual production functions. */
 #include "band_lock_backup_under_test.inc"
@@ -142,6 +146,7 @@ __declspec(dllexport) int test_band_lock_backup(void) {
     CHECK(lte_band_command("5", 0) == 0);
     CHECK(reads == 1 && creates == 1 && writes == 1 && file_syncs == 1 && dir_syncs == 1);
     CHECK(cm == 1 && efs == 0);
+    CHECK(origin_writes == 1);
     for (int i = 0; i < 8; i++) CHECK(saved[i] == i + 1);
 
     reset(); read_error = 1;
@@ -171,6 +176,22 @@ __declspec(dllexport) int test_band_lock_backup(void) {
 
     reset(); read_error = 1;
     CHECK(lte_band_command(0, 1) != 0 && cm == 0 && efs == 0);
+
+    reset();
+    CHECK(lte_band_command(0, 1) != 0 && reads == 0 && cm == 0 && efs == 0);
+    reset(); stored = 1; origin_conflict = 1;
+    CHECK(lte_band_command(0, 1) != 0 && reads == 0 && cm == 0 && efs == 0 && restarts == 0);
+    CHECK(lte_band_command("5", 0) != 0 && reads == 0 && creates == 0
+        && cm == 0 && efs == 0 && restarts == 0);
+    CHECK(nr_band_command("78", 0) != 0 && reads == 0 && creates == 0
+        && cm == 0 && efs == 0 && restarts == 0);
+    CHECK(nr_band_command(0, 1) != 0 && removes == 0 && cm == 0 && efs == 0 && restarts == 0);
+    reset(); origin_write_error = 1;
+    CHECK(lte_band_command("5", 0) != 0 && origin_writes == 1 && unlinks == 1
+        && cm == 0 && efs == 0 && restarts == 0);
+    reset(); origin_write_error = 1;
+    CHECK(nr_band_command("78", 0) != 0 && origin_writes == 1 && unlinks == 1
+        && cm == 0 && efs == 0 && restarts == 0);
 
     reset(); open_error = 1;
     CHECK(nr_band_command("78", 0) != 0 && creates == 1 && marker == 0 && efs == 0);

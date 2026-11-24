@@ -157,6 +157,13 @@
     <string name="lock_channel_caps">通道 %1$s · %2$s</string>
     <string name="lock_checking">正在检测 Root 与 DIAG</string>
     <string name="lock_unchecked">尚未检测设备</string>
+    <string name="lock_cached_unconfirmed">首次操作时确认设备</string>
+    <string name="lock_backup_cached">上次检测记录可能有频段备份。请重新检测并确认文件仍可用后，再执行恢复。</string>
+    <string name="lock_restore_blocked_missing">未找到可用的原始频段备份，未执行恢复</string>
+    <string name="lock_restore_blocked_unreadable">原始频段备份无法读取，未执行恢复</string>
+    <string name="lock_restore_blocked_corrupt">原始频段备份损坏或大小不正确，未执行恢复</string>
+    <string name="lock_restore_blocked_mismatch">备份记录与当前设备不一致，未执行更改</string>
+    <string name="lock_write_blocked_unconfirmed">尚未完成本次设备检测，未执行更改</string>
     <string name="lock_unavailable">未获得 Root 授权，或设备不提供受支持的高通 DIAG 通道</string>
     <string name="lock_working">正在执行操作</string>
     <string name="lock_scope">高通 diag-router · 作用于基带主协议栈，暂不支持指定 SIM 卡。</string>
