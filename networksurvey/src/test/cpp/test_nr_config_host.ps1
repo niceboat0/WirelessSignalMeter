@@ -28,8 +28,10 @@ $snr = @(
     (Block 'static void parse_nr_b8d8(' '/* --- 0xB8DD')
 ) -join "`n"
 [IO.File]::WriteAllText((Join-Path $target 'nr_snr_under_test.inc'), $snr)
+$pdsch = Block 'struct pdsch_acc {' '/* LTE scheduling layouts'
+[IO.File]::WriteAllText((Join-Path $target 'nr_pdsch_under_test.inc'), $pdsch)
 $def = Join-Path $target 'msvcrt.def'
-[IO.File]::WriteAllText($def, "LIBRARY msvcrt.dll`nEXPORTS`n_snprintf`n_vsnprintf`nstrcmp`nlog10`nmemset`n")
+[IO.File]::WriteAllText($def, "LIBRARY msvcrt.dll`nEXPORTS`n_snprintf`n_vsnprintf`nstrcmp`nlog10`nmemset`nmemcpy`n")
 $lib = Join-Path $target 'msvcrt.lib'
 & "$bin/llvm-dlltool.exe" -m i386:x86-64 -d $def -l $lib
 if ($LASTEXITCODE) { throw 'CRT import generation failed' }
@@ -52,6 +54,19 @@ public static class NrConfigTest {
     private static extern IntPtr nr_ca_feed(int version, int count, int lengthDelta, int fault);
     public static string Ca(int version, int count, int lengthDelta, int fault) {
         return Marshal.PtrToStringAnsi(nr_ca_feed(version, count, lengthDelta, fault));
+    }
+    [DllImport(@"$dll", CallingConvention = CallingConvention.Cdecl)]
+    private static extern IntPtr nr_pdsch_feed(int version, int count, int rows, int lengthDelta,
+        int fault, int sequence, long now);
+    public static string Pdsch(int version, int count, int rows, int lengthDelta, int fault) {
+        nr_pdsch_feed(version, count, rows, lengthDelta, fault, 0, 1000);
+        return Marshal.PtrToStringAnsi(nr_pdsch_feed(version, count, rows, lengthDelta, fault, 1, 2000));
+    }
+    public static string PdschAfterRejected(int version, int fault, long rejectedAt) {
+        nr_pdsch_feed(0x30001, 1, 2, 0, 0, 0, 1000);
+        string rejected = Marshal.PtrToStringAnsi(nr_pdsch_feed(version, 1, 2, 0, fault, 1, rejectedAt));
+        if (!String.IsNullOrEmpty(rejected)) throw new InvalidOperationException("Malformed B888 frame was emitted");
+        return Marshal.PtrToStringAnsi(nr_pdsch_feed(0x30001, 1, 2, 0, 0, 1, 2000));
     }
     [DllImport(@"$dll", CallingConvention = CallingConvention.Cdecl)]
     private static extern IntPtr nr_snr_feed(int cc, int pci, int version, int trs, int length, int sample, long now);
@@ -92,16 +107,75 @@ if (([NrConfigTest]::Ca(0x30002, 0, 0, 0) | ConvertFrom-Json).cc.Count -ne 0 -or
     ([NrConfigTest]::Ca(0x30002, 16, 0, 0) | ConvertFrom-Json).cc.Count -ne 16) {
     throw 'B9A7 boundary count failed'
 }
-foreach ($lengthDelta in -95,-49,-1,1) {
+foreach ($lengthDelta in -95,-49,-24,-1,1) {
     if ([NrConfigTest]::Ca(0x30002, 3, $lengthDelta, 0)) { throw 'Bad B9A7 length accepted' }
 }
-if ([NrConfigTest]::Ca(0x30001, 3, 0, 0) -or [NrConfigTest]::Ca(0x30002, 17, 0, 0)) {
+if ([NrConfigTest]::Ca(0x30001, 3, 0, 0) -or [NrConfigTest]::Ca(0x30002, 17, 0, 0) -or
+    [NrConfigTest]::Ca(0x30002, 17, -24, 0)) {
     throw 'Unsupported B9A7 version or count accepted'
 }
 foreach ($fault in 1..5) {
     if ([NrConfigTest]::Ca(0x30002, 3, 0, $fault)) { throw "Malformed B9A7 carrier accepted: $fault" }
 }
 Write-Output 'PASS B9A7: versions 2.3/2.4/3.0/3.2, DL/UL fields, SUL placeholder, malformed record rejection'
+
+foreach ($version in 0x20003,0x20004,0x30000,0x30002) {
+    foreach ($fault in 6,7) {
+        $variant = [NrConfigTest]::Ca($version, 3, 0, $fault) | ConvertFrom-Json
+        if ($variant.cc.Count -ne 3 -or $variant.cc[1].pci -ne 101 -or $variant.cc[1].dl -ne 2) {
+            throw "B9A7 fixed-capacity rows lost for version $version, fault $fault"
+        }
+    }
+}
+foreach ($fault in 8,9) {
+    if ([NrConfigTest]::Ca(0x30002, 3, 0, $fault)) {
+        throw "Malformed B9A7 fixed-capacity row accepted: $fault"
+    }
+}
+Write-Output 'PASS B9A7 variant: all four versions, zero/smaller active counts, full row validation, oversized and truncated counts rejected'
+
+foreach ($version in 0x20002,0x30000,0x30001) {
+    foreach ($count in 0,1,2) {
+        $pdsch = [NrConfigTest]::Pdsch($version, $count, 2, 0, 0) | ConvertFrom-Json
+        if ($pdsch.recs.Count -ne 2 -or $pdsch.dt_ms -ne 1000 -or
+            $pdsch.recs[1].cc -ne 1 -or $pdsch.recs[1].crc_pass -ne 90 -or
+            $pdsch.recs[1].crc_fail -ne 10 -or $pdsch.recs[1].pass_bytes -ne 1100 -or
+            $pdsch.recs[1].bler_pct -ne 10) {
+            throw "Invalid B888 counter deltas for version $version, count $count"
+        }
+    }
+    if (([NrConfigTest]::Pdsch($version, 1, 8, 0, 0) | ConvertFrom-Json).recs.Count -ne 8) {
+        throw "B888 eight-row boundary failed for version $version"
+    }
+    if ([NrConfigTest]::Pdsch($version, 3, 2, 0, 0) -or
+        [NrConfigTest]::Pdsch($version, 9, 8, 0, 0) -or
+        [NrConfigTest]::Pdsch($version, 9, 9, 0, 0) -or
+        [NrConfigTest]::Pdsch($version, 1, 2, -1, 0) -or
+        [NrConfigTest]::Pdsch($version, 1, 2, 1, 0)) {
+        throw "Invalid B888 count or length accepted for version $version"
+    }
+}
+foreach ($fault in 1..4) {
+    if ([NrConfigTest]::Pdsch(0x30001, 1, 2, 0, $fault)) {
+        throw "Malformed B888 fixed-capacity row accepted: $fault"
+    }
+}
+if ([NrConfigTest]::Pdsch(0x30002, 1, 2, 0, 0)) { throw 'Unsupported B888 version accepted' }
+Write-Output 'PASS B888: versions 2.2/3.0/3.1, per-carrier deltas, 2/8-row variants, zero/smaller counts, invalid count/length/carrier/counter rejection'
+
+foreach ($case in @(
+    @{ Version = 0x30000; Fault = 1; At = 1500 },
+    @{ Version = 0x20002; Fault = 2; At = 1500 },
+    @{ Version = 0x30001; Fault = 3; At = 900 },
+    @{ Version = 0x30002; Fault = 0; At = 1500 }
+)) {
+    $pdsch = [NrConfigTest]::PdschAfterRejected($case.Version, $case.Fault, $case.At) | ConvertFrom-Json
+    if ($pdsch.recs.Count -ne 2 -or $pdsch.dt_ms -ne 1000 -or
+        $pdsch.recs[1].crc_pass -ne 90 -or $pdsch.recs[1].pass_bytes -ne 1100) {
+        throw "Rejected B888 version $($case.Version) or fault $($case.Fault) reset the valid counter baseline"
+    }
+}
+Write-Output 'PASS B888 rejection isolation: bad rows, another version and a backward timestamp preserve the last valid deltas'
 
 $snr = [NrConfigTest]::Snr(1, 293, 0x30002, 0, 28, 10240, 12000) | ConvertFrom-Json
 if ($snr.carrier -ne 1 -or $snr.pci -ne 293 -or $snr.sinr -ne 10 -or $snr.rs -ne 'SSB' -or
@@ -125,6 +199,10 @@ $qmdl = @(
 [IO.File]::WriteAllText((Join-Path $target 'qmdl_stop_under_test.inc'), $qmdl)
 $live = Block 'static void on_log(unsigned char *ptr, int len) {' 'static void on_event('
 [IO.File]::WriteAllText((Join-Path $target 'diag_live_under_test.inc'), $live)
+$queueSource = Get-Content -LiteralPath (Join-Path $repo 'networksurvey/src/main/cpp/diag_queue.c') -Raw
+$priorityAt = $queueSource.IndexOf('int diag_code_priority(', [StringComparison]::Ordinal)
+if ($priorityAt -lt 0) { throw 'Missing production DIAG queue priority function' }
+[IO.File]::WriteAllText((Join-Path $target 'diag_priority_under_test.inc'), $queueSource.Substring($priorityAt))
 $liveMask = @(
     (Block 'struct code_info {' '#define MAX_CODES '),
     (Block 'static uint16_t k_qmdl_codes[]' '/* Optional live subscription'),
@@ -145,6 +223,8 @@ public static class QmdlStopTest {
     [DllImport(@"$dll", CallingConvention = CallingConvention.Cdecl)]
     public static extern int test_diag_live_without_recording();
     [DllImport(@"$dll", CallingConvention = CallingConvention.Cdecl)]
+    public static extern int test_diag_live_priority();
+    [DllImport(@"$dll", CallingConvention = CallingConvention.Cdecl)]
     public static extern int test_diag_live_masks();
     [DllImport(@"$dll", CallingConvention = CallingConvention.Cdecl)]
     public static extern int test_qmdl_stop();
@@ -153,6 +233,9 @@ public static class QmdlStopTest {
 $result = [QmdlStopTest]::test_diag_live_without_recording()
 if ($result) { throw "Live DIAG without QMDL test failed at line $result" }
 Write-Output 'PASS live DIAG: RRC, NAS and LTE measurement records are queued without recording or file writes'
+$result = [QmdlStopTest]::test_diag_live_priority()
+if ($result) { throw "Live DIAG priority routing failed at line $result" }
+Write-Output 'PASS live DIAG priority: counters use the low queue, RRC and measurement records use the high queue without recording'
 $result = [QmdlStopTest]::test_diag_live_masks()
 if ($result) { throw "Live DIAG mask test failed at line $result" }
 Write-Output 'PASS DIAG startup: validated 15-code base mask, separate live/QMDL codes, stepwise expansion and per-code fallback'

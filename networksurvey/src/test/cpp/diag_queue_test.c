@@ -1,11 +1,13 @@
 #include "../../main/cpp/diag_queue.c"
-#include <stdio.h>
 #include <string.h>
+#ifndef DIAG_QUEUE_HOST_DLL
+#include <stdio.h>
+#endif
 
-#define CHECK(cond) do { if (!(cond)) { fprintf(stderr, "FAIL %s:%d %s\n", __FILE__, __LINE__, #cond); return 1; } } while (0)
+#define CHECK(cond) do { if (!(cond)) return __LINE__; } while (0)
 
-int main(void) {
-    struct diag_queue q;
+static int run_queue_tests(void) {
+    static struct diag_queue q;
     struct diag_q_item it;
     uint8_t a[8] = {1,2,3,4,5,6,7,8};
     uint8_t b[4] = {9,9,9,9};
@@ -56,7 +58,7 @@ int main(void) {
 
     /* split-queue behaviour: a counter flood on the low priority queue must
        never evict a high-priority record, and the high queue drains first. */
-    struct diag_queue hi, lo;
+    static struct diag_queue hi, lo;
     diag_q_init(&hi);
     diag_q_init(&lo);
     CHECK(diag_q_push(&hi, a, 8));                 /* one RRC-class record */
@@ -66,6 +68,32 @@ int main(void) {
     CHECK(diag_q_count(&hi) == 1);                 /* high record survived */
     CHECK(diag_q_pop(&hi, &it) && it.len == 8 && it.data[0] == 1);
 
-    printf("diag_queue_test ok\n");
+    struct diag_epoch_barrier barrier = {0};
+    CHECK(diag_epoch_allows(&barrier, 0));
+    diag_epoch_mark(&barrier, 200);
+    CHECK(!diag_epoch_allows(&barrier, 0));
+    CHECK(!diag_epoch_allows(&barrier, 199));
+    CHECK(!diag_epoch_allows(&barrier, 200));
+    CHECK(diag_epoch_allows(&barrier, 201));
+    diag_epoch_mark(&barrier, 0);
+    CHECK(!diag_epoch_allows(&barrier, 300));
+    diag_epoch_mark(&barrier, 300);
+    CHECK(diag_epoch_allows(&barrier, 301));
+    diag_q_drop_epoch(&lo, 12);
+    CHECK(lo.stats.dropped == 2 && lo.stats.epoch_dropped == 1);
+    CHECK(lo.stats.dropped_bytes == 16);
+    diag_q_init(&lo);
+    CHECK(lo.stats.dropped == 0 && lo.stats.epoch_dropped == 0);
     return 0;
 }
+
+#ifdef DIAG_QUEUE_HOST_DLL
+__declspec(dllexport) int test_diag_queue(void) { return run_queue_tests(); }
+#else
+int main(void) {
+    int result = run_queue_tests();
+    if (result) fprintf(stderr, "diag_queue_test failed at line %d\n", result);
+    else printf("diag_queue_test ok\n");
+    return result != 0;
+}
+#endif

@@ -205,9 +205,9 @@ static void on_sig(int signo) {
 #include "diag_queue.c"
 #include "ims_logcat.c"
 
-/* Two decode queues split by log-code priority. L1/layer-2 counter logs burst
-   at a high rate and carry only repeated snapshots, so they go to the low
-   queue and absorb drops first. Everything else (RRC/NAS/measurement DB/
+/* Two decode queues split by log-code priority. High-rate periodic statistics
+   go to the low queue and absorb drops first. Per-TB/power/CQI samples are not
+   replayed, so their drops still mean missing coverage. RRC/NAS/measurement DB/
    serving) goes to the high queue so those records are never displaced by a
    counter flood. Both queues share g_dq_mu/g_dq_cv; the worker drains high
    before low. */
@@ -418,6 +418,22 @@ static void layout_seen(uint16_t code, uint32_t ver, const uint8_t *body, int bl
     struct jb j; jb_init(&j, "layout_seen");
     jb_add(&j, ",\"code\":\"0x%04X\",\"ver\":\"0x%x\",\"len\":%d", code, ver, blen);
     (void)body;
+    jb_emit(&j);
+}
+
+/* Report accepted fixed-capacity table variants once per code/version/length. */
+static void layout_variant(uint16_t code, uint32_t ver, int blen, int records) {
+    static struct { uint16_t code; uint32_t ver; int blen; } seen[16];
+    static int nseen;
+    for (int i = 0; i < nseen; i++)
+        if (seen[i].code == code && seen[i].ver == ver && seen[i].blen == blen) return;
+    if (nseen == 16) return;
+    seen[nseen].code = code;
+    seen[nseen].ver = ver;
+    seen[nseen++].blen = blen;
+    struct jb j; jb_init(&j, "layout_variant");
+    jb_add(&j, ",\"code\":\"0x%04X\",\"ver\":\"0x%x\",\"len\":%d,\"records\":%d",
+           code, ver, blen, records);
     jb_emit(&j);
 }
 
@@ -2470,22 +2486,21 @@ static void parse_nr_b888(const uint8_t *b, int n) {
     else if (rel_maj == 3 && rel_min == 1) { hdr = 20; nrec = b[7]; }
     else { unknown_layout(0xB888, ((uint32_t)rel_maj << 16 | (uint32_t)rel_min), b, n, "version"); return; }
     uint32_t version = rd32(b);
+    int nrec_used = nrec;
     if (nrec <= 0 || nrec > 8 || hdr + nrec * 72 != n) {
-        unknown_layout(0xB888, version, b, n, "PDSCH counters length");
-        return;
-    }
-    int64_t now = pkt_now_ms();
-    if (!g_pd_t || now < g_pd_t || now - g_pd_t > 6000 || g_pd_pci != g_nr.pci ||
-        g_pd_arfcn != g_nr.arfcn || g_pd_version != version) {
-        memset(g_pd_prev, 0, sizeof(g_pd_prev));
-        memset(g_pd_base, 0, sizeof(g_pd_base));
-        g_pd_pci = g_nr.pci;
-        g_pd_arfcn = g_nr.arfcn;
-        g_pd_version = version;
-        g_pd_t = now;
+        /* A fixed-capacity table can contain more rows than its active count.
+         * Keep rejecting invalid counts, partial rows and truncated tables. */
+        int derived = n > hdr ? (n - hdr) / 72 : 0;
+        int usable = n > hdr && (n - hdr) % 72 == 0 && derived >= 1 && derived <= 8;
+        if (usable && nrec <= 8 && derived > nrec) {
+            nrec_used = derived;
+        } else {
+            unknown_layout(0xB888, version, b, n, "PDSCH counters length");
+            return;
+        }
     }
     unsigned seen = 0;
-    for (int r = 0; r < nrec; r++) {
+    for (int r = 0; r < nrec_used; r++) {
         const uint8_t *p = b + hdr + r * 72;
         uint32_t cc = version == 0x30001 ? p[0] : rd32(p);
         if (cc > 7 || (seen & (1u << cc))) {
@@ -2499,10 +2514,21 @@ static void parse_nr_b888(const uint8_t *b, int n) {
         }
         seen |= 1u << cc;
     }
+    int64_t now = pkt_now_ms();
+    if (!g_pd_t || now < g_pd_t || now - g_pd_t > 6000 || g_pd_pci != g_nr.pci ||
+        g_pd_arfcn != g_nr.arfcn || g_pd_version != version) {
+        memset(g_pd_prev, 0, sizeof(g_pd_prev));
+        memset(g_pd_base, 0, sizeof(g_pd_base));
+        g_pd_pci = g_nr.pci;
+        g_pd_arfcn = g_nr.arfcn;
+        g_pd_version = version;
+        g_pd_t = now;
+    }
+    if (nrec_used != nrec) layout_variant(0xB888, version, n, nrec_used);
     for (int cc = 0; cc < 8; cc++) {
         if (!(seen & (1u << cc))) g_pd_prev[cc].valid = g_pd_base[cc].valid = 0;
     }
-    for (int r = 0; r < nrec; r++) {
+    for (int r = 0; r < nrec_used; r++) {
         const uint8_t *p = b + hdr + r * 72;
         uint32_t cc = version == 0x30001 ? p[0] : rd32(p);
         struct pdsch_acc a = { 1, rd32(p + 4), rd32(p + 8), rd32(p + 12), rd32(p + 16), rd32(p + 20),
@@ -3354,12 +3380,21 @@ static void parse_nr_b9a7(const uint8_t *b, int n) {
         return;
     }
     int count = b[count_at];
+    int count_used = count;
     if (count > MAX_CC || n != HEADER + count * STRIDE) {
-        unknown_layout(NR_CA_STATE_CODE, ver, b, n, "count/length");
-        return;
+        /* Only infer additional complete rows for an in-range active count.
+         * A shorter table remains truncation even if the count is oversized. */
+        int derived = n > HEADER ? (n - HEADER) / STRIDE : 0;
+        int usable = n > HEADER && (n - HEADER) % STRIDE == 0 && derived >= 1 && derived <= MAX_CC;
+        if (usable && count <= MAX_CC && derived > count) {
+            count_used = derived;
+        } else {
+            unknown_layout(NR_CA_STATE_CODE, ver, b, n, "count/length");
+            return;
+        }
     }
     uint32_t seen = 0;
-    for (int i = 0; i < count; i++) {
+    for (int i = 0; i < count_used; i++) {
         const uint8_t *c = b + HEADER + i * STRIDE;
         unsigned cc = c[0], dl = rd16(c + 4), ul = rd16(c + 16);
         unsigned pci = rd16(c + 2);
@@ -3376,11 +3411,12 @@ static void parse_nr_b9a7(const uint8_t *b, int n) {
         }
         seen |= 1U << cc;
     }
+    if (count_used != count) layout_variant(NR_CA_STATE_CODE, ver, n, count_used);
     layout_seen(NR_CA_STATE_CODE, ver, b, n);
     struct jb j; jb_init(&j, "nr_ca_state");
     jb_add(&j, ",\"rat\":\"NR\",\"src\":\"B9A7\",\"ver\":\"%u.%u\",\"tentative\":0,\"cc\":[",
            ver >> 16, ver & 0xffff);
-    for (int i = 0; i < count; i++) {
+    for (int i = 0; i < count_used; i++) {
         const uint8_t *c = b + HEADER + i * STRIDE;
         jb_add(&j, "%s{\"cc\":%u,\"pci\":%u,\"ssb_arfcn\":%lu,\"band\":%u,\"dl\":%u,\"ul\":%u}",
                i ? "," : "", (unsigned)c[0], (unsigned)rd16(c + 2), (unsigned long)rd32(c + 8),
@@ -4602,9 +4638,27 @@ static void logcat_stop(void) {
     }
 }
 
+static void nr_statistics_reset(void) {
+    memset(g_pd_prev, 0, sizeof(g_pd_prev));
+    memset(g_pd_base, 0, sizeof(g_pd_base));
+    g_pd_t = 0;
+    memset(g_nr_layer, 0, sizeof(g_nr_layer));
+    g_csf_t = 0;
+    g_csf_n = g_csf_cqi_sum = g_csf_reports = g_csf_skipped = g_csf_cc = 0;
+    g_csf_cqi_min = 99;
+    g_csf_cqi_max = -1;
+    memset(g_csf_rank, 0, sizeof(g_csf_rank));
+    g_dl_t = g_dl_last = g_ul_t = g_us_t = 0;
+    memset(g_dl, 0, sizeof(g_dl));
+    memset(g_ul, 0, sizeof(g_ul));
+    memset(g_us, 0, sizeof(g_us));
+    g_dl_bad = g_dl_other_rnti = g_us_bad = 0;
+}
+
 static void *decode_worker(void *arg) {
     (void)arg;
     uint8_t tmp[DIAG_Q_SLOT];
+    struct diag_epoch_barrier nr_epoch = {0};
     for (;;) {
         pthread_mutex_lock(&g_dq_mu);
         while (!g_stop && diag_q_empty(&g_dq) && diag_q_empty(&g_dq_lo))
@@ -4614,13 +4668,30 @@ static void *decode_worker(void *arg) {
             break;
         }
         struct diag_q_item it;
-        if (!diag_q_empty(&g_dq)) diag_q_pop(&g_dq, &it);
+        int high = !diag_q_empty(&g_dq);
+        if (high) diag_q_pop(&g_dq, &it);
         else diag_q_pop(&g_dq_lo, &it);
         uint16_t n = it.len;
         memcpy(tmp, it.data, n);
+        uint64_t timestamp = n >= 12 ? rd64(tmp + 4) : 0;
+        if (!high && !diag_epoch_allows(&nr_epoch, timestamp)) {
+            diag_q_drop_epoch(&g_dq_lo, n);
+            pthread_mutex_unlock(&g_dq_mu);
+            continue;
+        }
         pthread_mutex_unlock(&g_dq_mu);
         pthread_mutex_lock(&g_mu);
+        int previous_pci = g_nr.pci;
+        long previous_arfcn = g_nr.arfcn;
         handle_record(tmp, n);
+        if (high && (previous_pci != g_nr.pci || previous_arfcn != g_nr.arfcn)) {
+            diag_epoch_mark(&nr_epoch, timestamp);
+            nr_statistics_reset();
+        } else if (high && nr_epoch.active && !nr_epoch.timestamp && timestamp) {
+            /* An untimed transition stays closed until a timed high-priority
+               record provides a conservative boundary for later statistics. */
+            diag_epoch_mark(&nr_epoch, timestamp);
+        }
         pthread_mutex_unlock(&g_mu);
     }
     return NULL;
@@ -5173,6 +5244,7 @@ static void emit_status_locked(const char *state, int rc) {
     jb_add(&j, ",\"decode_queued_hi\":%u,\"decode_queued_lo\":%u,\"decode_dropped_hi\":%lu,\"decode_dropped_lo\":%lu",
            diag_q_count(&g_dq), diag_q_count(&g_dq_lo),
            g_dq.stats.dropped, g_dq_lo.stats.dropped);
+    jb_add(&j, ",\"decode_epoch_dropped\":%lu", g_dq_lo.stats.epoch_dropped);
     jb_add(&j, ",\"logcat_alive\":%d,\"logcat_fmt\":%s,\"logcat_sip\":%lu,\"logcat_rcs_skipped\":%lu,\"diag_ims_pkts\":%d",
            g_lc_alive, g_lc_fmt ? "true" : "false", g_lc_sip, g_lc_rcs, g_diag_ims_pkts);
     if (g_last_pkt_mono) jb_add(&j, ",\"last_pkt_age_s\":%lld",

@@ -15,6 +15,7 @@ struct diag_q_stats {
     unsigned long dropped;
     unsigned long dropped_bytes;
     unsigned long oversized;
+    unsigned long epoch_dropped;
     unsigned int high_water;
 };
 
@@ -36,10 +37,19 @@ int diag_q_pop(struct diag_queue *q, struct diag_q_item *item);
 int diag_q_empty(const struct diag_queue *q);
 unsigned diag_q_count(const struct diag_queue *q);
 
-/* Queue priority for a DIAG log code. Low-priority codes are periodic L1/layer-2
-   counters whose samples are replayed by the next frame; a drop there is
-   harmless. Everything else (RRC, NAS, measurement DB, serving) is high
-   priority and must not be displaced by a counter flood. */
+/* Raw modem timestamps keep old, identity-less statistics from being parsed
+   against a newer serving cell after high-priority records overtake them. */
+struct diag_epoch_barrier {
+    uint64_t timestamp;
+    int active;
+};
+void diag_epoch_mark(struct diag_epoch_barrier *barrier, uint64_t timestamp);
+int diag_epoch_allows(const struct diag_epoch_barrier *barrier, uint64_t timestamp);
+void diag_q_drop_epoch(struct diag_queue *q, uint16_t len);
+
+/* Periodic statistics use a separate queue to protect signalling/measurement
+   records from their bursts. Some are cumulative; per-TB/power/CQI samples
+   are not replayed, so drops still represent missing statistical coverage. */
 #define DIAG_PRIO_HIGH 0
 #define DIAG_PRIO_LOW 1
 int diag_code_priority(uint16_t code);
