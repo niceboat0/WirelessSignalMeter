@@ -157,6 +157,28 @@ Windows 下使用项目 NDK 直接执行协议、原始掩码备份与恢复测�
 读取失败时限制持久锁定、备份创建/写入/同步失败，以及 NR 备份失败与缺失标记区分。
 2026-11-18 两套主机测试通过，原实现会在新增备份回归中失败。
 
+## QMI 通道探测（qmi-probe）
+
+`networksurvey/src/main/cpp/qmi_probe.c` 是一个独立的 root 自检二进制，用来确认
+**QMI NAS 服务（0x03）在 QRTR 上是否可达**，再决定是否值得为锁频/锁小区写 QMI 路径。
+
+- 流程：`socket(AF_QIPCRTR)` → 发 QRTR `NEW_SERVER_LOOKUP` 解析 NAS 服务 → connect →
+  依次发 `NAS_GET_SERVING_SYSTEM`(0x0024) 与 `NAS_GET_RF_BAND_INFO`(0x0031)，逐步打印
+  `STEP socket/lookup/connect` 与每条 GET 的往返结果，最后 `VERDICT ready|fail`。
+- 消息构建是纯函数（`qmi_probe_msg.h`），主机测试可独立覆盖：
+
+```powershell
+.\networksurvey\src\test\cpp\test_qmi_probe_host.ps1
+```
+
+- 打包：`compileQmiProbe` 任务把二进制放进 APK 的 `lib/arm64-v8a/libwireless_qmi_probe.so`。
+  真机运行（需 root）：
+  `su -c 'exec <nativeLibraryDir>/libwireless_qmi_probe.so'`
+
+> 说明：QMI 是锁小区的第二条通道，与现有 EFS/NV 路径互为独立客户端，不干扰 RIL。
+> `VERDICT=ready` 才值得继续实现锁命令；`lookup`/`connect` 失败则维持 NV 路径。
+> 传输层从协议自写，未拷贝任何第三方（GPL）实现。
+
 ## 海外服务清理后的数据库迁移
 
 `SurveyDatabase` v14 -> v15 清理海外服务表和上传标记，但保留六类本地测量记录、
