@@ -390,6 +390,13 @@ static int cell_list(const char *text, uint8_t *data) {
     return count;
 }
 
+static int scs_encoding(const char *name) {
+    if (!name || !strcmp(name, "index")) return LB_SCS_INDEX;
+    if (!strcmp(name, "pow2")) return LB_SCS_POW2;
+    if (!strcmp(name, "enum") || !strcmp(name, "enum1")) return LB_SCS_ENUM1;
+    return -1;
+}
+
 /* Classic-NV dial tone: send NV read item 10 and see whether the modem
  * answers with a full-size reply (v95 on-device capture). Cheap capability
  * signal for devices whose EFS layout differs. */
@@ -519,29 +526,56 @@ static int execute(int argc, char **argv) {
     int size = 0;
     uint8_t m0 = 0x7f, m1 = 0x7f;
     uint32_t frequency, pci, band, scs;
-    if (!strcmp(operation, "freq") && argc == (nr ? 3 : 2)) {
+    if (!strcmp(operation, "freq") && (nr ? (argc == 3 || argc == 4) : argc == 2)) {
         if (!lb_number(argv[1], nr ? 3279165 : 262143, &frequency)) return fail("Invalid frequency.");
         if (nr) {
-            if (!frequency || !lb_number(argv[2], 120, &scs) || lb_scs(scs) < 0) return fail("Invalid NR SCS.");
-            lb_u32(data, frequency); lb_u32(data + 4, (uint32_t)lb_scs(scs));
+            int enc = scs_encoding(argc == 4 ? argv[3] : NULL);
+            uint16_t scs_value;
+            if (enc < 0) return fail("SCS encoding must be index, pow2 or enum.");
+            if (!frequency || !lb_number(argv[2], 240, &scs) || lb_scs_enc(scs, enc, &scs_value) < 0)
+                return fail("Invalid NR SCS.");
+            lb_u32(data, frequency); lb_u32(data + 4, scs_value);
             file = LB_NR_FREQ; size = 8; m0 = 0xff; m1 = 0x1f;
         } else {
             lb_u32(data + 28, frequency); lb_u32(data + 32, frequency);
             file = LB_LTE_FREQ; size = 36; m1 = 0x6f; sync_path = LB_LTE_DIR "/";
         }
-    } else if (lte && !strcmp(operation, "cell") && argc == 2) {
+    } else if (lte && !strcmp(operation, "cell") && (argc == 2 || argc == 3)) {
         int count = cell_list(argv[1], data);
         if (!count) return fail("Invalid LTE cell list.");
-        file = LB_LTE_CELL; size = count > 20 ? 244 : 164; m0 = 0xff; m1 = 0x1f;
-    } else if (nr && !strcmp(operation, "cell") && argc == 5) {
+        /* Item size is model-coupled: 164B = 20 slots, 244B = 30 slots, same
+         * NV item (cell_lock_list). Pioneer exposes them as two separate
+         * commands; here the 3rd argument pins it explicitly and the default
+         * keeps the historical auto rule. */
+        int slots = 0;
+        if (argc == 3) {
+            if (!strcmp(argv[2], "164")) slots = 20;
+            else if (!strcmp(argv[2], "244")) slots = 30;
+            else return fail("Cell list size must be 164 or 244.");
+        }
+        if (!slots) slots = count > 20 ? 30 : 20;
+        if (count > slots) return fail("Cell list exceeds the selected item size.");
+        file = LB_LTE_CELL; size = slots * 8 + 4; m0 = 0xff; m1 = 0x1f;
+    } else if (nr && (!strcmp(operation, "cell") || !strcmp(operation, "cell-multi")) &&
+            (argc == 5 || argc == 6)) {
+        int enc = scs_encoding(argc == 6 ? argv[5] : NULL);
+        uint16_t scs_value;
+        if (enc < 0) return fail("SCS encoding must be index, pow2 or enum.");
         if (!lb_number(argv[1], 512, &band) || !band ||
             !lb_number(argv[2], 3279165, &frequency) || !frequency ||
-            !lb_number(argv[3], 1007, &pci) || !lb_number(argv[4], 120, &scs) || lb_scs(scs) < 0)
+            !lb_number(argv[4], 240, &scs) || lb_scs_enc(scs, enc, &scs_value) < 0)
             return fail("Invalid NR cell parameters.");
-        lb_u32(data, pci); lb_u32(data + 4, frequency);
-        data[8] = (uint8_t)lb_scs(scs);
-        data[10] = (uint8_t)(band - 1); data[11] = (uint8_t)((band - 1) >> 8);
-        file = LB_NR_CELL; size = 12;
+        if (!strcmp(operation, "cell")) {
+            if (!lb_number(argv[3], 1007, &pci)) return fail("Invalid NR cell parameters.");
+            lb_u32(data, pci); lb_u32(data + 4, frequency);
+            data[8] = (uint8_t)scs_value; data[9] = (uint8_t)(scs_value >> 8);
+            data[10] = (uint8_t)(band - 1); data[11] = (uint8_t)((band - 1) >> 8);
+            file = LB_NR_CELL; size = 12;
+        } else {
+            if (!lb_nr_cell_record(data, argv[3], frequency, scs_value, band))
+                return fail("Invalid NR PCI list (1..8 PCIs).");
+            file = LB_NR_CELL; size = 28; m0 = 0xff; m1 = 0x1f;
+        }
     } else return fail("Unknown command or argument count.");
     if (put_file(dir, file, sync_path, data, size, m0, m1, 0)) return 1;
     return reboot_modem();

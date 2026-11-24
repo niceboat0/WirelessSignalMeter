@@ -8,7 +8,7 @@
 
 - 支持 Root 下的 Qualcomm diag-router 抽象 SOCK_SEQPACKET 通道。原报告的实测设备是三星 SM-S9370，不能将该结果视为所有高通、三星或其他厂商均已适配。
 - LTE 频段范围 1–64，NR 位图容量为 1–512；数值范围不代表设备支持这些频段。
-- 支持 LTE/NR 单频点、单小区和自动/LTE/NR 网络制式。NR SCS 为 15/30/60/120 kHz。
+- 支持 LTE/NR 单频点、单小区和自动/LTE/NR 网络制式。NR SCS 为 15/30/60/120 kHz；240 kHz 仅在 pow2/enum 编码下提供（2026-11-24 扩充，见文末）。
 - 网络操作作用于协议中的主协议栈，未提供 SIM 卡选择。没有移植固定 Binder transaction 94。
 - 首次锁频段必须完整读取本机原掩码并持久保存，LTE 8 字节、NR 64 字节。恢复使用这份备份，不包含上游的特定运营商默认全集或强制写入回退。
 - EFS 写入遵循 MKDIR、PUT、SYNC 序列，收到匹配 transaction ID 和 command 的确认后请求 modem SSR。制式切换走 CM 帧。发送 SSR 只代表请求已发出，实际驻留需真机核对。
@@ -109,3 +109,41 @@ Windows 复现（使用项目 NDK 27.3.13750724）：
 依赖商用路测软件、授权或加固分析才能得到的路径只保留在参考文档中，不在本工具里实现。开发与测试不得向已连接手机自动下发锁频命令。
 
 分类单测见 `networksurvey/src/test/java/com/craxiom/networksurvey/ui/bandlock/BandLockProfileTest.kt`。
+
+## 2026-11-24 锁小区能力扩充（依据 Pioneer 10.7 静态逆向）
+
+依据 diag-research `reports/pioneer_lock_matrix.md` §7 与桌面《Pioneer锁频研究成果_2026-11-24.md》§七。三项来源（Pioneer `FUN_10041460`/`FUN_10041590`、ZTE T-Phone `CellLockList`/`MultPciLock`/`PciLockInfo`、本工具）在 LTE 与 NR 记录布局上逐字节一致。
+
+### 新增/扩展的命令形态
+
+| 命令 | 说明 |
+|---|---|
+| `lte-cell <EARFCN:PCI[,...]> [164\|244]` | 整项长度可选。164B = 20 槽、244B = 30 槽，是同一个 `cell_lock_list`（4 + n×8，首 u32 = 条数）；不指定时沿用历史规则（超过 20 条用 244） |
+| `nr-cell <band> <NARFCN> <PCI> <scs> [index\|pow2\|enum]` | 12B 单小区记录 `[PCI u32][NARFCN u32][SCS u16][Band−1 u16]`；新增 SCS 编码选择与 240 kHz |
+| `nr-cell-multi <band> <NARFCN> <PCI[,PCI...]> <scs> [index\|pow2\|enum]` | 28B 多 PCI 记录 `[u8 条数][u8 0][u16 PCI×8][u16 0][u32 NARFCN][u16 SCS][u16 Band−1]`，一条记录 = 一个 ARFCN 携带最多 8 个 PCI |
+| `nr-freq <NARFCN> <scs> [index\|pow2\|enum]` | 8B 记录同样支持编码选择与 240 kHz |
+
+### SCS 编码
+
+Pioneer 两代命令与 T-Phone 三套编码互相矛盾（静态无法判定 modem 采哪套）：
+
+| 编码 | 15K | 30K | 60K | 120K | 240K | 来源 |
+|---|---|---|---|---|---|---|
+| `index`（默认） | 0 | 1 | 2 | 3 | — | Pioneer 0x2AB00；历史写法，字节不变 |
+| `pow2` | 1 | 2 | 4 | 8 | 16 | Pioneer 0x2AB01 |
+| `enum` | 1 | 2 | 3 | 4 | 5 | ZTE T-Phone |
+
+默认仍为 `index`，因此既有调用（Kotlin `BandLockCommand` 传 `nr-cell … 30` 等）产生的字节与升级前完全相同；新编码只在新参数下出现。
+
+### 边界
+
+- 28B 分支在 Pioneer 里按 15 个 DeviceID 白名单触发，手机侧查不到该白名单，因此 `nr-cell-multi` 由调用方显式选择，不做自动探测。
+- 未实现 896B（32 条记录）整项写入：Pioneer 只写单条 28B，896B 仅见于 T-Phone，缺实机证据。
+- `lte-cell-clear` 仍会一并删除 `csp/pci_lock`（历史行为）；Pioneer 解锁只删 `cell_lock_list`，此差异已知且风险低。
+
+### 验证
+
+- NDK 27.3.13750724 clang `-std=gnu11 -Wall -Wextra -Werror -O2` 编译通过，无告警。
+- `src/test/cpp/band_lock_protocol_test.c` 新增 SCS 三套编码与 28B 记录布局用例（含空表、超 8 个 PCI、尾逗号、PCI 越界、band=0 的拒绝路径）。
+- `networksurvey/src/test/cpp/test_band_lock_host.ps1`：协议测试与备份测试全部 PASS。
+- 未做实机验证：164/244 选择、SCS 编码、28B 多 PCI 均需按 §七 第 9 节矩阵在 SM-S9370 上实测。

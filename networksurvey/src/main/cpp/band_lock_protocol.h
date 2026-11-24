@@ -69,6 +69,40 @@ static int lb_bands(const char *s, int max, uint8_t *mask, int bytes) {
     return 1;
 }
 
+/* 28-byte nr5g/RRC/pci_lock_info record (multi-PCI family). Pioneer 10.7
+ * FUN_10041590 writes it for a 15-entry DeviceID whitelist and ZTE T-Phone
+ * MultPciLock lays out the same 32-record item byte for byte:
+ *   u8 count | u8 0 | u16 PCI[8] | u16 0 | u32 NARFCN | u16 SCS | u16 Band-1
+ * One record = one ARFCN carrying up to 8 PCIs. Returns 28 or 0 on bad input.
+ * Kept free of CRT helpers so the freestanding host tests can cover it. */
+static int lb_nr_cell_record(uint8_t *out, const char *pci_list, uint32_t arfcn,
+        uint16_t scs, uint32_t band) {
+    for (int i = 0; i < 28; i++) out[i] = 0;
+    if (!pci_list || !*pci_list || band == 0 || band > 1024) return 0;
+    int count = 0;
+    while (*pci_list) {
+        char word[5];
+        int n = 0;
+        while (*pci_list && *pci_list != ',') {
+            if (n == 4) return 0;
+            word[n++] = *pci_list++;
+        }
+        word[n] = 0;
+        uint32_t pci;
+        if (!lb_number(word, 1007, &pci) || count == 8) return 0;
+        out[2 + count * 2] = (uint8_t)pci;
+        out[3 + count * 2] = (uint8_t)(pci >> 8);
+        count++;
+        if (*pci_list == ',' && !*++pci_list) return 0;
+    }
+    if (!count) return 0;
+    out[0] = (uint8_t)count;
+    lb_u32(out + 20, arfcn);
+    out[24] = (uint8_t)scs; out[25] = (uint8_t)(scs >> 8);
+    out[26] = (uint8_t)(band - 1); out[27] = (uint8_t)((band - 1) >> 8);
+    return 28;
+}
+
 static int lb_scs(uint32_t khz) {
     switch (khz) {
         case 15: return 0;
@@ -77,6 +111,39 @@ static int lb_scs(uint32_t khz) {
         case 120: return 3;
         default: return -1;
     }
+}
+
+/* SCS-TYPE field encodings seen in the wild for nr5g/RRC/pci_lock_info and
+ * earfcn_lock. The u16 is written verbatim; which one a given modem honours
+ * cannot be decided statically (four implementations disagree):
+ *   index : 0..4   = 15/30/60/120/240 kHz   (Pioneer 0x2AB00 accepts 0..3)
+ *   pow2  : 1/2/4/8/16                      (Pioneer 0x2AB01)
+ *   enum1 : 1..5  = 15/30/60/120/240 kHz    (ZTE T-Phone lock library)
+ * The default route stays "index" so previously validated writes are
+ * byte-identical. */
+enum { LB_SCS_INDEX = 0, LB_SCS_POW2 = 1, LB_SCS_ENUM1 = 2 };
+
+static int lb_scs_enc(uint32_t khz, int enc, uint16_t *out) {
+    if (enc == LB_SCS_INDEX) {
+        /* keep the historically validated 15/30/60/120 mapping untouched */
+        int index = lb_scs(khz);
+        if (index < 0) return -1;
+        *out = (uint16_t)index;
+        return 0;
+    }
+    int index;
+    switch (khz) {
+        case 15: index = 0; break;
+        case 30: index = 1; break;
+        case 60: index = 2; break;
+        case 120: index = 3; break;
+        case 240: index = 4; break;
+        default: return -1;
+    }
+    if (enc == LB_SCS_POW2) *out = (uint16_t)(1u << index);
+    else if (enc == LB_SCS_ENUM1) *out = (uint16_t)(index + 1);
+    else return -1;
+    return 0;
 }
 
 static int lb_mkdir(uint8_t *out, const char *path, uint8_t a, uint8_t b) {

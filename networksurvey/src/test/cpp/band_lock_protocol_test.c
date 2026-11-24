@@ -25,6 +25,33 @@ __declspec(dllexport) int test_band_lock_protocol(void) {
     CHECK(!lb_number("999999999999999", 3279165, &number));
     CHECK(!lb_number("-1", 1007, &number));
     CHECK(lb_scs(30) == 1 && lb_scs(240) < 0);
+    /* SCS field encodings: index keeps the validated 15..120 set, pow2 and
+     * enum1 additionally cover 240 kHz (Pioneer 0x2AB01 / ZTE T-Phone). */
+    uint16_t scs_value;
+    CHECK(lb_scs_enc(30, LB_SCS_INDEX, &scs_value) == 0 && scs_value == 1);
+    CHECK(lb_scs_enc(240, LB_SCS_INDEX, &scs_value) < 0);
+    CHECK(lb_scs_enc(15, LB_SCS_POW2, &scs_value) == 0 && scs_value == 1);
+    CHECK(lb_scs_enc(60, LB_SCS_POW2, &scs_value) == 0 && scs_value == 4);
+    CHECK(lb_scs_enc(240, LB_SCS_POW2, &scs_value) == 0 && scs_value == 16);
+    CHECK(lb_scs_enc(15, LB_SCS_ENUM1, &scs_value) == 0 && scs_value == 1);
+    CHECK(lb_scs_enc(240, LB_SCS_ENUM1, &scs_value) == 0 && scs_value == 5);
+    CHECK(lb_scs_enc(241, LB_SCS_ENUM1, &scs_value) < 0);
+    /* 28-byte NR pci_lock_info record (Pioneer 28B branch == T-Phone MultPciLock):
+     * u8 count | u8 0 | u16 PCI[8] | u16 0 | u32 NARFCN | u16 SCS | u16 Band-1 */
+    CHECK(lb_nr_cell_record(data, "42", 504990, 1, 78) == 28);
+    CHECK(data[0] == 1 && data[1] == 0);
+    CHECK(data[2] == 42 && data[3] == 0 && data[4] == 0 && data[19] == 0);
+    CHECK(lb_read32(data + 20) == 504990);
+    CHECK(data[24] == 1 && data[25] == 0);
+    CHECK(data[26] == 77 && data[27] == 0);
+    CHECK(lb_nr_cell_record(data, "42,43,600", 504990, 2, 78) == 28);
+    CHECK(data[0] == 3 && data[2] == 42 && data[4] == 43);
+    CHECK(data[6] == (uint8_t)(600 & 0xff) && data[7] == (uint8_t)(600 >> 8) && data[8] == 0);
+    CHECK(!lb_nr_cell_record(data, "", 504990, 1, 78));
+    CHECK(!lb_nr_cell_record(data, "1,2,3,4,5,6,7,8,9", 504990, 1, 78));
+    CHECK(!lb_nr_cell_record(data, "42,", 504990, 1, 78));
+    CHECK(!lb_nr_cell_record(data, "1008", 504990, 1, 78));
+    CHECK(!lb_nr_cell_record(data, "42", 504990, 1, 0));
     mask[0] = 0x10;
     int size = lb_put(data, LB_LTE_BANDS, mask, 8, 1);
     CHECK(lb_read32(data) == 0x0026134b);
