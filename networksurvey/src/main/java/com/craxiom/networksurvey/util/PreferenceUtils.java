@@ -63,6 +63,9 @@ public class PreferenceUtils
      */
     private static final int MAX_ROLLOVER_SIZE_MB = 200;
 
+    private static final String INTENT_CONTROL_CONSENT_VERSION = "intent_control_consent_version";
+    private static final int CURRENT_INTENT_CONTROL_CONSENT_VERSION = 1;
+
     /**
      * Applies minimum and maximum scan rate validation.
      * - Maximum: 12 hours to prevent integer overflow when converting to milliseconds
@@ -363,6 +366,26 @@ public class PreferenceUtils
     }
 
     /**
+     * Requires fresh local consent once, because older releases persisted an enabled default.
+     * MDM restrictions are not modified. Call before initializing the settings screen.
+     */
+    public static synchronized boolean migrateIntentControlPreference(Context context)
+    {
+        final SharedPreferences preferences = PreferenceManager.getDefaultSharedPreferences(context);
+        if (preferences.getInt(INTENT_CONTROL_CONSENT_VERSION, 0) >= CURRENT_INTENT_CONTROL_CONSENT_VERSION)
+        {
+            return true;
+        }
+
+        final boolean saved = preferences.edit()
+                .putBoolean(NetworkSurveyConstants.PROPERTY_ALLOW_INTENT_CONTROL, false)
+                .putInt(INTENT_CONTROL_CONSENT_VERSION, CURRENT_INTENT_CONTROL_CONSENT_VERSION)
+                .commit();
+        if (!saved) Timber.w("Could not persist the external intent control consent migration");
+        return saved;
+    }
+
+    /**
      * Gets the preference for allowing intent control.
      * <p>
      * First, this method tries to pull the MDM provided allow intent control value. If it is not set (either because the device
@@ -395,8 +418,12 @@ public class PreferenceUtils
 
         final SharedPreferences preferences = PreferenceManager.getDefaultSharedPreferences(context);
 
-        // Next, try to use the value from user preferences, with a default fallback
-        return preferences.getBoolean(NetworkSurveyConstants.PROPERTY_ALLOW_INTENT_CONTROL, true);
+        // Historical local defaults are not evidence of consent. Explicit MDM values above still apply.
+        if (preferences.getInt(INTENT_CONTROL_CONSENT_VERSION, 0) < CURRENT_INTENT_CONTROL_CONSENT_VERSION)
+        {
+            return false;
+        }
+        return preferences.getBoolean(NetworkSurveyConstants.PROPERTY_ALLOW_INTENT_CONTROL, false);
     }
 
     /**

@@ -2,6 +2,7 @@ package com.craxiom.networksurvey.ui.bandlock
 
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -100,11 +101,11 @@ class BandLockCommandTest {
             BandLockOutcome(0, "RESULT restart_sent\n"), BandLockOutcome(2, ""), BandLockOutcome(0, "RESULT accepted\n"),
         ))
         val result = BandLockCommand.apply(LockRadio.Nr, LockTarget.Frequency, "", "627264", "", 30)
-            .executeWithMode(pause = { steps.add("wait $it") }) {
+            .executeWithMode(pause = { steps.add("wait $it") }, onModemRestartRequested = { steps.add("recover") }) {
                 steps.add(it.arguments.joinToString(" "))
                 outcomes.removeFirst()
             }
-        assertEquals(listOf("nr-freq 627264 30", "wait 5000", "mode nr", "wait 2000", "mode nr"), steps)
+        assertEquals(listOf("nr-freq 627264 30", "recover", "wait 5000", "mode nr", "wait 2000", "mode nr"), steps)
         assertEquals(true, result.modeConfirmed)
     }
 
@@ -125,6 +126,14 @@ class BandLockCommandTest {
             assertEquals(listOf(command), commands)
             assertEquals(null, result.modeConfirmed)
         }
+    }
+
+    @Test
+    fun unverifiedBaselineIsNotAWriteOrRestart() {
+        val outcome = BandLockOutcome(1, "RESULT baseline_unverified\n")
+        assertTrue(outcome.baselineUnverified)
+        assertFalse(outcome.accepted)
+        assertFalse(outcome.restartRequested)
     }
 
     @Test

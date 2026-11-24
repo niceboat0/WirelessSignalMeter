@@ -1,7 +1,5 @@
 package com.craxiom.networksurvey.update
 
-import android.content.Intent
-import android.net.Uri
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -14,17 +12,17 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.craxiom.networksurvey.R
 
 /**
- * 软件更新提示弹窗：展示新版本信息、更新日志，支持立即下载、浏览器下载与忽略版本。
+ * 软件更新提示弹窗：展示新版本信息、更新日志，下载统一经过安全校验。
  */
 @Composable
 fun UpdateDialog(
@@ -33,7 +31,6 @@ fun UpdateDialog(
     onDownload: () -> Unit,
     onIgnore: (() -> Unit)? = null
 ) {
-    val context = LocalContext.current
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
@@ -77,7 +74,7 @@ fun UpdateDialog(
         },
         confirmButton = {
             Button(onClick = onDownload) {
-                Text("立即更新")
+                Text(if (UpdateDownloader.isReady(version)) stringResource(R.string.update_install_now) else "立即更新")
             }
         },
         dismissButton = {
@@ -88,14 +85,6 @@ fun UpdateDialog(
                     TextButton(onClick = onIgnore) {
                         Text("忽略此版本")
                     }
-                }
-                OutlinedButton(
-                    onClick = {
-                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(version.apkUrl))
-                        context.startActivity(intent)
-                    }
-                ) {
-                    Text("浏览器下载")
                 }
                 if (!version.forceUpdate) {
                     TextButton(onClick = onDismiss) {

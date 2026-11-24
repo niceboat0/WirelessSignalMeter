@@ -31,8 +31,8 @@ import androidx.preference.PreferenceManager;
 import com.craxiom.networksurvey.constants.NetworkSurveyConstants;
 import com.craxiom.networksurvey.lang.LocaleManager;
 import com.craxiom.networksurvey.services.watchlist.WatchlistNotificationHelper;
-import com.craxiom.networksurvey.update.UpdateDownloader;
 import com.craxiom.networksurvey.util.AppLogger;
+import com.craxiom.networksurvey.util.PreferenceUtils;
 import com.craxiom.networksurvey.util.ThemePref;
 
 import android.os.Build;
@@ -84,6 +84,7 @@ public class Application extends android.app.Application
         AppLogger.init(this);
         AppLogger.i("App", "启动 v" + BuildConfig.VERSION_NAME + " device=" + Build.MANUFACTURER + " " + Build.MODEL + " API=" + Build.VERSION.SDK_INT);
         mPrefs = PreferenceManager.getDefaultSharedPreferences(this);
+        PreferenceUtils.migrateIntentControlPreference(this);
 
         // Material You（Monet）动态取色：在 Activity 创建前统一应用（XML 层：preference/dialog/fragment）
         // - Android 12（API 31）+：从系统壁纸提取主色，覆盖到当前 Activity 主题；
@@ -115,9 +116,6 @@ public class Application extends android.app.Application
             @Override public void onActivitySaveInstanceState(@NonNull Activity activity, @NonNull Bundle outState) {}
             @Override public void onActivityDestroyed(@NonNull Activity activity) {}
         });
-
-        // 注册更新下载完成广播（自动安装新版本）
-        UpdateDownloader.INSTANCE.register(this);
 
         // Map SDK initialization is owned by BaiduMapView, before constructing a map.
         new Thread(() -> {

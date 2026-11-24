@@ -16,6 +16,81 @@
 
 static uint32_t client_id, transaction = 0x80;
 static int router = -1, state_dir = -1;
+static int have_device;
+static char device_model[256], device_soc[256], device_fingerprint[256];
+
+static int write_backup_origin(void) {
+    int n, ok, fd;
+    char buf[1024];
+    if (!have_device) return 0;
+    fd = openat(state_dir, "backup-origin", O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+    if (fd < 0) return errno == EEXIST ? 0 : 1;
+    n = snprintf(buf, sizeof(buf), "model=%s\nsoc=%s\nfingerprint=%s\n",
+        device_model, device_soc, device_fingerprint);
+    ok = n > 0 && n < (int)sizeof(buf) && write(fd, buf, (size_t)n) == n && fsync(fd) == 0;
+    close(fd);
+    if (!ok) {
+        unlinkat(state_dir, "backup-origin", 0);
+        return 1;
+    }
+    return fsync(state_dir) == 0 ? 0 : 1;
+}
+
+static int origin_line(const char *text, const char *key, char *dst, size_t cap) {
+    size_t k = strlen(key);
+    const char *p = text;
+    while (*p) {
+        const char *end = strchr(p, '\n');
+        size_t len = end ? (size_t)(end - p) : strlen(p);
+        if (len > k && !strncmp(p, key, k) && p[k] == '=') {
+            size_t v = len - k - 1;
+            if (!v || v >= cap) return 1;
+            memcpy(dst, p + k + 1, v);
+            dst[v] = 0;
+            if (dst[v - 1] == '\r') dst[v - 1] = 0;
+            return 0;
+        }
+        p = end ? end + 1 : p + len;
+    }
+    return 1;
+}
+
+static int backup_origin_conflict(void) {
+    char buf[1024], model[256], soc[256], fingerprint[256];
+    ssize_t n;
+    int fd;
+    if (!have_device) return 0;
+    fd = openat(state_dir, "backup-origin", O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0) return 0;
+    n = read(fd, buf, sizeof(buf) - 1);
+    close(fd);
+    if (n <= 0) return 1;
+    buf[n] = 0;
+    if (origin_line(buf, "model", model, sizeof(model)) ||
+        origin_line(buf, "soc", soc, sizeof(soc)) ||
+        origin_line(buf, "fingerprint", fingerprint, sizeof(fingerprint)))
+        return 1;
+    return strcmp(model, device_model) || strcmp(soc, device_soc) ||
+        strcmp(fingerprint, device_fingerprint);
+}
+
+static int load_session_identity(void) {
+    char buf[1024];
+    ssize_t n;
+    int fd = openat(state_dir, "session-identity", O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0) return 0;
+    n = read(fd, buf, sizeof(buf) - 1);
+    close(fd);
+    unlinkat(state_dir, "session-identity", 0);
+    if (n <= 0) return 1;
+    buf[n] = 0;
+    if (origin_line(buf, "model", device_model, sizeof(device_model)) ||
+        origin_line(buf, "soc", device_soc, sizeof(device_soc)) ||
+        origin_line(buf, "fingerprint", device_fingerprint, sizeof(device_fingerprint)))
+        return 1;
+    have_device = 1;
+    return 0;
+}
 
 static int fail(const char *message) {
     fprintf(stderr, "%s\n", message);
@@ -158,6 +233,99 @@ static int read_mask(const char *path, int bytes, uint8_t *mask) {
     return read_mask_to(path, bytes, mask, 64, 3000);
 }
 
+/* Read only the two fixed cell-lock items supported by the probe commands. */
+static int efs_read(const char *path, uint8_t *out, int cap, int *size) {
+    uint8_t payload[200], response[8192];
+    uint32_t tx, fd = 0;
+    int n = lb_efs_open(payload, path);
+    if (n >= (int)sizeof(payload) || send_frame(payload, n, &tx)) return 1;
+    int opened = 0;
+    long long deadline = monotonic_ms() + 3000;
+    while (monotonic_ms() < deadline) {
+        int length = receive(response, sizeof(response), 300);
+        if (length <= 0) continue;
+        int at = lb_find_reply(response, length, 0x0002134b);
+        if (at < 0 || length != at + 8) continue;
+        fd = lb_read32(response + at);
+        if (lb_read32(response + at + 4)) return 2;
+        opened = 1;
+        break;
+    }
+    if (!opened) return 1;
+    int total = 0, rc = 0;
+    while (total < cap) {
+        int want = cap - total;
+        if (want > 1024) want = 1024;
+        n = lb_efs_read(payload, fd, (uint32_t)want, (uint32_t)total);
+        if (send_frame(payload, n, &tx)) { rc = 1; break; }
+        int got = -1;
+        deadline = monotonic_ms() + 3000;
+        while (monotonic_ms() < deadline) {
+            int length = receive(response, sizeof(response), 300);
+            if (length <= 0) continue;
+            int at = lb_find_reply(response, length, 0x0004134b);
+            if (at < 0 || length < at + 16 || lb_read32(response + at) != fd ||
+                lb_read32(response + at + 4) != (uint32_t)total) continue;
+            uint32_t err = lb_read32(response + at + 12);
+            uint32_t count = lb_read32(response + at + 8);
+            if (err) { got = -2; break; }
+            if (count > (uint32_t)want || count > (uint32_t)(length - at - 16)) continue;
+            for (uint32_t i = 0; i < count; i++) out[total + i] = response[at + 16 + i];
+            got = (int)count;
+            break;
+        }
+        if (got < 0) { rc = (got == -2) ? 2 : 1; break; }
+        total += got;
+        if (got < want) break;
+    }
+    lb_efs_close(payload, fd);
+    send_frame(payload, 8, &tx);
+    *size = total;
+    return rc ? rc : (total > 0 && total < cap ? 0 : 1);
+}
+
+static int efs_stat_size(const char *path, int *size, uint32_t *mode) {
+    uint8_t payload[200], response[8192];
+    int n = lb_efs_stat(payload, path);
+    uint32_t tx;
+    if (n >= (int)sizeof(payload) || send_frame(payload, n, &tx)) return 1;
+    long long deadline = monotonic_ms() + 2500;
+    while (monotonic_ms() < deadline) {
+        int length = receive(response, sizeof(response), 300);
+        if (length <= 0) continue;
+        int at = lb_find_reply(response, length, 0x000f134b);
+        if (at < 0 || length != at + 28) continue;
+        if (lb_read32(response + at)) return 2;
+        *mode = lb_read32(response + at + 4);
+        *size = (int)lb_read32(response + at + 8);
+        return 0;
+    }
+    return 1;
+}
+
+static int item_probe(const char *label, const char *path, int *size_out) {
+    uint32_t mode = 0;
+    int size = 0;
+    if (efs_stat_size(path, &size, &mode) == 0) {
+        printf("RESULT %s size=%d\n", label, size);
+        printf("MODE %s 0%o item=%d\n", label, (unsigned)mode,
+            (mode & 0170000u) == 0160000u);
+        *size_out = size;
+        return 0;
+    }
+    static uint8_t buf[1024];
+    int rc = efs_read(path, buf, (int)sizeof(buf), &size);
+    if (rc) {
+        printf("RESULT %s read_failed rc=%d\n", label, rc);
+        return 1;
+    }
+    printf("RESULT %s size=%d\nHEX %s ", label, size, label);
+    for (int i = 0; i < size; i++) printf("%02x", buf[i]);
+    printf("\n");
+    *size_out = size;
+    return 0;
+}
+
 static int restore_mask(const char *name, int bytes, uint8_t *mask) {
     int fd = openat(state_dir, name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
     if (fd < 0) return 1;
@@ -172,6 +340,8 @@ static int restore_mask(const char *name, int bytes, uint8_t *mask) {
 /* Only an unreadable modem baseline returns 2; local persistence errors return 1. */
 static int backup_mask(const char *path, const char *name, int bytes) {
     uint8_t original[64];
+    if (backup_origin_conflict())
+        return fail("The band backup does not match this device. No band changes were made.");
     if (!restore_mask(name, bytes, original)) return 0;
     if (read_mask(path, bytes, original)) return 2;
     int fd = openat(state_dir, name, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
@@ -183,6 +353,10 @@ static int backup_mask(const char *path, const char *name, int bytes) {
         return fail("Cannot persist the original band backup; no band changes were made.");
     }
     if (fsync(state_dir)) return fail("Cannot sync the backup directory; no band changes were made.");
+    if (write_backup_origin()) {
+        unlinkat(state_dir, name, 0);
+        return fail("Cannot persist the band backup identity; no band changes were made.");
+    }
     puts("Original band mask backed up.");
     return 0;
 }
@@ -206,11 +380,56 @@ static int remove_file(const char *path, const char *dir) {
     return exchange(payload, size, LB_ACK_LOOSE, 0, 0, 0);
 }
 
-static int reboot_modem(void) {
+static void observe_modem_restart(void) {
+    uint8_t response[8192];
+    long long start = monotonic_ms();
+    int echo = 0;
+    for (;;) {
+        long long elapsed = monotonic_ms() - start;
+        if (elapsed >= 2000) break;
+        struct pollfd event = { .fd = router, .events = POLLIN };
+        int result = poll(&event, 1, (int)(2000 - elapsed));
+        if (result < 0 && errno == EINTR) continue;
+        if (result == 0) break;
+        if (result < 0) {
+            printf("SSR observe=poll_failed errno=%d\n", errno);
+            return;
+        }
+        if (event.revents & (POLLERR | POLLHUP | POLLNVAL)) {
+            printf("SSR observe=router_event flags=0x%x elapsed_ms=%lld\n",
+                (unsigned)event.revents, monotonic_ms() - start);
+            return;
+        }
+        if (event.revents & POLLIN) {
+            ssize_t bytes = recv(router, response, sizeof(response), MSG_DONTWAIT);
+            if (bytes < 0 && (errno == EAGAIN || errno == EINTR)) continue;
+            if (bytes <= 0) {
+                printf("SSR observe=%s errno=%d elapsed_ms=%lld\n",
+                    bytes == 0 ? "router_closed" : "recv_failed",
+                    bytes == 0 ? 0 : errno, monotonic_ms() - start);
+                return;
+            }
+            if (!echo && lb_find_reply(response, (int)bytes, 0x0003254b) >= 0) {
+                echo = 1;
+                printf("SSR observe=command_echo elapsed_ms=%lld\n", monotonic_ms() - start);
+            }
+        }
+    }
+    printf("SSR observe=window_elapsed echo=%d; modem_restart_unconfirmed\n", echo);
+}
+
+static int reboot_modem(int observe) {
     const uint8_t frame[4] = {0x4b, 0x25, 0x03, 0x00};
     uint32_t tx;
     sleep(2);
-    if (send_frame(frame, sizeof(frame), &tx)) return fail("Files were updated, but the modem restart command failed.");
+    if (send_frame(frame, sizeof(frame), &tx)) {
+        if (observe) printf("SSR send=failed errno=%d\n", errno);
+        return fail("Files were updated, but the modem restart command failed.");
+    }
+    if (observe) {
+        printf("SSR send=sent tx=%u\n", tx);
+        observe_modem_restart();
+    }
     puts("RESULT restart_sent");
     puts("Modem restart requested. Wait for registration, then refresh to check the serving cell.");
     return 0;
@@ -221,9 +440,11 @@ static int reboot_modem(void) {
  * EFS+restart route applied at modem boot. */
 static int lte_band_command(const char *bands, int restore) {
     uint8_t mask[8] = {0};
+    if (backup_origin_conflict())
+        return fail("The band backup does not match this device. No band changes were made.");
     if (restore) {
-        if (restore_mask("lte-original.bin", 8, mask) && read_mask(LB_LTE_BANDS, 8, mask))
-            return fail("No original LTE band mask is available. A modem restart clears the instant lock.");
+        if (restore_mask("lte-original.bin", 8, mask))
+            return fail("No usable original LTE band backup. Restore was not applied.");
     } else {
         if (!lb_bands(bands, 64, mask, 8)) return fail("Invalid band list.");
         uint8_t probe[8];
@@ -245,6 +466,10 @@ static int lte_band_command(const char *bands, int restore) {
                     return fail("Cannot persist the original LTE backup. No band changes were made.");
                 }
                 if (fsync(state_dir)) return fail("Cannot sync the LTE backup directory. No band changes were made.");
+                if (write_backup_origin()) {
+                    unlinkat(state_dir, "lte-original.bin", 0);
+                    return fail("Cannot persist the LTE backup identity. No band changes were made.");
+                }
                 puts("Original LTE band mask backed up.");
             }
         }
@@ -252,7 +477,7 @@ static int lte_band_command(const char *bands, int restore) {
     for (int i = 4; i < 8; i++) if (mask[i]) {
         /* above band 32 the CM frame cannot carry it */
         if (put_file(LB_MMODE, LB_LTE_BANDS, LB_LTE_BANDS, mask, 8, 0x7f, 0x7f, 1)) return 1;
-        return reboot_modem();
+        return reboot_modem(0);
     }
     uint8_t frame[36];
     int size = lb_cm_band(frame, lb_read32(mask));
@@ -262,39 +487,11 @@ static int lte_band_command(const char *bands, int restore) {
     return 0;
 }
 
-/* NR unlock semantics follow the Dingli ROOT(QUALCOMM) plugin: there is no
- * SET_UNLOCKBAND - a band mask is "unlocked" by rewriting the FULL supported
- * set (see diag-research reports/v98_dmg6_official_sequences.md §7). The
- * modem applies nr_band_pref at baseband boot, so one full-set write + SSR
- * restores every factory band (incl. n28) instead of trusting a possibly
- * stale/narrow backup. */
-#define NR_FULL_SET "1,3,28,41,77,78,79"
-
-static int mask_bits(const uint8_t *m, int bytes) {
-    int count = 0;
-    for (int i = 0; i < bytes; i++) {
-        uint8_t b = m[i];
-        while (b) { count += b & 1; b >>= 1; }
-    }
-    return count;
-}
-
-static int nr_full_bits(void) {
-    uint8_t mask[64];
-    return lb_bands(NR_FULL_SET, 512, mask, 64) ? mask_bits(mask, 64) : 0;
-}
-
-/* nr_band_pref exists on the reference device but only answers GET after a
- * first PUT materializes it: the first lock records a "no baseline" marker and
- * restoring removes the marker, so the modem rebuilds its default set.
- * NSAccess devices (T-Phone lock library) keep a separate nr_nsa_band_pref;
- * when readable, both items are written with the same mask so NSA camping
- * follows. */
-static int nr_marker_exists(void) {
-    int fd = openat(state_dir, "nr-no-original", O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
-    if (fd < 0) return 0;
-    close(fd);
-    return 1;
+/* Treat errors other than absence as an unusable backup, not permission to
+ * overwrite it or synthesize defaults. */
+static int backup_may_exist(const char *name) {
+    struct stat info;
+    return fstatat(state_dir, name, &info, AT_SYMLINK_NOFOLLOW) == 0 || errno != ENOENT;
 }
 
 static int nr_nsa_present(void) {
@@ -302,73 +499,92 @@ static int nr_nsa_present(void) {
     return read_mask_to(LB_NR_NSA_BANDS, 64, mask, sizeof(mask), 1500) == 0;
 }
 
-/* NR-NSA restore readiness: either a backup exists, or the item is absent on
- * this device (nothing to restore), so restore can proceed either way. */
-static int nsa_backup_possible(void) {
+static int verify_nr_mask(const char *label, const char *path, const uint8_t *expected) {
     uint8_t mask[64];
-    if (restore_mask("nr-nsa-original.bin", 64, mask) == 0) return 1;
-    return !nr_nsa_present();
+    if (read_mask(path, sizeof(mask), mask)) {
+        printf("NR_BAND readback=%s status=unreadable\n", label);
+        return fail("NR band mask readback failed; restart was not requested.");
+    }
+    if (memcmp(mask, expected, sizeof(mask))) {
+        printf("NR_BAND readback=%s status=mismatch\n", label);
+        return fail("NR band mask differs from the requested value; restart was not requested.");
+    }
+    printf("NR_BAND readback=%s status=match\n", label);
+    return 0;
 }
 
 static int nr_band_command(const char *bands, int restore) {
     uint8_t mask[64] = {0};
+    uint8_t nsa_mask[64];
+    puts(restore ? "NR_BAND operation=restore" : "NR_BAND operation=lock");
+    if (backup_origin_conflict())
+        return fail("The band backup does not match this device. No band changes were made.");
+    if (backup_may_exist("nr-no-original")) {
+        uint8_t unverified[64];
+        int primary_file = backup_may_exist("nr-original.bin");
+        int primary_readable = restore_mask("nr-original.bin", sizeof(unverified), unverified) == 0;
+        printf("NR_BAND backup=legacy_unknown_baseline primary_file=%d primary_readable=%d\n",
+            primary_file, primary_readable);
+        if (!restore) {
+            puts("RESULT baseline_unverified");
+            return fail("The previous NR lock has no verified baseline; re-locking would make it irreversible. "
+                        "Run restore first to unlock, then lock again.");
+        }
+        /* Legacy lock: no verified original mask exists, so we cannot write a band
+         * back. Restoring therefore unlocks to the full range by removing the NV
+         * band items, then clears the local state so a later lock starts from a
+         * clean, verified baseline. */
+        puts("NR_BAND restore=unlock_no_baseline");
+        if (remove_file(LB_NR_BANDS, LB_MMODE)) return 1;
+        if (nr_nsa_present()) remove_file(LB_NR_NSA_BANDS, LB_MMODE);
+        unlinkat(state_dir, "nr-original.bin", 0);
+        unlinkat(state_dir, "nr-nsa-original.bin", 0);
+        unlinkat(state_dir, "nr-no-original", 0);
+        puts("NR_BAND all_masks_cleared=1");
+        return reboot_modem(1);
+    }
+    int nsa;
     if (restore) {
-        /* Dingli NR-unlock semantics: there is no SET_UNLOCKBAND - a band mask
-         * is unlocked by rewriting the FULL supported set again. The modem
-         * applies nr_band_pref at baseband boot, so one write + SSR returns
-         * every factory band (incl. n28). Never restore a possibly-dirty
-         * backup, never delete the item: a full-set rewrite is authoritative. */
-        if (!lb_bands(NR_FULL_SET, 512, mask, 64))
-            return fail("Invalid default NR band set.");
-        if (nr_nsa_present()) {
-            if (put_file(LB_MMODE, LB_NR_NSA_BANDS, LB_MMODE, mask, 64, 0x7a, 0x7a, 0)) return 1;
+        if (restore_mask("nr-original.bin", sizeof(mask), mask)) {
+            puts("NR_BAND backup=primary_unavailable");
+            return fail("No usable original NR band backup. No band changes were made.");
         }
-        if (put_file(LB_MMODE, LB_NR_BANDS, LB_MMODE, mask, 64, 0x7a, 0x7a, 0)) return 1;
-        return reboot_modem();
-    }
-    if (!lb_bands(bands, 512, mask, 64)) return fail("Invalid band list.");
-    /* Dirty-backup detection: surface a previous backup that is narrower than
-     * the full set (e.g. an earlier n1+n78 lock). Unlock now rewrites the full
-     * set, so that narrow backup must not be mistaken for a restore baseline. */
-    {
-        uint8_t prior[64];
-        if (restore_mask("nr-original.bin", 64, prior) == 0) {
-            int prev = mask_bits(prior, 64);
-            if (prev < nr_full_bits())
-                printf("Note: the previous NR backup is a %d-band mask; unlock restores the FULL set (n1,n3,n28,n41,n77,n78,n79).\n", prev);
+        nsa = restore_mask("nr-nsa-original.bin", sizeof(nsa_mask), nsa_mask) == 0;
+        if (!nsa && backup_may_exist("nr-nsa-original.bin")) {
+            puts("NR_BAND backup=nsa_unusable");
+            return fail("The original NR-NSA backup is unreadable. No band changes were made.");
         }
-    }
-    int backup = backup_mask(LB_NR_BANDS, "nr-original.bin", 64);
-    if (backup == 1) return 1;
-    if (backup == 2) {
-        puts("Note: the original NR mask is not readable (lock item not materialised yet). Restoring will remove the lock file instead.");
-        int fd = openat(state_dir, "nr-no-original",
-            O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
-        if (fd < 0 && errno != EEXIST)
-            return fail("Cannot record the missing baseline; no band changes were made.");
-        if (fd >= 0) {
-            int ok = fsync(fd) == 0;
-            close(fd);
-            if (!ok) {
-                unlinkat(state_dir, "nr-no-original", 0);
-                return fail("Cannot persist the missing baseline; no band changes were made.");
+        printf("NR_BAND backup=primary_valid nsa_saved=%d\n", nsa);
+    } else {
+        if (!lb_bands(bands, 512, mask, sizeof(mask))) return fail("Invalid band list.");
+        int backup = backup_mask(LB_NR_BANDS, "nr-original.bin", sizeof(mask));
+        if (backup) {
+            printf("NR_BAND backup=primary_failed rc=%d\n", backup);
+            return backup == 1 ? 1 :
+                fail("Cannot read the original NR mask. No band changes were made.");
+        }
+        nsa = nr_nsa_present();
+        if (nsa) {
+            backup = backup_mask(LB_NR_NSA_BANDS, "nr-nsa-original.bin", sizeof(nsa_mask));
+            if (backup) {
+                printf("NR_BAND backup=nsa_failed rc=%d\n", backup);
+                return backup == 1 ? 1 :
+                    fail("Cannot capture the original NR-NSA mask. No band changes were made.");
             }
+            memcpy(nsa_mask, mask, sizeof(nsa_mask));
         }
-        if (fsync(state_dir)) return fail("Cannot sync the missing baseline; no band changes were made.");
+        printf("NR_BAND backup=primary_valid nsa_readable=%d\n", nsa);
     }
-    if (nr_nsa_present()) {
-        /* The NSA item answered a read seconds ago, so its original value DOES
-         * exist. Failing to capture it now (transient read or local write
-         * error) would leave the lock with no way back -> refuse to lock
-         * rather than overwrite an ensemble we cannot restore. */
-        int nsa_backup = backup_mask(LB_NR_NSA_BANDS, "nr-nsa-original.bin", 64);
-        if (nsa_backup == 1) return 1;   /* local persistence error already reported */
-        if (nsa_backup == 2)
-            return fail("Cannot capture the original NR-NSA mask. No band changes were made.");
-        if (put_file(LB_MMODE, LB_NR_NSA_BANDS, LB_MMODE, mask, 64, 0x7a, 0x7a, 0)) return 1;
+    if (nsa) {
+        puts("NR_BAND write=nsa");
+        if (put_file(LB_MMODE, LB_NR_NSA_BANDS, LB_MMODE, nsa_mask, sizeof(nsa_mask), 0x7a, 0x7a, 0) ||
+            verify_nr_mask("nsa", LB_NR_NSA_BANDS, nsa_mask)) return 1;
     }
-    if (put_file(LB_MMODE, LB_NR_BANDS, LB_MMODE, mask, 64, 0x7a, 0x7a, 0)) return 1;
-    return reboot_modem();
+    puts("NR_BAND write=primary");
+    if (put_file(LB_MMODE, LB_NR_BANDS, LB_MMODE, mask, sizeof(mask), 0x7a, 0x7a, 0) ||
+        verify_nr_mask("primary", LB_NR_BANDS, mask)) return 1;
+    puts("NR_BAND all_masks_verified=1");
+    return reboot_modem(1);
 }
 
 static int cell_list(const char *text, uint8_t *data) {
@@ -388,6 +604,13 @@ static int cell_list(const char *text, uint8_t *data) {
     }
     lb_u32(data, (uint32_t)count);
     return count;
+}
+
+static int scs_encoding(const char *name) {
+    if (!name || !strcmp(name, "index")) return LB_SCS_INDEX;
+    if (!strcmp(name, "pow2")) return LB_SCS_POW2;
+    if (!strcmp(name, "enum") || !strcmp(name, "enum1")) return LB_SCS_ENUM1;
+    return -1;
 }
 
 /* Classic-NV dial tone: send NV read item 10 and see whether the modem
@@ -462,11 +685,28 @@ static int execute(int argc, char **argv) {
         print_cap("nr_earfcn_lock", LB_NR_FREQ, 8);
         print_cap("nr_pci_lock_info", LB_NR_CELL, 12);
         printf("CAP nv %d\n", nv_dial_tone());
-        printf("BACKUP lte %d\n", !restore_mask("lte-original.bin", 8, mask) ||
-            !read_mask(LB_LTE_BANDS, 8, mask));
-        printf("BACKUP nr %d\n", !restore_mask("nr-original.bin", 64, mask) || nr_marker_exists());
-        printf("BACKUP nr_nsa %d\n", !nsa_backup_possible());
-        printf("FULLSET nr %d\n", nr_full_bits());
+        printf("BACKUP lte %d\n", !backup_origin_conflict() &&
+            !restore_mask("lte-original.bin", 8, mask));
+        printf("BACKUP nr %d\n", !backup_may_exist("nr-no-original") &&
+            !restore_mask("nr-original.bin", 64, mask));
+        printf("BACKUP nr_nsa %d\n", !restore_mask("nr-nsa-original.bin", 64, mask));
+        return 0;
+    }
+    if (!strcmp(cmd, "lte-cell-probe") && argc == 1) {
+        int size;
+        if (item_probe("cell_lock_list", LB_LTE_CELL, &size)) return 1;
+        if (size == 164) puts("LAYOUT cell_lock_list 164B 20slots");
+        else if (size == 244) puts("LAYOUT cell_lock_list 244B 30slots");
+        else printf("LAYOUT cell_lock_list unexpected-%d\n", size);
+        return 0;
+    }
+    if (!strcmp(cmd, "nr-cell-probe") && argc == 1) {
+        int size;
+        if (item_probe("pci_lock_info", LB_NR_CELL, &size)) return 1;
+        if (size == 12) puts("LAYOUT pci_lock_info 12B single-pci");
+        else if (size == 28) puts("LAYOUT pci_lock_info 28B multi-pci");
+        else if (size == 896) puts("LAYOUT pci_lock_info 896B 32records");
+        else printf("LAYOUT pci_lock_info unexpected-%d\n", size);
         return 0;
     }
     if ((!strcmp(cmd, "lte-band") || !strcmp(cmd, "nr-band")) && argc == 2)
@@ -512,39 +752,62 @@ static int execute(int argc, char **argv) {
             (frequency ? LB_LTE_FREQ : LB_LTE_CELL);
         if (remove_file(path, dir)) return 1;
         if (lte && !frequency && remove_file(LB_LTE_CSP "/pci_lock", LB_LTE_CSP)) return 1;
-        return reboot_modem();
+        return reboot_modem(0);
     }
     uint8_t data[244] = {0};
     const char *file = NULL, *sync_path = nr ? LB_NR_DIR "/" : LB_LTE_DIR;
     int size = 0;
     uint8_t m0 = 0x7f, m1 = 0x7f;
     uint32_t frequency, pci, band, scs;
-    if (!strcmp(operation, "freq") && argc == (nr ? 3 : 2)) {
+    if (!strcmp(operation, "freq") && (nr ? (argc == 3 || argc == 4) : argc == 2)) {
         if (!lb_number(argv[1], nr ? 3279165 : 262143, &frequency)) return fail("Invalid frequency.");
         if (nr) {
-            if (!frequency || !lb_number(argv[2], 120, &scs) || lb_scs(scs) < 0) return fail("Invalid NR SCS.");
-            lb_u32(data, frequency); lb_u32(data + 4, (uint32_t)lb_scs(scs));
+            int encoding = scs_encoding(argc == 4 ? argv[3] : NULL);
+            uint16_t scs_value;
+            if (encoding < 0) return fail("SCS encoding must be index, pow2 or enum.");
+            if (!frequency || !lb_number(argv[2], 240, &scs) || lb_scs_enc(scs, encoding, &scs_value) < 0)
+                return fail("Invalid NR SCS.");
+            lb_u32(data, frequency); lb_u32(data + 4, scs_value);
             file = LB_NR_FREQ; size = 8; m0 = 0xff; m1 = 0x1f;
         } else {
             lb_u32(data + 28, frequency); lb_u32(data + 32, frequency);
             file = LB_LTE_FREQ; size = 36; m1 = 0x6f; sync_path = LB_LTE_DIR "/";
         }
-    } else if (lte && !strcmp(operation, "cell") && argc == 2) {
+    } else if (lte && !strcmp(operation, "cell") && (argc == 2 || argc == 3)) {
         int count = cell_list(argv[1], data);
         if (!count) return fail("Invalid LTE cell list.");
-        file = LB_LTE_CELL; size = count > 20 ? 244 : 164; m0 = 0xff; m1 = 0x1f;
-    } else if (nr && !strcmp(operation, "cell") && argc == 5) {
+        int slots = 0;
+        if (argc == 3) {
+            if (!strcmp(argv[2], "164")) slots = 20;
+            else if (!strcmp(argv[2], "244")) slots = 30;
+            else return fail("Cell list size must be 164 or 244.");
+        }
+        if (!slots) slots = count > 20 ? 30 : 20;
+        if (count > slots) return fail("Cell list exceeds the selected item size.");
+        file = LB_LTE_CELL; size = slots * 8 + 4; m0 = 0xff; m1 = 0x1f;
+    } else if (nr && (!strcmp(operation, "cell") || !strcmp(operation, "cell-multi")) &&
+            (argc == 5 || argc == 6)) {
+        int encoding = scs_encoding(argc == 6 ? argv[5] : NULL);
+        uint16_t scs_value;
+        if (encoding < 0) return fail("SCS encoding must be index, pow2 or enum.");
         if (!lb_number(argv[1], 512, &band) || !band ||
             !lb_number(argv[2], 3279165, &frequency) || !frequency ||
-            !lb_number(argv[3], 1007, &pci) || !lb_number(argv[4], 120, &scs) || lb_scs(scs) < 0)
+            !lb_number(argv[4], 240, &scs) || lb_scs_enc(scs, encoding, &scs_value) < 0)
             return fail("Invalid NR cell parameters.");
-        lb_u32(data, pci); lb_u32(data + 4, frequency);
-        data[8] = (uint8_t)lb_scs(scs);
-        data[10] = (uint8_t)(band - 1); data[11] = (uint8_t)((band - 1) >> 8);
-        file = LB_NR_CELL; size = 12;
+        if (!strcmp(operation, "cell")) {
+            if (!lb_number(argv[3], 1007, &pci)) return fail("Invalid NR cell parameters.");
+            lb_u32(data, pci); lb_u32(data + 4, frequency);
+            data[8] = (uint8_t)scs_value; data[9] = (uint8_t)(scs_value >> 8);
+            data[10] = (uint8_t)(band - 1); data[11] = (uint8_t)((band - 1) >> 8);
+            file = LB_NR_CELL; size = 12;
+        } else {
+            if (!lb_nr_cell_record(data, argv[3], frequency, scs_value, band))
+                return fail("Invalid NR PCI list (1..8 PCIs).");
+            file = LB_NR_CELL; size = 28; m0 = 0xff; m1 = 0x1f;
+        }
     } else return fail("Unknown command or argument count.");
     if (put_file(dir, file, sync_path, data, size, m0, m1, 0)) return 1;
-    return reboot_modem();
+    return reboot_modem(0);
 }
 
 int main(int argc, char **argv) {
@@ -555,6 +818,7 @@ int main(int argc, char **argv) {
     if (argc < 4 || strcmp(argv[1], "--state-dir")) return fail("Missing private state directory.");
     state_dir = open(argv[2], O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
     if (state_dir < 0) return fail("Cannot open the private backup directory.");
+    if (load_session_identity()) return fail("Invalid device identity.");
     int lock = openat(state_dir, "operation.lock", O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0600);
     if (lock < 0 || flock(lock, LOCK_EX | LOCK_NB)) return fail("Another lock operation is in progress.");
     if (connect_router()) return 2;

@@ -1,5 +1,6 @@
 #include <stddef.h>
 #include <stdint.h>
+#include "../../main/cpp/diag_queue.h"
 
 enum { LOCK = 1, UNLOCK, WRITE, CLOSE, ACK, MASK, OPEN };
 static unsigned trace;
@@ -46,9 +47,8 @@ static void qmdl_request_mask(int enabled) { step(MASK); }
 
 #include "qmdl_stop_under_test.inc"
 
-enum { DIAG_Q_SLOT = 64 };
-static struct { struct { int oversized; } stats; } g_dq;
-static int g_dq_mu, g_dq_cv, decoded, queued, g_dq_started = 1;
+static struct diag_queue g_dq, g_dq_lo;
+static int g_dq_mu, g_dq_cv, decoded, queued, queued_high, queued_low, g_dq_started = 1;
 /* The freestanding Windows harness has no system headers for stdatomic.h. */
 typedef _Atomic(unsigned long) atomic_ulong;
 #define memory_order_relaxed __ATOMIC_RELAXED
@@ -57,12 +57,16 @@ static atomic_ulong g_dci_callbacks, g_dci_bad_frames;
 static uint16_t seen_codes[3];
 static uint16_t rd16(const uint8_t *buf) { return buf[0] | ((uint16_t)buf[1] << 8); }
 static void handle_record(const uint8_t *data, int size) { decoded++; }
-static void diag_q_push(void *queue, const uint8_t *data, uint16_t size) {
+int diag_q_push(struct diag_queue *queue, const uint8_t *data, uint16_t size) {
     if (queued < 3) seen_codes[queued] = rd16(data + 2);
     queued++;
+    if (queue == &g_dq) queued_high++;
+    if (queue == &g_dq_lo) queued_low++;
+    return 1;
 }
 static void pthread_cond_signal(int *ignored) {}
 
+#include "diag_priority_under_test.inc"
 #include "diag_live_under_test.inc"
 
 #define DCI_OK 1001
@@ -126,6 +130,23 @@ __declspec(dllexport) int test_diag_live_masks(void) {
     if (dci_enable_logs(base, N_LIVE_BASE, &status) != N_LIVE_BASE - 1 ||
         status.count != N_LIVE_BASE || status.batch_rc != 1008 || status.accepted != N_LIVE_BASE - 1 ||
         cfg_calls != N_LIVE_BASE + 2) return __LINE__;
+    trace = 0;
+    return 0;
+}
+
+__declspec(dllexport) int test_diag_live_priority(void) {
+    static uint8_t packets[36] = {
+        12, 0, 0x88, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0,
+        12, 0, 0x0a, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0,
+        12, 0, 0x7f, 0xb9, 0, 0, 0, 0, 0, 0, 0, 0,
+    };
+    int previous_high = queued_high, previous_low = queued_low, previous_decoded = decoded;
+    g_dq_started = 1;
+    on_log(packets, sizeof(packets));
+    if (queued_high != previous_high + 2 || queued_low != previous_low + 1 ||
+        decoded != previous_decoded) return __LINE__;
+    if (g_qmdl_fd != -1 || file_size || write_calls || g_qmdl_packets || g_qmdl_pending_bytes) return __LINE__;
+    g_dq_started = 0;
     trace = 0;
     return 0;
 }

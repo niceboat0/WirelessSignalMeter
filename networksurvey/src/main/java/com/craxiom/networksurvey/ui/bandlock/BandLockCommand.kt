@@ -84,6 +84,7 @@ internal data class BandLockCommand(
 }
 
 internal data class BandLockOutcome(val exit: Int, val output: String) {
+    val baselineUnverified get() = exit != 0 && output.lineSequence().any { it.trimEnd() == "RESULT baseline_unverified" }
     val restartRequested get() = exit == 0 && output.lineSequence().any { it.trimEnd() == "RESULT restart_sent" }
     val accepted get() = restartRequested || exit == 0 && output.lineSequence().any { it.trimEnd() == "RESULT accepted" }
     // band_lock.c returns 2 only when the operation could not connect to DIAG.
@@ -94,11 +95,13 @@ internal data class BandLockExecution(val outcome: BandLockOutcome, val modeConf
 
 internal suspend fun BandLockCommand.executeWithMode(
     pause: suspend (Long) -> Unit = { delay(it) },
+    onModemRestartRequested: suspend () -> Unit = {},
     execute: suspend (BandLockCommand) -> BandLockOutcome,
 ): BandLockExecution {
     val outcome = execute(this)
-    val mode = modeAfterLock?.takeIf { outcome.accepted } ?: return BandLockExecution(outcome)
     val restart = outcome.restartRequested
+    if (restart) onModemRestartRequested()
+    val mode = modeAfterLock?.takeIf { outcome.accepted } ?: return BandLockExecution(outcome)
     val maxAttempts = if (restart) 6 else 1
     if (restart) pause(5_000)
     repeat(maxAttempts) { attempt ->

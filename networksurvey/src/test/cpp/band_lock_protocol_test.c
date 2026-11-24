@@ -25,6 +25,28 @@ __declspec(dllexport) int test_band_lock_protocol(void) {
     CHECK(!lb_number("999999999999999", 3279165, &number));
     CHECK(!lb_number("-1", 1007, &number));
     CHECK(lb_scs(30) == 1 && lb_scs(240) < 0);
+    uint16_t scs_value;
+    CHECK(lb_scs_enc(30, LB_SCS_INDEX, &scs_value) == 0 && scs_value == 1);
+    CHECK(lb_scs_enc(240, LB_SCS_INDEX, &scs_value) < 0);
+    CHECK(lb_scs_enc(15, LB_SCS_POW2, &scs_value) == 0 && scs_value == 1);
+    CHECK(lb_scs_enc(60, LB_SCS_POW2, &scs_value) == 0 && scs_value == 4);
+    CHECK(lb_scs_enc(240, LB_SCS_POW2, &scs_value) == 0 && scs_value == 16);
+    CHECK(lb_scs_enc(15, LB_SCS_ENUM1, &scs_value) == 0 && scs_value == 1);
+    CHECK(lb_scs_enc(240, LB_SCS_ENUM1, &scs_value) == 0 && scs_value == 5);
+    CHECK(lb_scs_enc(241, LB_SCS_ENUM1, &scs_value) < 0);
+    CHECK(lb_nr_cell_record(data, "42", 504990, 1, 78) == 28);
+    CHECK(data[0] == 1 && data[1] == 0);
+    CHECK(data[2] == 42 && data[3] == 0 && data[4] == 0 && data[19] == 0);
+    CHECK(lb_read32(data + 20) == 504990);
+    CHECK(data[24] == 1 && data[25] == 0 && data[26] == 77 && data[27] == 0);
+    CHECK(lb_nr_cell_record(data, "42,43,600", 504990, 2, 78) == 28);
+    CHECK(data[0] == 3 && data[2] == 42 && data[4] == 43);
+    CHECK(data[6] == (uint8_t)(600 & 0xff) && data[7] == (uint8_t)(600 >> 8) && data[8] == 0);
+    CHECK(!lb_nr_cell_record(data, "", 504990, 1, 78));
+    CHECK(!lb_nr_cell_record(data, "1,2,3,4,5,6,7,8,9", 504990, 1, 78));
+    CHECK(!lb_nr_cell_record(data, "42,", 504990, 1, 78));
+    CHECK(!lb_nr_cell_record(data, "1008", 504990, 1, 78));
+    CHECK(!lb_nr_cell_record(data, "42", 504990, 1, 0));
     mask[0] = 0x10;
     int size = lb_put(data, LB_LTE_BANDS, mask, 8, 1);
     CHECK(lb_read32(data) == 0x0026134b);
@@ -99,5 +121,19 @@ __declspec(dllexport) int test_band_lock_protocol(void) {
     CHECK(lb_ack(frame, 34, 28, LB_ACK_STATUS, 0, 0, 0, &status_out) == -1);
     /* LOOSE accepts the echoed command itself (SYNC / CM replies). */
     CHECK(lb_ack(frame, 64, 28, LB_ACK_LOOSE, 0, 0, 0, &status_out) == 0);
+    int efs_size = lb_efs_open(data, "/nv/item_files/modem/nr5g/RRC/pci_lock_info");
+    CHECK(efs_size == 56 && lb_read32(data) == 0x0002134b);
+    CHECK(data[0] == 0x4b && data[1] == 0x13 && data[2] == 0x02 && data[3] == 0x00);
+    CHECK(lb_read32(data + 4) == 0 && lb_read32(data + 8) == 0);
+    CHECK(data[12] == '/' && data[efs_size - 1] == 0);
+    efs_size = lb_efs_read(data, 7, 1024, 0);
+    CHECK(efs_size == 16 && lb_read32(data) == 0x0004134b);
+    CHECK(lb_read32(data + 4) == 7 && lb_read32(data + 8) == 1024 && lb_read32(data + 12) == 0);
+    efs_size = lb_efs_close(data, 7);
+    CHECK(efs_size == 8 && lb_read32(data) == 0x0003134b && lb_read32(data + 4) == 7);
+    efs_size = lb_efs_stat(data, "/nv/item_files/modem/lte/rrc/efs/cell_lock_list");
+    CHECK(efs_size == 52 && lb_read32(data) == 0x000f134b);
+    CHECK(data[0] == 0x4b && data[1] == 0x13 && data[2] == 0x0f && data[3] == 0x00);
+    CHECK(data[4] == '/' && data[efs_size - 1] == 0);
     return 0;
 }

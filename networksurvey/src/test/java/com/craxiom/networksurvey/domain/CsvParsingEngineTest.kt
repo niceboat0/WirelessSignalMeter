@@ -12,7 +12,7 @@ import java.nio.charset.Charset
  * 锁定重构后解析行为与旧 CsvParamParser 一致：
  *  - 编码探测（GBK 表头）
  *  - 分隔符/表头/示例值抽取
- *  - 关键词列匹配（含"小区Id"→CI 必须匹配 col 3 而非 扇区号）
+ *  - 关键词列匹配（含"小区Id"匹配 SECTOR_ID）
  *  - 用户显式列映射解析 + 必填校验
  *  - 真实工参表头部样例的字段抽取正确性
  */
@@ -46,13 +46,12 @@ class CsvParsingEngineTest {
         val map = CsvParsingEngine.autoMap(headers)
         // 小区Id(索引4) 应匹配工参列 5 (SECTOR_ID) —— 现网工参表的「小区ID」是站内小区编号（扇区号），
         // 匹配到完整 CI(3) 会导致 sector_id 恒为 0、ci 存成小区编号，永远匹配不上。
-        assertEquals(CsvParsingEngine.Col.SECTOR_ID, map[CsvParsingEngine.Col.SECTOR_ID])
         assertEquals(4, map[CsvParsingEngine.Col.SECTOR_ID])
         assertEquals(11, map.size)
-        assertEquals(CsvParsingEngine.Col.NETTYPE, map[CsvParsingEngine.Col.NETTYPE])
+        assertEquals(0, map[CsvParsingEngine.Col.NETTYPE])
         assertEquals(CsvParsingEngine.Col.SITE, map[CsvParsingEngine.Col.SITE])
         assertEquals(CsvParsingEngine.Col.CELL, map[CsvParsingEngine.Col.CELL])
-        assertEquals(CsvParsingEngine.Col.GNB_ID, map[CsvParsingEngine.Col.GNB_ID])
+        assertEquals(3, map[CsvParsingEngine.Col.GNB_ID])
     }
 
     @Test

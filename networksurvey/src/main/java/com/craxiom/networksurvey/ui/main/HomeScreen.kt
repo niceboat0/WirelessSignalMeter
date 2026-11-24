@@ -125,8 +125,9 @@ fun HomeScreen(
             version = update,
             onDismiss = { UpdateChecker.pendingUpdate.value = null },
             onDownload = {
-                UpdateDownloader.download(context, update.apkUrl)
-                UpdateChecker.pendingUpdate.value = null
+                if (UpdateDownloader.download(context, update)) {
+                    UpdateChecker.pendingUpdate.value = null
+                }
             },
             onIgnore = {
                 UpdateChecker.ignoreVersion(context, update.versionCode)

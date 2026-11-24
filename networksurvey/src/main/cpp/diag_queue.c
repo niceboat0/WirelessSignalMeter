@@ -30,3 +30,34 @@ int diag_q_pop(struct diag_queue *q, struct diag_q_item *item) {
     q->stats.popped++;
     return 1;
 }
+
+void diag_epoch_mark(struct diag_epoch_barrier *barrier, uint64_t timestamp) {
+    barrier->timestamp = timestamp;
+    barrier->active = 1;
+}
+
+int diag_epoch_allows(const struct diag_epoch_barrier *barrier, uint64_t timestamp) {
+    return !barrier->active || (barrier->timestamp && timestamp > barrier->timestamp);
+}
+
+void diag_q_drop_epoch(struct diag_queue *q, uint16_t len) {
+    q->stats.dropped++;
+    q->stats.dropped_bytes += len;
+    q->stats.epoch_dropped++;
+}
+
+/* See diag_queue.h. Keep this list in sync with the parser switch in
+   root_diag.c: signalling and serving/measurement records must stay high. */
+int diag_code_priority(uint16_t code) {
+    switch (code) {
+    case 0xB888:                                      /* NR MAC cumulative PDSCH counters */
+    case 0xB883: case 0xB884:                          /* NR UL scheduling and power samples */
+    case 0xB8A7:                                      /* NR CQI/RI reports */
+    case 0xB842: case 0xB860: case 0xB84D:
+    case 0xB868: case 0xB881:                          /* NR layer-2 stats */
+    case 0xB887:                                       /* NR MAC PDSCH per-TB */
+        return DIAG_PRIO_LOW;
+    default:
+        return DIAG_PRIO_HIGH;
+    }
+}

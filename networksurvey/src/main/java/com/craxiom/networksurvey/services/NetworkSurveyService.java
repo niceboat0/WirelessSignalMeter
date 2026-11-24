@@ -7,8 +7,6 @@ import static com.craxiom.networksurvey.constants.NetworkSurveyConstants.LOCATIO
 
 import android.Manifest;
 import android.annotation.SuppressLint;
-import android.app.Notification;
-import android.app.PendingIntent;
 import android.app.Service;
 import android.content.BroadcastReceiver;
 import android.content.Context;
@@ -33,12 +31,10 @@ import android.provider.Settings;
 import android.telephony.SubscriptionInfo;
 
 import androidx.core.app.ActivityCompat;
-import androidx.core.app.NotificationCompat;
 import androidx.preference.PreferenceManager;
 
 import com.craxiom.messaging.DeviceStatus;
 import com.craxiom.messaging.DeviceStatusData;
-import com.craxiom.networksurvey.Application;
 import com.craxiom.networksurvey.BuildConfig;
 import com.craxiom.networksurvey.GpsListener;
 import com.craxiom.networksurvey.NetworkSurveyActivity;
@@ -255,16 +251,22 @@ public class NetworkSurveyService extends Service implements
                 pauseAllOperations();
             }
         }
-
-        updateServiceNotification();
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId)
     {
-        // If we are started at boot, then that means the NetworkSurveyActivity was never run.  Therefore, to ensure we
-        // read and respect the auto start logging user preferences, we need to read them and start logging here.
+        if (intent == null) return START_NOT_STICKY;
+
+        // This component is private. Only the app's boot receiver/worker can request boot logging;
+        // the exported control receiver forwards an allowlist of recording flags, never this extra.
         final boolean startedAtBoot = intent.getBooleanExtra(NetworkSurveyConstants.EXTRA_STARTED_AT_BOOT, false);
+        final boolean startedForControl = ACTION_START_SURVEY.equals(intent.getAction()) || ACTION_STOP_SURVEY.equals(intent.getAction());
+        if (startedAtBoot || startedForControl)
+        {
+            // These callers use startForegroundService; acknowledge the start before handling it.
+            showServiceNotification();
+        }
         if (startedAtBoot)
         {
             Timber.i("Received the startedAtBoot flag in the NetworkSurveyService. Reading the auto start preferences");
@@ -312,6 +314,7 @@ public class NetworkSurveyService extends Service implements
             if (!allowIntentControl)
             {
                 Timber.w("Received a start survey control intent, but the user has disabled intent control");
+                updateServiceNotification();
                 return START_REDELIVER_INTENT;
             }
 
@@ -354,6 +357,7 @@ public class NetworkSurveyService extends Service implements
             if (!allowIntentControl)
             {
                 Timber.w("Received a stop survey control intent, but the user has disabled intent control");
+                updateServiceNotification();
                 return START_REDELIVER_INTENT;
             }
 
@@ -364,6 +368,7 @@ public class NetworkSurveyService extends Service implements
             stopSelf();
         }
 
+        if (startedAtBoot || startedForControl) updateServiceNotification();
         return START_REDELIVER_INTENT;
     }
 
@@ -2040,64 +2045,21 @@ public class NetworkSurveyService extends Service implements
      */
     public void updateServiceNotification()
     {
+        // Live measurements shown in the activity do not require a second foreground service.
+        if (isAnySurveyActive()) showServiceNotification();
+        else shutdownNotifications();
+    }
+
+    private void showServiceNotification()
+    {
         try
         {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
-            {
-                startForeground(NetworkSurveyConstants.LOGGING_NOTIFICATION_ID, buildNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION);
-            } else
-            {
-                startForeground(NetworkSurveyConstants.LOGGING_NOTIFICATION_ID, buildNotification());
-            }
+            CaptureServiceNotification.startSurvey(this, ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION,
+                    getNotificationText(isAnySurveyActive()));
         } catch (Exception e)
         {
             Timber.e(e, "Could not start the foreground service for Network Survey");
-            // TODO This is one possible option for the crash on Samsung S22 devices running Android 13
-            /*AlarmManager alarmManager = (AlarmManager) getSystemService(Context.ALARM_SERVICE);
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
-            {
-                if (alarmManager.canScheduleExactAlarms())
-                {
-                    Intent i = new Intent(this, NetworkSurveyService.class);
-                    PendingIntent pi = PendingIntent.getForegroundService(this, 50, i, PendingIntent.FLAG_UPDATE_CURRENT);
-                    alarmManager.setExact(AlarmManager.ELAPSED_REALTIME_WAKEUP, SystemClock.elapsedRealtime() + GO_OFF_OFFSET, pi);
-                } else
-                {
-                    Timber.e("Can't schedule an exact alarm in place of startForeground");
-                }
-            }*/
         }
-    }
-
-    /**
-     * Creates a new {@link Notification} based on the current state of this service.  The returned notification can
-     * then be passed on to the Android system.
-     *
-     * @return A {@link Notification} that represents the current state of this service (e.g. if logging is enabled).
-     */
-    private Notification buildNotification()
-    {
-        Application.createNotificationChannel(this);
-
-        final boolean logging = cellularController.isLoggingEnabled() || cellularController.isPhoneStateLoggingEnabled() || wifiController.isLoggingEnabled() || bluetoothController.isLoggingEnabled() || gnssController.isLoggingEnabled() || cellularController.isCdrLoggingEnabled();
-        final CharSequence notificationTitle = getText(R.string.network_survey_notification_title);
-        final String notificationText = getNotificationText(logging);
-
-        final Intent notificationIntent = new Intent(this, NetworkSurveyActivity.class);
-        final PendingIntent pendingIntent = PendingIntent.getActivity(this, 0, notificationIntent, PendingIntent.FLAG_IMMUTABLE);
-
-        final NotificationCompat.Builder builder = new NotificationCompat.Builder(this, NetworkSurveyConstants.NOTIFICATION_CHANNEL_ID)
-                .setContentTitle(notificationTitle)
-                .setOngoing(true)
-                .setOnlyAlertOnce(true)
-                .setSmallIcon(logging ? R.drawable.logging_thick_icon : R.drawable.gps_map_icon)
-                .setContentIntent(pendingIntent)
-                .setTicker(notificationTitle)
-                .setContentText(notificationText)
-                .setCategory(NotificationCompat.CATEGORY_SERVICE)
-                .setStyle(new NotificationCompat.BigTextStyle().bigText(notificationText));
-
-        return builder.build();
     }
 
     /**
@@ -2145,7 +2107,7 @@ public class NetworkSurveyService extends Service implements
      */
     private void shutdownNotifications()
     {
-        stopForeground(true);
+        CaptureServiceNotification.stopSurvey(this);
     }
 
     /**

@@ -21,6 +21,7 @@ import com.craxiom.networksurvey.model.NrCarrier
 import com.craxiom.networksurvey.ui.cellular.CellularChartViewModel
 import com.craxiom.networksurvey.util.AndroidLteSinrReader
 import com.craxiom.networksurvey.util.LteSinrUtils
+import com.craxiom.networksurvey.services.CaptureServiceNotification
 import com.craxiom.networksurvey.services.RootDiagCollectorService
 import com.craxiom.networksurvey.ui.bandlock.BandLockProfile
 import com.craxiom.networksurvey.ui.bandlock.LockSupportLevel
@@ -126,9 +127,11 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
     private val layoutNotices = linkedMapOf<String, JSONObject>()
     private val nrCaObservations = ArrayDeque<JSONObject>()
     private val collectorRuns = ArrayDeque<JSONObject>()
+    private val collectorRecovery = ArrayDeque<JSONObject>()
     private var nextCollectorRun = 1L
     private var invalidLineCount = 0L
     private var lastCollectorStatus: JSONObject? = null
+    private var lastCollectorStatusAtElapsed = 0L
     private var lastSignalMode: JSONObject? = null
     private var lastAndroidNrBandwidth: JSONObject? = null
     private var overlayImsReg = "unknown"
@@ -314,6 +317,8 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
         val collectorStatus = lastCollectorStatus
         val qmdlStatus = lastQmdlStatus
         val runs = collectorRuns.map { JSONObject(it.toString()) }
+        val recovery = collectorRecovery.toList()
+        val notifications = CaptureServiceNotification.diagnostics(app)
         val signalMode = lastSignalMode
         val androidNrBandwidth = lastAndroidNrBandwidth
         val androidLteSinr = AndroidLteSinrReader.snapshot()
@@ -345,6 +350,8 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
                     .put("technical", currentCapability().imsStatus.technical))
                 .put("app_version", BuildConfig.VERSION_NAME)
                 .put("app_version_code", BuildConfig.VERSION_CODE)
+                .put("app_package", app.packageName)
+                .put("diag_recovery_policy", "post_modem_watch_v2")
                 .put("android", Build.VERSION.SDK_INT)
                 .put("model", Build.MODEL)
                 .put("manufacturer", Build.MANUFACTURER)
@@ -365,6 +372,10 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
             val output = app.contentResolver.openOutputStream(uri, "wt") ?: throw IOException("No output stream")
             output.bufferedWriter(Charsets.UTF_8).use { writer ->
                 writer.appendLine(header.toString())
+                writer.appendLine(notifications.toString())
+                for (entry in com.craxiom.networksurvey.util.AppLogger.readBandLockDiagnostics()) {
+                    writer.appendLine(JSONObject().put("type", "band_lock").put("log", entry).toString())
+                }
                 for (taskId in taskIds) {
                     val events = tasks.events(taskId)
                     writer.appendLine(JSONObject().put("type", "task_event_window").put("task_id", taskId)
@@ -377,6 +388,7 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
                 collectorStatus?.let { writer.appendLine(redactDiagnostic(it).toString()) }
                 qmdlStatus?.let { writer.appendLine(redactDiagnostic(it).toString()) }
                 for (entry in runs) writer.appendLine(redactDiagnostic(entry).toString())
+                for (entry in recovery) writer.appendLine(entry.toString())
                 signalMode?.let { writer.appendLine(it.toString()) }
                 androidNrBandwidth?.let { writer.appendLine(it.toString()) }
                 for (entry in androidLteSinr) writer.appendLine(entry.toDiagnosticJson().toString())
@@ -441,6 +453,7 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
     private var nextId = 0L
     private var firstVisibleMessageId = 0L
     private var capture: Job? = null
+    private var modemRecovery: Job? = null
     private var foreground = false
     private var pausedByUser = false
     private var restartAfterStop = false
@@ -470,6 +483,73 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
         restartAttempt = 0
         restartAfterStop = true
         job.cancel()
+    }
+
+    internal fun recoverAfterModemRestart() {
+        modemRecovery?.cancel()
+        val requestedAt = SystemClock.elapsedRealtime()
+        recordCollectorRecovery("requested")
+        modemRecovery = viewModelScope.launch {
+            var restarts = 0
+            for (check in 1..CollectorRestartPolicy.MODEM_RECOVERY_CHECKS) {
+                delay(CollectorRestartPolicy.MODEM_RECOVERY_INTERVAL_MS)
+                if (!DiagRecordingPolicy.shouldListen(currentMode())) {
+                    recordCollectorRecovery("skipped_not_listening", check = check)
+                    return@launch
+                }
+                val signal = signalState.value
+                if (signal.status in setOf(RootDiagStatus.Denied, RootDiagStatus.Unavailable) ||
+                    signal.errorCode == 2 || signal.errorCode == 3) {
+                    recordCollectorRecovery("skipped_unavailable", check = check)
+                    return@launch
+                }
+                val now = SystemClock.elapsedRealtime()
+                val statusAge = (now - lastCollectorStatusAtElapsed).takeIf { lastCollectorStatusAtElapsed != 0L }
+                val packetAge = modemPacketAge(now)
+                val stale = CollectorRestartPolicy.needsModemRecovery(
+                    signal.status == RootDiagStatus.Running, statusAge ?: Long.MAX_VALUE, packetAge, now - requestedAt,
+                )
+                val phase = when {
+                    !stale -> "packets_resumed"
+                    qmdlState.value.phase != QmdlPhase.Idle || qmdlState.value.recovering -> "deferred_qmdl_active"
+                    check == CollectorRestartPolicy.MODEM_RECOVERY_CHECKS -> "still_stalled"
+                    restarts >= CollectorRestartPolicy.MAX_MODEM_RECOVERY_RESTARTS -> "waiting_after_restarts"
+                    else -> "restarting_collector"
+                }
+                recordCollectorRecovery(phase, packetAge, statusAge, check)
+                if (phase == "restarting_collector") {
+                    restarts++
+                    restartAttempt = 0
+                    val job = capture
+                    if (job == null) start()
+                    else {
+                        restartAfterStop = true
+                        if (job.isActive) job.cancel()
+                    }
+                }
+            }
+        }
+    }
+
+    private fun modemPacketAge(now: Long): Long? {
+        val statusAt = lastCollectorStatusAtElapsed.takeIf { it != 0L } ?: return null
+        val packetAgeSeconds = lastCollectorStatus?.optLong("last_pkt_age_s", -1)?.takeIf { it >= 0 }
+            ?: return null
+        return packetAgeSeconds * 1_000L + (now - statusAt)
+    }
+
+    private fun recordCollectorRecovery(
+        stage: String, packetAgeMs: Long? = null, statusAgeMs: Long? = null, check: Int = 0,
+    ) {
+        if (collectorRecovery.size == 24) collectorRecovery.removeFirst()
+        collectorRecovery.addLast(JSONObject().put("type", "collector_recovery")
+            .put("t", System.currentTimeMillis()).put("stage", stage)
+            .put("check", check).put("collector_run", collectorRuns.lastOrNull()?.optLong("id") ?: JSONObject.NULL)
+            .put("packet_age_ms", packetAgeMs ?: JSONObject.NULL)
+            .put("status_age_ms", statusAgeMs ?: JSONObject.NULL)
+            .put("live_serving", signalState.value.hasLiveServingCell(null, SystemClock.elapsedRealtime()))
+            .put("collector_state", signalState.value.status.name)
+            .put("qmdl_phase", qmdlState.value.phase.name))
     }
 
     internal fun pause() {
@@ -621,6 +701,8 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
             .put("started_ms", System.currentTimeMillis()).put("clock_id", SurveyTaskStore.CLOCK_ID)
         if (collectorRuns.size == MAX_COLLECTOR_RUNS) collectorRuns.removeFirst()
         collectorRuns.addLast(run)
+        lastCollectorStatus = null
+        lastCollectorStatusAtElapsed = 0L
 
         var process: Process? = null
         var status = RootDiagStatus.Checking
@@ -865,6 +947,7 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
                     if (next == RootDiagStatus.Running && readyAt == null) readyAt = now
                     status = next
                     errorCode = value.optInt("rc").takeIf { it != 0 }
+                    lastCollectorStatusAtElapsed = now
                     hasModemPackets = value.optLong("pkts") > 0
                     lastHeartbeat = now
                     overlayDropped = value.optLong("decode_dropped")

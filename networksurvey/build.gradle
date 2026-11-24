@@ -188,6 +188,19 @@ androidComponents.onVariants(androidComponents.selector().all()) { variant ->
     variant.sources.jniLibs.addGeneratedSourceDirectory(compileBandLock) { it.outputDirectory }
 }
 
+def compileQmiProbe = tasks.register("compileQmiProbe", CompileRootDiag) {
+    sourceFile.set(layout.projectDirectory.file("src/main/cpp/qmi_probe.c"))
+    decoderSources.from(layout.projectDirectory.file("src/main/cpp/qmi_probe_msg.h"))
+    ndkDirectory.set(androidComponents.sdkComponents.ndkDirectory)
+    ndkVersion.set(android.ndkVersion)
+    outputDirectory.set(layout.buildDirectory.dir("generated/qmiProbe/jniLibs"))
+    binaryName.set("libwireless_qmi_probe.so")
+}
+
+androidComponents.onVariants(androidComponents.selector().all()) { variant ->
+    variant.sources.jniLibs.addGeneratedSourceDirectory(compileQmiProbe) { it.outputDirectory }
+}
+
 android.applicationVariants.configureEach { variant ->
     variant.outputs.each { output ->
         def baseAbiVersionCode = project.ext.abiCodes.get(output.getFilter(com.android.build.OutputFile.ABI))

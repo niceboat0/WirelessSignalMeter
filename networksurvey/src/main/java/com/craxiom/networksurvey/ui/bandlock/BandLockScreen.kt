@@ -103,7 +103,10 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
      * to 60 s so sparse DIAG serving heartbeats do not flash the row empty
      * every second-tick when the 15 s freshness window expires in between. */
     var heldServing by remember { mutableStateOf<DiagRecord?>(null) }
-    val enabled = !state.busy && state.availability == LockAvailability.Ready
+    val enabled = !state.busy && (
+        state.availability == LockAvailability.Ready ||
+            state.availability == LockAvailability.Cached && state.profile.canLock
+        )
     val bands = if (radio == LockRadio.Lte) lteBands else if (target == LockTarget.Cell) nrBand else nrBands
     val channel = if (radio == LockRadio.Lte) lteChannel else nrChannel
     val pci = if (radio == LockRadio.Lte) ltePci else nrPci
@@ -162,6 +165,7 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
                     if (advanced) Text(model.device, style = MaterialTheme.typography.titleSmall)
                     Text(stringResource(when {
                         state.availability == LockAvailability.Unchecked -> R.string.lock_unchecked
+                        state.availability == LockAvailability.Cached -> R.string.lock_cached_unconfirmed
                         state.availability == LockAvailability.Checking -> R.string.lock_checking
                         operating -> R.string.lock_working
                         state.availability == LockAvailability.Ready && state.profile.level == LockSupportLevel.Verified -> R.string.lock_ready
@@ -196,7 +200,7 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
             }
             if (advanced) Text(stringResource(R.string.lock_scope), style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
-            if (operating) LinearProgressIndicator(Modifier.fillMaxWidth())
+            if (state.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
             state.result?.let { Text(stringResource(it), style = MaterialTheme.typography.bodyMedium) }
             HorizontalDivider()
             if (!advanced) Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -297,17 +301,28 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
                 Text(applyLabel)
             }
             val hasBackup = if (radio == LockRadio.Lte) state.lteBackup else state.nrBackup
+            val backupHint = if (radio == LockRadio.Lte) state.lteBackupHint else state.nrBackupHint
+            val restoreNeedsBackup = target == LockTarget.Bands
+            val backupCanBeChecked = hasBackup ||
+                (state.availability == LockAvailability.Cached && backupHint)
             val restoreLabel = stringResource(if (target == LockTarget.Bands) R.string.lock_restore_bands else R.string.lock_clear)
             OutlinedButton(
                 onClick = { pending = BandLockCommand.restore(radio, target); confirmation = "$restoreLabel · $radioLabel · $targetLabel" },
-                enabled = enabled && (target != LockTarget.Bands || hasBackup),
+                enabled = enabled && (!restoreNeedsBackup || backupCanBeChecked),
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Icon(Icons.Rounded.LockOpen, contentDescription = null, modifier = Modifier.padding(end = 8.dp))
                 Text(restoreLabel)
             }
             if (target == LockTarget.Bands) Text(
-                stringResource(if (hasBackup) R.string.lock_backup_available else R.string.lock_backup_needed),
+                stringResource(when (BandLockVerification.backupCaption(
+                    state.availability, radio, hasBackup, backupHint,
+                )) {
+                    BackupCaption.CachedHint -> R.string.lock_backup_cached
+                    BackupCaption.NeedsRecheck -> R.string.lock_cached_unconfirmed
+                    BackupCaption.Confirmed -> R.string.lock_backup_available
+                    BackupCaption.Needed -> R.string.lock_backup_needed
+                }),
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             } else Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -380,7 +395,10 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
                 }
             },
             confirmButton = {
-                TextButton(onClick = { pending = null; model.run(action) }, enabled = !state.busy) {
+                TextButton(onClick = {
+                    pending = null
+                    model.run(action, onModemRestartRequested = rootDiag::recoverAfterModemRestart)
+                }, enabled = !state.busy) {
                     Text(stringResource(R.string.lock_apply))
                 }
             },

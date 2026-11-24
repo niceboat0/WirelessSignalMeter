@@ -4,64 +4,37 @@ import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import androidx.compose.runtime.mutableStateOf
-import org.json.JSONArray
+import com.craxiom.networksurvey.R
 import org.json.JSONObject
-import java.net.HttpURLConnection
-import java.net.URL
 
 /**
- * 更新检测：拉取后端 /api/version，与本地 versionCode 比较。
- * 命中新版本 → 写入 [pendingUpdate]（自动检测弹窗）或 [checkState]（设置页手动检测）。
- *
- * 支持「主 + 备用」多服务器容灾：主服务器不可达时依次尝试 [BACKUP_URLS]，
- * 命中哪个就用哪个的地址拼 APK 下载链接（[RemoteVersion.apkUrl] 存绝对地址）。
- *
- * ⚠️ 服务器地址（http 明文，未开 HTTPS；network_security_config 已全局放行 cleartext）：
- *    - [PRIMARY_URL]：主更新服务器（47.108.209.162:9000，v3.87 起迁移）
- *    - [BACKUP_URLS]：备用服务器列表（rsrp.cn 备用域名，rsrp.top 已弃用）。每个元素为完整 base URL。
- *      备用服务器需部署相同的 update-server（同样的 version.json + APK）。
- *    若日后开启 HTTPS 反代，把地址改回 https:// 并重新构建即可。
- */
-
-/**
- * 服务端返回的新版本信息（顶层 data class，供同包各文件直接引用）。
+ * Update metadata is trusted only after an HTTPS request with platform TLS validation.
+ * Update downloads never fall back to the legacy HTTP service used by other features.
  */
 data class RemoteVersion(
-    val versionCode: Int,
+    val versionCode: Long,
     val versionName: String,
-    /** 绝对下载地址（已用命中服务器的 baseUrl 拼好） */
     val apkUrl: String,
+    val sha256: String,
     val forceUpdate: Boolean,
     val title: String,
     val releaseNotes: List<String>,
     val publishDate: String,
-    /** 实际提供该版本的服务器地址（用于 UI 提示是否走了备用） */
     val source: String = ""
 )
 
 object UpdateChecker {
-    /** 主更新服务器：NSRebuild 独立通道（/nsrebuild/ 前缀，与 WirelessSignalMeter 版本隔离） */
+    // Legacy service discovery is shared by speed nodes and diagnostic log upload.
     const val PRIMARY_URL = "http://47.108.209.162:9000/nsrebuild"
-    /**
-     * 备用服务器列表：主不可达时依次尝试。
-     *  - rsrp.cn:9000 ：备用域名（解析到主服务器同一 Node 服务，多域名冗余；rsrp.top 已弃用）
-     * 备用服务器需部署相同的 update-server（同样的 version.json + APK）。
-     */
     private val BACKUP_URLS: List<String> = listOf("http://rsrp.cn:9000/nsrebuild")
+    private val SECURE_UPDATE_URLS = listOf("https://rsrp.cn/nsrebuild")
 
-    /**
-     * 版本清单取用路径，按顺序尝试（只有拿到"更高版本"才停）：
-     *  - /api/version  ：后端接口（读服务端 version.json）
-     *  - /version.json ：静态清单兜底。后端进程若未重启/接口不可用时仍能发版，
-     *                    只需把新的 version.json 传到 public/ 下即可。
-     */
     private val VERSION_PATHS = listOf("/api/version", "/version.json")
     internal const val LOG_PATH = "/api/log"
     private const val PREFS = "update_check_prefs"
     private const val KEY_LAST = "last_check_ts"
     private const val KEY_IGNORED = "ignored_version_code"
     private const val CHECK_INTERVAL_MS = 24L * 60 * 60 * 1000 // 每天最多检查一次（手动/强提醒时 force=true 跳过）
-    private const val TIMEOUT_MS = 8000
 
     /** 供 Compose 读取以弹窗（新版本到来时置位，自动检测用） */
     val pendingUpdate = mutableStateOf<RemoteVersion?>(null)
@@ -76,7 +49,7 @@ object UpdateChecker {
     }
     val checkState = mutableStateOf<CheckUiState>(CheckUiState.Idle)
 
-    /** 候选服务器（主 + 备用，去重，统一去尾斜杠） */
+    /** Legacy endpoints for speed nodes and log upload only; never use for app updates. */
     internal fun candidateUrls(): List<String> {
         val set = LinkedHashSet<String>()
         set.add(PRIMARY_URL.trimEnd('/'))
@@ -97,7 +70,7 @@ object UpdateChecker {
                 val currentVersion = getCurrentVersionCode(context)
                 var updated: RemoteVersion? = null
                 var anySuccess = false
-                outer@ for (base in candidateUrls()) {
+                outer@ for (base in SECURE_UPDATE_URLS) {
                     for (p in VERSION_PATHS) {
                         when (val r = fetchVersion(base, p, currentVersion)) {
                             is FetchResult.Updated -> { updated = r.rv; break@outer }
@@ -121,53 +94,50 @@ object UpdateChecker {
                         // 自动检测：已最新则静默
                     }
                     else -> {
-                        if (manual) main.post { checkState.value = CheckUiState.Error("网络异常，请检查网络或稍后重试") }
+                        if (manual) main.post {
+                            checkState.value = CheckUiState.Error(context.getString(R.string.update_secure_service_unavailable))
+                        }
                         // 自动检测：全部失败则静默
                     }
                 }
             } catch (_: Exception) {
-                if (manual) main.post { checkState.value = CheckUiState.Error("网络异常，请检查网络或稍后重试") }
+                if (manual) main.post {
+                    checkState.value = CheckUiState.Error(context.getString(R.string.update_secure_service_unavailable))
+                }
             }
         }.start()
     }
 
     /** 从单个 baseUrl + path 拉取并解析版本；按结果分类 */
-    private fun fetchVersion(baseUrl: String, path: String, currentVersion: Int): FetchResult {
+    private fun fetchVersion(baseUrl: String, path: String, currentVersion: Long): FetchResult {
         return try {
-            val conn = (URL(baseUrl + path).openConnection() as HttpURLConnection).apply {
-                requestMethod = "GET"
-                connectTimeout = TIMEOUT_MS
-                readTimeout = TIMEOUT_MS
-            }
-            val codeResp = conn.responseCode
-            if (codeResp != 200) { conn.disconnect(); return FetchResult.Fail }
-            val body = conn.inputStream.bufferedReader().use { it.readText() }
-            conn.disconnect()
-            val j = JSONObject(body)
-            val code = j.optInt("versionCode", 0)
-            if (code <= currentVersion) return FetchResult.UpToDate // 已是最新
-            val notes = ArrayList<String>()
-            (j.optJSONArray("releaseNotes") as? JSONArray)?.let { arr ->
-                for (i in 0 until arr.length()) notes.add(arr.optString(i, ""))
-            }
-            val rel = j.optString("apkUrl", "")
-            if (rel.isEmpty()) return FetchResult.Fail
-            val absApk = if (rel.startsWith("http")) rel else baseUrl.trimEnd('/') + rel
-            FetchResult.Updated(
-                RemoteVersion(
-                    code,
-                    j.optString("versionName", ""),
-                    absApk,
-                    j.optBoolean("forceUpdate", false),
-                    j.optString("title", "发现新版本"),
-                    notes,
-                    j.optString("publishDate", ""),
-                    source = baseUrl
-                )
-            )
+            val version = parseVersion(SecureUpdateTransport.readManifest(baseUrl + path), baseUrl)
+            if (version.versionCode <= currentVersion) FetchResult.UpToDate
+            else FetchResult.Updated(version)
         } catch (_: Exception) {
             FetchResult.Fail
         }
+    }
+
+    internal fun parseVersion(body: String, baseUrl: String): RemoteVersion {
+        val json = JSONObject(body)
+        val code = json.optLong("versionCode", 0L)
+        if (code <= 0L) throw UpdateSecurity.Rejected(UpdateSecurity.Failure.INVALID_MANIFEST)
+        val hash = UpdateSecurity.requireSha256(json.optString("sha256", ""))
+        val url = UpdateSecurity.resolveApkUrl(baseUrl, json.optString("apkUrl", ""))
+        val notes = json.optJSONArray("releaseNotes")
+        return RemoteVersion(
+            versionCode = code,
+            versionName = json.optString("versionName", "").take(100),
+            apkUrl = url,
+            sha256 = hash,
+            forceUpdate = json.optBoolean("forceUpdate", false),
+            title = json.optString("title", "").take(200),
+            releaseNotes = if (notes == null) emptyList() else
+                (0 until minOf(notes.length(), 50)).map { notes.optString(it, "").take(500) },
+            publishDate = json.optString("publishDate", "").take(100),
+            source = baseUrl,
+        )
     }
 
     private sealed class FetchResult {
@@ -176,29 +146,26 @@ object UpdateChecker {
         data object Fail : FetchResult()
     }
 
-    private fun getCurrentVersionCode(context: Context): Int {
+    private fun getCurrentVersionCode(context: Context): Long {
         return try {
             val pi = context.packageManager.getPackageInfo(context.packageName, 0)
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
-                pi.longVersionCode.toInt()
-            } else {
-                @Suppress("DEPRECATION") pi.versionCode
-            }
-        } catch (_: Exception) { 0 }
+            pi.longVersionCode
+        } catch (_: Exception) { 0L }
     }
 
     /** 忽略某个版本（自动弹窗不再提示，直到该版本被更新或用户手动检测） */
-    fun ignoreVersion(context: Context, versionCode: Int) {
+    fun ignoreVersion(context: Context, versionCode: Long) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .edit().putInt(KEY_IGNORED, versionCode).apply()
+            .edit().putLong(KEY_IGNORED, versionCode).apply()
     }
 
-    private fun isIgnored(context: Context, versionCode: Int): Boolean =
+    /** A user-requested download must remain retryable after the process is interrupted. */
+    internal fun allowDownloadRetry(context: Context) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .getInt(KEY_IGNORED, 0) == versionCode
+            .edit().remove(KEY_LAST).apply()
+    }
 
-    /** 把后端返回的相对/绝对 apkUrl 拼成完整下载地址（绝对地址直接返回） */
-    fun fullApkUrl(relativeOrAbsolute: String): String =
-        if (relativeOrAbsolute.startsWith("http")) relativeOrAbsolute
-        else PRIMARY_URL.trimEnd('/') + relativeOrAbsolute
+    private fun isIgnored(context: Context, versionCode: Long): Boolean =
+        (context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .all[KEY_IGNORED] as? Number)?.toLong() == versionCode
 }

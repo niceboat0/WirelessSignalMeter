@@ -209,6 +209,13 @@
     <string name="lock_channel_caps">Channel %1$s · %2$s</string>
     <string name="lock_checking">Checking Root and DIAG</string>
     <string name="lock_unchecked">Device not checked</string>
+    <string name="lock_cached_unconfirmed">Verification pending until the first operation</string>
+    <string name="lock_backup_cached">A previous check recorded a band backup. Confirm the file is still present after a fresh device check before restoring.</string>
+    <string name="lock_restore_blocked_missing">No usable original band backup was found. Restore was not applied.</string>
+    <string name="lock_restore_blocked_unreadable">The original band backup could not be read. Restore was not applied.</string>
+    <string name="lock_restore_blocked_corrupt">The original band backup is damaged or the wrong size. Restore was not applied.</string>
+    <string name="lock_restore_blocked_mismatch">The band backup does not match this device. No change was applied.</string>
+    <string name="lock_write_blocked_unconfirmed">This device has not been rechecked in the current session. No change was applied.</string>
     <string name="lock_unavailable">Root authorization or the supported Qualcomm DIAG channel is unavailable</string>
     <string name="lock_working">Operation in progress</string>
     <string name="lock_scope">Qualcomm diag-router · primary modem stack. SIM selection is unavailable.</string>
@@ -243,6 +250,7 @@
     <string name="lock_restart_sent">Configuration acknowledged; modem restart requested. Wait for registration and check the serving cell.</string>
     <string name="lock_accepted">The modem acknowledged the operation. Check the serving cell to confirm the result.</string>
     <string name="lock_failed">Operation failed or its result is unconfirmed. Changes may be partial; check the execution log.</string>
+    <string name="lock_nr_baseline_unverified">Original 5G bands could not be verified. No bands were changed.</string>
     <string name="lock_confirm_apply_mode">This applies the lock and switches to the matching network mode. Calls and data may be interrupted.</string>
     <string name="lock_confirm_apply_restart">This writes the lock settings, restarts the modem, and switches to the matching network mode. Calls and data may be interrupted.</string>
     <string name="lock_mode_unconfirmed">The lock settings were acknowledged, but the mode change is unconfirmed. Check the execution log or switch modes manually.</string>
@@ -632,10 +640,10 @@
     <string name="location_provider_mdm_description">Specifies what provider to use for getting the device\'s location. The options are 0, 1, 2, or 3. 0 is for FUSED, 1 is for GNSS, 2 is for NETWORK, and 3 is for ALL.</string>
 
     <string name="security_config_title">Security Config</string>
-    <string name="allow_intent_control_title">Allow other apps to Start NS</string>
-    <string name="allow_intent_control_description">True to allow other apps to start Network Survey via an Intent</string>
-    <string name="allow_intent_control_summary_on">Other apps can start Network Survey</string>
-    <string name="allow_intent_control_summary_off">Other apps will be blocked from starting Network Survey</string>
+    <string name="allow_intent_control_title">Allow external recording control</string>
+    <string name="allow_intent_control_description">Allow other apps to start or stop recordings</string>
+    <string name="allow_intent_control_summary_on">Other apps can start and stop recordings</string>
+    <string name="allow_intent_control_summary_off">External recording control is disabled</string>
 
     <string name="tower_map_config_title">Tower Map Config</string>
     <string name="tower_map_no_towers_in_area">No towers found in the area</string>
@@ -1515,5 +1523,15 @@
     <string name="diag_bg_notification_title_listen">Live DIAG</string>
     <string name="diag_bg_notification_text_listen">Listening for modem data. No test task is recording.</string>
 
+
+    <string name="update_install_permission">Allow installation from this app, then tap Update again.</string>
+    <string name="update_validation_failed">Update verification failed. The package will not be installed.</string>
+    <string name="update_download_in_progress">An update is already downloading or being verified.</string>
+    <string name="update_download_started">Downloading update. Return to this app to install when the download is ready.</string>
+    <string name="update_ready_to_install">Update verified and ready. Confirm installation in this app.</string>
+    <string name="update_install_now">Install now</string>
+    <string name="update_install_failed">Could not open the installer. Check installation permissions and try again.</string>
+    <string name="update_download_failed">Update download failed. Please try again later.</string>
+    <string name="update_secure_service_unavailable">The secure update service is unavailable or returned invalid update information. Try again later.</string>
 
 </resources>
