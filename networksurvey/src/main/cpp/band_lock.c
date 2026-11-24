@@ -213,11 +213,41 @@ static int efs_read(const char *path, uint8_t *out, int cap, int *size) {
     return rc ? rc : (total > 0 ? 0 : 1);
 }
 
-/* Fixed-item reader. The tool deliberately accepts no arbitrary NV path (see
- * docs/LOCKBAND.md); only the two cell-lock items it manages are exposed. */
+/* EFS2 STAT. Returns 0 with size/mode filled, 2 when the modem reports an
+ * errno (item absent, or the subsystem refuses STAT), 1 when no reply came. */
+static int efs_stat_size(const char *path, int *size, uint32_t *mode) {
+    uint8_t payload[200], response[8192];
+    int n = lb_efs_stat(payload, path);
+    uint32_t tx;
+    if (n >= (int)sizeof(payload) || send_frame(payload, n, &tx)) return 1;
+    long long deadline = monotonic_ms() + 2500;
+    while (monotonic_ms() < deadline) {
+        int length = receive(response, sizeof(response), 300);
+        if (length <= 0) continue;
+        int at = lb_find_reply(response, length, 0x000f134b);
+        if (at < 0 || length < at + 12) continue;
+        if (lb_read32(response + at)) return 2;              /* errno */
+        *mode = lb_read32(response + at + 4);
+        *size = (int)lb_read32(response + at + 8);
+        return 0;
+    }
+    return 1;
+}
+
+/* Fixed-item probe. STAT answers mode and size in a single frame, so the
+ * common case transfers no data at all; when STAT is refused or unavailable
+ * the OPEN/READ/CLOSE path runs as a fallback and dumps the bytes. */
 static int item_probe(const char *label, const char *path, int *size_out) {
-    static uint8_t buf[1024];
+    uint32_t mode = 0;
     int size = 0;
+    if (efs_stat_size(path, &size, &mode) == 0) {
+        printf("RESULT %s size=%d\n", label, size);
+        printf("MODE %s 0%o item=%d\n", label, (unsigned)mode,
+            (mode & 0170000u) == 0160000u);
+        *size_out = size;
+        return 0;
+    }
+    static uint8_t buf[1024];
     int rc = efs_read(path, buf, (int)sizeof(buf), &size);
     if (rc) {
         printf("RESULT %s read_failed rc=%d\n", label, rc);

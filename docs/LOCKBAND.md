@@ -143,12 +143,16 @@ Pioneer 两代命令与 T-Phone 三套编码互相矛盾（静态无法判定 mo
 
 ### 读通道与自检命令
 
-新增 EFS2 **OPEN / READ / CLOSE** 读通道（子系统 0x13，子命令 2 / 4 / 3），与既有的 `GET_DEPRECATED`（0x27）并存：后者只对部分条目有回包，前者是通用路径。READ 带显式 `bytes`/`offset`，**短读即 EOF**，因此读回的字节数就是条目的真实长度。
+自检命令优先走 **EFS2 STAT（0x13 / 15）**：一条帧就回 `errno/mode/size/nlink/atime/mtime/ctime`，**不传数据**，条目真实长度一次即得；`mode` 的类型位 `0160000` 可直接判定目标是 NV 条目（`item=1`）。
+
+STAT 被拒或固件不支持时，自动回退到 **OPEN / READ / CLOSE**（0x13 / 2 / 4 / 3）：READ 带显式 `bytes`/`offset`，短读即 EOF；回退路径额外打印 `HEX`，便于核对内容（例如 NR 记录的 SCS 字段原值）。
+
+既有的 `GET_DEPRECATED`（0x27）仍只用于频段/频点掩码读取，它仅对部分条目有回包。
 
 | 命令 | 输出 | 用途 |
 |---|---|---|
-| `lte-cell-probe` | `RESULT cell_lock_list size=N` + `HEX …` + `LAYOUT cell_lock_list 164B 20slots\|244B 30slots` | 直接判定 `cell_lock_list` 是 164 还是 244，无需真机试错 |
-| `nr-cell-probe` | `RESULT pci_lock_info size=N` + `HEX …` + `LAYOUT … 12B single-pci\|28B multi-pci\|896B 32records` | 直接判定 `pci_lock_info` 的记录格式，替代按 DeviceID 白名单猜 |
+| `lte-cell-probe` | `RESULT cell_lock_list size=N` + `MODE cell_lock_list 0… item=1` + `LAYOUT cell_lock_list 164B 20slots\|244B 30slots`（STAT 回退时附 `HEX …`） | 直接判定 `cell_lock_list` 是 164 还是 244，无需真机试错 |
+| `nr-cell-probe` | 同上 + `LAYOUT … 12B single-pci\|28B multi-pci\|896B 32records` | 直接判定 `pci_lock_info` 的记录格式，替代按 DeviceID 白名单猜 |
 
 两条命令只读、不写、不重启基带。仍然不开放任意 NV 路径读取（沿用本文档开头"没有移植路径探测"的边界），只暴露工具自己管理的这两个小区锁条目。
 

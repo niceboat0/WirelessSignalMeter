@@ -202,6 +202,15 @@ static int lb_efs_close(uint8_t *out, uint32_t fd) {
     return 8;
 }
 
+/* EFS2 STAT (subsystem 0x13, subcommand 15). One frame, no descriptor and no
+ * payload transfer: the reply carries errno, mode, size, num_links and three
+ * timestamps, so an item's real length is known without reading anything.
+ * The mode type nibble tells an NV item (0160000) from a regular file. */
+static int lb_efs_stat(uint8_t *out, const char *path) {
+    lb_u32(out, 0x000f134b);
+    return lb_copy_path(out, 4, path);
+}
+
 /* Classic NV read request: [opcode 0x26][item u16 LE][129 B slot].
  * Used as the transport dial tone for non-Samsung Qualcomm devices (the
  * diag-research v95 on-device capture: item 10 answers a full 158 B reply). */

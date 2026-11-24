@@ -64,6 +64,11 @@ __declspec(dllexport) int test_band_lock_protocol(void) {
     CHECK(lb_read32(data + 4) == 7 && lb_read32(data + 8) == 1024 && lb_read32(data + 12) == 0);
     efs_size = lb_efs_close(data, 7);
     CHECK(efs_size == 8 && lb_read32(data) == 0x0003134b && lb_read32(data + 4) == 7);
+    /* EFS2 STAT (subsystem 0x13, subcommand 15): one frame, no descriptor. */
+    efs_size = lb_efs_stat(data, "/nv/item_files/modem/lte/rrc/efs/cell_lock_list");
+    CHECK(efs_size == 52 && lb_read32(data) == 0x000f134b);
+    CHECK(data[0] == 0x4b && data[1] == 0x13 && data[2] == 0x0f && data[3] == 0x00);
+    CHECK(data[4] == '/' && data[efs_size - 1] == 0);
     mask[0] = 0x10;
     int size = lb_put(data, LB_LTE_BANDS, mask, 8, 1);
     CHECK(lb_read32(data) == 0x0026134b);
