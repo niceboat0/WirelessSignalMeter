@@ -141,9 +141,22 @@ Pioneer 两代命令与 T-Phone 三套编码互相矛盾（静态无法判定 mo
 - 未实现 896B（32 条记录）整项写入：Pioneer 只写单条 28B，896B 仅见于 T-Phone，缺实机证据。
 - `lte-cell-clear` 仍会一并删除 `csp/pci_lock`（历史行为）；Pioneer 解锁只删 `cell_lock_list`，此差异已知且风险低。
 
+### 读通道与自检命令
+
+新增 EFS2 **OPEN / READ / CLOSE** 读通道（子系统 0x13，子命令 2 / 4 / 3），与既有的 `GET_DEPRECATED`（0x27）并存：后者只对部分条目有回包，前者是通用路径。READ 带显式 `bytes`/`offset`，**短读即 EOF**，因此读回的字节数就是条目的真实长度。
+
+| 命令 | 输出 | 用途 |
+|---|---|---|
+| `lte-cell-probe` | `RESULT cell_lock_list size=N` + `HEX …` + `LAYOUT cell_lock_list 164B 20slots\|244B 30slots` | 直接判定 `cell_lock_list` 是 164 还是 244，无需真机试错 |
+| `nr-cell-probe` | `RESULT pci_lock_info size=N` + `HEX …` + `LAYOUT … 12B single-pci\|28B multi-pci\|896B 32records` | 直接判定 `pci_lock_info` 的记录格式，替代按 DeviceID 白名单猜 |
+
+两条命令只读、不写、不重启基带。仍然不开放任意 NV 路径读取（沿用本文档开头"没有移植路径探测"的边界），只暴露工具自己管理的这两个小区锁条目。
+
+同批用外部实现（AirTap Framework，QCSuper 血统）的 EFS2 子命令枚举交叉确认了此前标注"语义未定"的两条：写前预触 `4B 13 10 00` 是 **LSTAT (16)**，删除后那条 9 字节帧 `4B 13 13 00 2F 00 …` 是 **STATFS (19)**，载荷 `2F 00` 就是路径 `"/"`（用 statfs 逼一次落盘）。
+
 ### 验证
 
 - NDK 27.3.13750724 clang `-std=gnu11 -Wall -Wextra -Werror -O2` 编译通过，无告警。
-- `src/test/cpp/band_lock_protocol_test.c` 新增 SCS 三套编码与 28B 记录布局用例（含空表、超 8 个 PCI、尾逗号、PCI 越界、band=0 的拒绝路径）。
+- `src/test/cpp/band_lock_protocol_test.c` 新增 SCS 三套编码、28B 记录布局与 OPEN/READ/CLOSE 帧布局用例（含空表、超 8 个 PCI、尾逗号、PCI 越界、band=0 的拒绝路径）。
 - `networksurvey/src/test/cpp/test_band_lock_host.ps1`：协议测试与备份测试全部 PASS。
-- 未做实机验证：164/244 选择、SCS 编码、28B 多 PCI 均需按 §七 第 9 节矩阵在 SM-S9370 上实测。
+- 未做实机验证：164/244 选择、SCS 编码、28B 多 PCI 均需按 §七 第 9 节矩阵在 SM-S9370 上实测；两条 probe 命令的成功与否同样需真机确认。

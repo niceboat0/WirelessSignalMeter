@@ -52,6 +52,18 @@ __declspec(dllexport) int test_band_lock_protocol(void) {
     CHECK(!lb_nr_cell_record(data, "42,", 504990, 1, 78));
     CHECK(!lb_nr_cell_record(data, "1008", 504990, 1, 78));
     CHECK(!lb_nr_cell_record(data, "42", 504990, 1, 0));
+    /* EFS2 OPEN / READ / CLOSE (subsystem 0x13, subcommands 2 / 4 / 3): the
+     * general read path, opener of the length self-check. */
+    int efs_size = lb_efs_open(data, "/nv/item_files/modem/nr5g/RRC/pci_lock_info");
+    CHECK(efs_size == 56 && lb_read32(data) == 0x0002134b);
+    CHECK(data[0] == 0x4b && data[1] == 0x13 && data[2] == 0x02 && data[3] == 0x00);
+    CHECK(lb_read32(data + 4) == 0 && lb_read32(data + 8) == 0);
+    CHECK(data[12] == '/' && data[efs_size - 1] == 0);
+    efs_size = lb_efs_read(data, 7, 1024, 0);
+    CHECK(efs_size == 16 && lb_read32(data) == 0x0004134b);
+    CHECK(lb_read32(data + 4) == 7 && lb_read32(data + 8) == 1024 && lb_read32(data + 12) == 0);
+    efs_size = lb_efs_close(data, 7);
+    CHECK(efs_size == 8 && lb_read32(data) == 0x0003134b && lb_read32(data + 4) == 7);
     mask[0] = 0x10;
     int size = lb_put(data, LB_LTE_BANDS, mask, 8, 1);
     CHECK(lb_read32(data) == 0x0026134b);

@@ -158,6 +158,79 @@ static int read_mask(const char *path, int bytes, uint8_t *mask) {
     return read_mask_to(path, bytes, mask, 64, 3000);
 }
 
+/* General EFS item read: OPEN -> READ -> CLOSE. Returns 0 with *size set, 1
+ * when the item cannot be opened or read, 2 when the modem reports an errno.
+ * READ carries an explicit byte count, so a short read is what reveals the
+ * item's real length (cell_lock_list 164 vs 244, pci_lock_info 12 vs 28). */
+static int efs_read(const char *path, uint8_t *out, int cap, int *size) {
+    uint8_t payload[200], response[8192];
+    uint32_t tx, fd = 0;
+    int n = lb_efs_open(payload, path);
+    if (n >= (int)sizeof(payload) || send_frame(payload, n, &tx)) return 1;
+    int opened = 0;
+    long long deadline = monotonic_ms() + 3000;
+    while (monotonic_ms() < deadline) {
+        int length = receive(response, sizeof(response), 300);
+        if (length <= 0) continue;
+        int at = lb_find_reply(response, length, 0x0002134b);
+        if (at < 0 || length < at + 8) continue;
+        fd = lb_read32(response + at);
+        if (lb_read32(response + at + 4)) return 2;
+        opened = 1;
+        break;
+    }
+    if (!opened) return 1;
+    int total = 0, rc = 0;
+    while (total < cap) {
+        int want = cap - total;
+        if (want > 1024) want = 1024;
+        n = lb_efs_read(payload, fd, (uint32_t)want, (uint32_t)total);
+        if (send_frame(payload, n, &tx)) { rc = 1; break; }
+        int got = -1;
+        deadline = monotonic_ms() + 3000;
+        while (monotonic_ms() < deadline) {
+            int length = receive(response, sizeof(response), 300);
+            if (length <= 0) continue;
+            int at = lb_find_reply(response, length, 0x0004134b);
+            if (at < 0 || length < at + 16) continue;
+            uint32_t err = lb_read32(response + at + 12);
+            uint32_t count = lb_read32(response + at + 8);
+            if (err) { got = -2; break; }
+            int avail = length - at - 16;
+            if (count > (uint32_t)avail) count = (uint32_t)avail;
+            if (count > (uint32_t)(cap - total)) count = (uint32_t)(cap - total);
+            for (uint32_t i = 0; i < count; i++) out[total + i] = response[at + 16 + i];
+            got = (int)count;
+            break;
+        }
+        if (got < 0) { rc = (got == -2) ? 2 : 1; break; }
+        total += got;
+        if (got < want) break;          /* short read: end of item */
+    }
+    lb_efs_close(payload, fd);
+    send_frame(payload, 8, &tx);        /* best effort, reply not needed */
+    *size = total;
+    return rc ? rc : (total > 0 ? 0 : 1);
+}
+
+/* Fixed-item reader. The tool deliberately accepts no arbitrary NV path (see
+ * docs/LOCKBAND.md); only the two cell-lock items it manages are exposed. */
+static int item_probe(const char *label, const char *path, int *size_out) {
+    static uint8_t buf[1024];
+    int size = 0;
+    int rc = efs_read(path, buf, (int)sizeof(buf), &size);
+    if (rc) {
+        printf("RESULT %s read_failed rc=%d\n", label, rc);
+        return 1;
+    }
+    printf("RESULT %s size=%d\n", label, size);
+    printf("HEX %s ", label);
+    for (int i = 0; i < size; i++) printf("%02x", buf[i]);
+    printf("\n");
+    *size_out = size;
+    return 0;
+}
+
 static int restore_mask(const char *name, int bytes, uint8_t *mask) {
     int fd = openat(state_dir, name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
     if (fd < 0) return 1;
@@ -474,6 +547,23 @@ static int execute(int argc, char **argv) {
         printf("BACKUP nr %d\n", !restore_mask("nr-original.bin", 64, mask) || nr_marker_exists());
         printf("BACKUP nr_nsa %d\n", !nsa_backup_possible());
         printf("FULLSET nr %d\n", nr_full_bits());
+        return 0;
+    }
+    if (!strcmp(cmd, "lte-cell-probe") && argc == 1) {
+        int size;
+        if (item_probe("cell_lock_list", LB_LTE_CELL, &size)) return 1;
+        if (size == 164) puts("LAYOUT cell_lock_list 164B 20slots");
+        else if (size == 244) puts("LAYOUT cell_lock_list 244B 30slots");
+        else printf("LAYOUT cell_lock_list unexpected-%d\n", size);
+        return 0;
+    }
+    if (!strcmp(cmd, "nr-cell-probe") && argc == 1) {
+        int size;
+        if (item_probe("pci_lock_info", LB_NR_CELL, &size)) return 1;
+        if (size == 12) puts("LAYOUT pci_lock_info 12B single-pci");
+        else if (size == 28) puts("LAYOUT pci_lock_info 28B multi-pci");
+        else if (size == 896) puts("LAYOUT pci_lock_info 896B 32records");
+        else printf("LAYOUT pci_lock_info unexpected-%d\n", size);
         return 0;
     }
     if ((!strcmp(cmd, "lte-band") || !strcmp(cmd, "nr-band")) && argc == 2)

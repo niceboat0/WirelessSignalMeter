@@ -170,6 +170,38 @@ static int lb_sync(uint8_t *out, const char *path) {
     return lb_copy_path(out, 6, path);
 }
 
+/* EFS2 OPEN / READ / CLOSE (subsystem 0x13, subcommands 2 / 4 / 3).
+ * This is the general read path and the counterpart of the PUT we already
+ * use: OPEN returns a file descriptor and READ reports how many bytes the
+ * item actually holds, so a short read is what reveals an item's real length
+ * (e.g. cell_lock_list being 164 or 244 bytes). The deprecated GET (0x27)
+ * in read_mask_to() only answers for items the modem exposes that way.
+ * Layout follows the QCSuper lineage (AirTap Framework efs_shell_commands):
+ *   OPEN  : [kind i32 = 0][oflag i32 = 0][path][00]
+ *   READ  : [fd i32][bytes u32][offset u32]
+ *   CLOSE : [fd i32]
+ * Subcommand numbers come from the EFS2 enum: 2 OPEN, 3 CLOSE, 4 READ. */
+static int lb_efs_open(uint8_t *out, const char *path) {
+    lb_u32(out, 0x0002134b);
+    lb_u32(out + 4, 0);
+    lb_u32(out + 8, 0);
+    return lb_copy_path(out, 12, path);
+}
+
+static int lb_efs_read(uint8_t *out, uint32_t fd, uint32_t bytes, uint32_t offset) {
+    lb_u32(out, 0x0004134b);
+    lb_u32(out + 4, fd);
+    lb_u32(out + 8, bytes);
+    lb_u32(out + 12, offset);
+    return 16;
+}
+
+static int lb_efs_close(uint8_t *out, uint32_t fd) {
+    lb_u32(out, 0x0003134b);
+    lb_u32(out + 4, fd);
+    return 8;
+}
+
 /* Classic NV read request: [opcode 0x26][item u16 LE][129 B slot].
  * Used as the transport dial tone for non-Samsung Qualcomm devices (the
  * diag-research v95 on-device capture: item 10 answers a full 158 B reply). */
