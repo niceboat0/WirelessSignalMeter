@@ -262,8 +262,10 @@ public class NetworkSurveyService extends Service implements
     @Override
     public int onStartCommand(Intent intent, int flags, int startId)
     {
-        // If we are started at boot, then that means the NetworkSurveyActivity was never run.  Therefore, to ensure we
-        // read and respect the auto start logging user preferences, we need to read them and start logging here.
+        if (intent == null) return START_NOT_STICKY;
+
+        // This component is private. Only the app's boot receiver/worker can request boot logging;
+        // the exported control receiver forwards an allowlist of recording flags, never this extra.
         final boolean startedAtBoot = intent.getBooleanExtra(NetworkSurveyConstants.EXTRA_STARTED_AT_BOOT, false);
         if (startedAtBoot)
         {

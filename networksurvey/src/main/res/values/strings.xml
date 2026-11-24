@@ -632,10 +632,10 @@
     <string name="location_provider_mdm_description">Specifies what provider to use for getting the device\'s location. The options are 0, 1, 2, or 3. 0 is for FUSED, 1 is for GNSS, 2 is for NETWORK, and 3 is for ALL.</string>
 
     <string name="security_config_title">Security Config</string>
-    <string name="allow_intent_control_title">Allow other apps to Start NS</string>
-    <string name="allow_intent_control_description">True to allow other apps to start Network Survey via an Intent</string>
-    <string name="allow_intent_control_summary_on">Other apps can start Network Survey</string>
-    <string name="allow_intent_control_summary_off">Other apps will be blocked from starting Network Survey</string>
+    <string name="allow_intent_control_title">Allow external recording control</string>
+    <string name="allow_intent_control_description">Allow other apps to start or stop recordings</string>
+    <string name="allow_intent_control_summary_on">Other apps can start and stop recordings</string>
+    <string name="allow_intent_control_summary_off">External recording control is disabled</string>
 
     <string name="tower_map_config_title">Tower Map Config</string>
     <string name="tower_map_no_towers_in_area">No towers found in the area</string>
@@ -1515,5 +1515,15 @@
     <string name="diag_bg_notification_title_listen">Live DIAG</string>
     <string name="diag_bg_notification_text_listen">Listening for modem data. No test task is recording.</string>
 
+
+    <string name="update_install_permission">Allow installation from this app, then tap Update again.</string>
+    <string name="update_validation_failed">Update verification failed. The package will not be installed.</string>
+    <string name="update_download_in_progress">An update is already downloading or being verified.</string>
+    <string name="update_download_started">Downloading update. Return to this app to install when the download is ready.</string>
+    <string name="update_ready_to_install">Update verified and ready. Confirm installation in this app.</string>
+    <string name="update_install_now">Install now</string>
+    <string name="update_install_failed">Could not open the installer. Check installation permissions and try again.</string>
+    <string name="update_download_failed">Update download failed. Please try again later.</string>
+    <string name="update_secure_service_unavailable">The secure update service is unavailable or returned invalid update information. Try again later.</string>
 
 </resources>

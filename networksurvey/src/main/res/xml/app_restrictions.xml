@@ -121,7 +121,7 @@
         android:title="@string/location_provider_title" />
 
     <restriction
-        android:defaultValue="true"
+        android:defaultValue="false"
         android:description="@string/allow_intent_control_description"
         android:key="allow_intent_control"
         android:restrictionType="bool"
