@@ -18,6 +18,7 @@ static char output[8192];
 static void emit_locked(const char *line) { snprintf(output, sizeof(output), "%s", line); }
 static void layout_seen(uint16_t code, uint32_t ver, const uint8_t *b, int n) {}
 static void unknown_layout(uint16_t code, uint32_t ver, const uint8_t *b, int n, const char *why) {}
+static void layout_variant(uint16_t code, uint32_t ver, int blen, int records) {}
 
 #include "nr_config_under_test.inc"
 
@@ -78,6 +79,9 @@ __declspec(dllexport) const char *nr_ca_feed(int version, int count, int length_
         case 3: put_le(secondary + 4, 4, 2); break;
         case 4: put_le(secondary + 16, 65535, 2); break;
         case 5: put_le(secondary + 8, 0, 4); break;
+        /* Fixed-size table longer than the declared active count: 3 rows of
+         * data but the count byte says 1. */
+        case 6: b[9] = 1; break;
     }
     output[0] = 0;
     parse_nr_b9a7(b, 24 + count * 24 + length_delta);

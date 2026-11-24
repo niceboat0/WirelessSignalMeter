@@ -92,7 +92,7 @@ if (([NrConfigTest]::Ca(0x30002, 0, 0, 0) | ConvertFrom-Json).cc.Count -ne 0 -or
     ([NrConfigTest]::Ca(0x30002, 16, 0, 0) | ConvertFrom-Json).cc.Count -ne 16) {
     throw 'B9A7 boundary count failed'
 }
-foreach ($lengthDelta in -95,-49,-1,1) {
+foreach ($lengthDelta in -95,-49,-24,-1,1) {
     if ([NrConfigTest]::Ca(0x30002, 3, $lengthDelta, 0)) { throw 'Bad B9A7 length accepted' }
 }
 if ([NrConfigTest]::Ca(0x30001, 3, 0, 0) -or [NrConfigTest]::Ca(0x30002, 17, 0, 0)) {
@@ -102,6 +102,13 @@ foreach ($fault in 1..5) {
     if ([NrConfigTest]::Ca(0x30002, 3, 0, $fault)) { throw "Malformed B9A7 carrier accepted: $fault" }
 }
 Write-Output 'PASS B9A7: versions 2.3/2.4/3.0/3.2, DL/UL fields, SUL placeholder, malformed record rejection'
+
+# A fixed-size table whose count byte names fewer rows than the payload holds.
+$grow = [NrConfigTest]::Ca(0x30002, 3, 0, 6) | ConvertFrom-Json
+if ($grow.cc.Count -ne 3 -or $grow.cc[1].pci -ne 101) {
+    throw 'B9A7 length-implied row count was not used'
+}
+Write-Output 'PASS B9A7 variant: table longer than the declared count decodes all rows'
 
 $snr = [NrConfigTest]::Snr(1, 293, 0x30002, 0, 28, 10240, 12000) | ConvertFrom-Json
 if ($snr.carrier -ne 1 -or $snr.pci -ne 293 -or $snr.sinr -ne 10 -or $snr.rs -ne 'SSB' -or

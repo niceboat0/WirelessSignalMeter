@@ -403,14 +403,31 @@ static void unknown_layout(uint16_t code, uint32_t ver, const uint8_t *body, int
 }
 
 /* Record the version and size without exporting payload bytes. */
-static void layout_seen(uint16_t code, uint32_t ver, const uint8_t *body, int blen) {
+static void layout_seen(uint16_t code, uint32_t ver, const uint8_t *b, int blen) {
     static struct { uint16_t code; uint32_t ver; } seen[64];
     static int nseen;
     for (int i = 0; i < nseen; i++) if (seen[i].code == code && seen[i].ver == ver) return;
     if (nseen < 64) { seen[nseen].code = code; seen[nseen].ver = ver; nseen++; } else return;
     struct jb j; jb_init(&j, "layout_seen");
     jb_add(&j, ",\"code\":\"0x%04X\",\"ver\":\"0x%x\",\"len\":%d", code, ver, blen);
-    (void)body;
+    (void)b;
+    jb_emit(&j);
+}
+
+/* A fixed-size table can carry more rows than its "active count" byte names.
+ * When the payload length is an exact multiple of the stride but the header
+ * count is smaller (or unusable), the length is the reliable side: decode the
+ * rows the bytes support and note the variant once per code/version/length. */
+static void layout_variant(uint16_t code, uint32_t ver, int blen, int records) {
+    static struct { uint16_t code; uint32_t ver; int blen; } seen[16];
+    static int nseen;
+    for (int i = 0; i < nseen; i++)
+        if (seen[i].code == code && seen[i].ver == ver && seen[i].blen == blen) return;
+    if (nseen < 16) { seen[nseen].code = code; seen[nseen].ver = ver; seen[nseen].blen = blen; nseen++; }
+    else return;
+    struct jb j; jb_init(&j, "layout_variant");
+    jb_add(&j, ",\"code\":\"0x%04X\",\"ver\":\"0x%x\",\"len\":%d,\"records\":%d",
+           code, ver, blen, records);
     jb_emit(&j);
 }
 
@@ -2463,9 +2480,20 @@ static void parse_nr_b888(const uint8_t *b, int n) {
     else if (rel_maj == 3 && rel_min == 1) { hdr = 20; nrec = b[7]; }
     else { unknown_layout(0xB888, ((uint32_t)rel_maj << 16 | (uint32_t)rel_min), b, n, "version"); return; }
     uint32_t version = rd32(b);
+    int nrec_used = nrec;
     if (nrec <= 0 || nrec > 8 || hdr + nrec * 72 != n) {
-        unknown_layout(0xB888, version, b, n, "PDSCH counters length");
-        return;
+        /* A fixed-size PDSCH table can carry more rows than its active-count
+         * byte names; trust the length when it divides exactly and is larger.
+         * A shorter table than the count claims is truncation, so keep rejecting. */
+        int derived = n > hdr ? (n - hdr) / 72 : 0;
+        int usable = n > hdr && (n - hdr) % 72 == 0 && derived >= 1 && derived <= 8;
+        if (usable && (nrec <= 0 || nrec > 8 || derived > nrec)) {
+            nrec_used = derived;
+            layout_variant(0xB888, version, n, derived);
+        } else {
+            unknown_layout(0xB888, version, b, n, "PDSCH counters length");
+            return;
+        }
     }
     int64_t now = pkt_now_ms();
     if (!g_pd_t || now < g_pd_t || now - g_pd_t > 6000 || g_pd_pci != g_nr.pci ||
@@ -2478,7 +2506,7 @@ static void parse_nr_b888(const uint8_t *b, int n) {
         g_pd_t = now;
     }
     unsigned seen = 0;
-    for (int r = 0; r < nrec; r++) {
+    for (int r = 0; r < nrec_used; r++) {
         const uint8_t *p = b + hdr + r * 72;
         uint32_t cc = version == 0x30001 ? p[0] : rd32(p);
         if (cc > 7 || (seen & (1u << cc))) {
@@ -2495,7 +2523,7 @@ static void parse_nr_b888(const uint8_t *b, int n) {
     for (int cc = 0; cc < 8; cc++) {
         if (!(seen & (1u << cc))) g_pd_prev[cc].valid = g_pd_base[cc].valid = 0;
     }
-    for (int r = 0; r < nrec; r++) {
+    for (int r = 0; r < nrec_used; r++) {
         const uint8_t *p = b + hdr + r * 72;
         uint32_t cc = version == 0x30001 ? p[0] : rd32(p);
         struct pdsch_acc a = { 1, rd32(p + 4), rd32(p + 8), rd32(p + 12), rd32(p + 16), rd32(p + 20),
@@ -3347,12 +3375,23 @@ static void parse_nr_b9a7(const uint8_t *b, int n) {
         return;
     }
     int count = b[count_at];
+    int count_used = count;
     if (count > MAX_CC || n != HEADER + count * STRIDE) {
-        unknown_layout(NR_CA_STATE_CODE, ver, b, n, "count/length");
-        return;
+        /* Same rule as 0xB888: a fixed-size carrier table may be longer than
+         * the header count. Only accept the length-implied count when it is
+         * larger (a shorter table is truncation, not a variant). */
+        int derived = n > HEADER ? (n - HEADER) / STRIDE : 0;
+        int usable = n > HEADER && (n - HEADER) % STRIDE == 0 && derived >= 1 && derived <= MAX_CC;
+        if (usable && (count > MAX_CC || derived > count)) {
+            count_used = derived;
+            layout_variant(NR_CA_STATE_CODE, ver, n, derived);
+        } else {
+            unknown_layout(NR_CA_STATE_CODE, ver, b, n, "count/length");
+            return;
+        }
     }
     uint32_t seen = 0;
-    for (int i = 0; i < count; i++) {
+    for (int i = 0; i < count_used; i++) {
         const uint8_t *c = b + HEADER + i * STRIDE;
         unsigned cc = c[0], dl = rd16(c + 4), ul = rd16(c + 16);
         unsigned pci = rd16(c + 2);
@@ -3373,7 +3412,7 @@ static void parse_nr_b9a7(const uint8_t *b, int n) {
     struct jb j; jb_init(&j, "nr_ca_state");
     jb_add(&j, ",\"rat\":\"NR\",\"src\":\"B9A7\",\"ver\":\"%u.%u\",\"tentative\":0,\"cc\":[",
            ver >> 16, ver & 0xffff);
-    for (int i = 0; i < count; i++) {
+    for (int i = 0; i < count_used; i++) {
         const uint8_t *c = b + HEADER + i * STRIDE;
         jb_add(&j, "%s{\"cc\":%u,\"pci\":%u,\"ssb_arfcn\":%lu,\"band\":%u,\"dl\":%u,\"ul\":%u}",
                i ? "," : "", (unsigned)c[0], (unsigned)rd16(c + 2), (unsigned long)rd32(c + 8),
