@@ -69,6 +69,37 @@ static int lb_bands(const char *s, int max, uint8_t *mask, int bytes) {
     return 1;
 }
 
+/* 28-byte multi-PCI NR record: one ARFCN with up to eight PCI values. */
+static int lb_nr_cell_record(uint8_t *out, const char *pci_list, uint32_t arfcn,
+        uint16_t scs, uint32_t band) {
+    for (int i = 0; i < 28; i++) out[i] = 0;
+    if (!pci_list || !*pci_list || band == 0 || band > 1024) return 0;
+    int count = 0;
+    while (*pci_list) {
+        char word[5];
+        int n = 0;
+        while (*pci_list && *pci_list != ',') {
+            if (n == 4) return 0;
+            word[n++] = *pci_list++;
+        }
+        word[n] = 0;
+        uint32_t pci;
+        if (!lb_number(word, 1007, &pci) || count == 8) return 0;
+        out[2 + count * 2] = (uint8_t)pci;
+        out[3 + count * 2] = (uint8_t)(pci >> 8);
+        count++;
+        if (*pci_list == ',' && !*++pci_list) return 0;
+    }
+    if (!count) return 0;
+    out[0] = (uint8_t)count;
+    lb_u32(out + 20, arfcn);
+    out[24] = (uint8_t)scs;
+    out[25] = (uint8_t)(scs >> 8);
+    out[26] = (uint8_t)(band - 1);
+    out[27] = (uint8_t)((band - 1) >> 8);
+    return 28;
+}
+
 static int lb_scs(uint32_t khz) {
     switch (khz) {
         case 15: return 0;
@@ -77,6 +108,30 @@ static int lb_scs(uint32_t khz) {
         case 120: return 3;
         default: return -1;
     }
+}
+
+enum { LB_SCS_INDEX = 0, LB_SCS_POW2 = 1, LB_SCS_ENUM1 = 2 };
+
+static int lb_scs_enc(uint32_t khz, int encoding, uint16_t *out) {
+    if (encoding == LB_SCS_INDEX) {
+        int index = lb_scs(khz);
+        if (index < 0) return -1;
+        *out = (uint16_t)index;
+        return 0;
+    }
+    int index;
+    switch (khz) {
+        case 15: index = 0; break;
+        case 30: index = 1; break;
+        case 60: index = 2; break;
+        case 120: index = 3; break;
+        case 240: index = 4; break;
+        default: return -1;
+    }
+    if (encoding == LB_SCS_POW2) *out = (uint16_t)(1u << index);
+    else if (encoding == LB_SCS_ENUM1) *out = (uint16_t)(index + 1);
+    else return -1;
+    return 0;
 }
 
 static int lb_mkdir(uint8_t *out, const char *path, uint8_t a, uint8_t b) {
@@ -101,6 +156,33 @@ static int lb_sync(uint8_t *out, const char *path) {
     lb_u32(out, 0x0030134b);
     out[4] = 0x1f; out[5] = 0x01;
     return lb_copy_path(out, 6, path);
+}
+
+/* EFS2 OPEN / READ / CLOSE for fixed, read-only cell-lock probes. */
+static int lb_efs_open(uint8_t *out, const char *path) {
+    lb_u32(out, 0x0002134b);
+    lb_u32(out + 4, 0);
+    lb_u32(out + 8, 0);
+    return lb_copy_path(out, 12, path);
+}
+
+static int lb_efs_read(uint8_t *out, uint32_t fd, uint32_t bytes, uint32_t offset) {
+    lb_u32(out, 0x0004134b);
+    lb_u32(out + 4, fd);
+    lb_u32(out + 8, bytes);
+    lb_u32(out + 12, offset);
+    return 16;
+}
+
+static int lb_efs_close(uint8_t *out, uint32_t fd) {
+    lb_u32(out, 0x0003134b);
+    lb_u32(out + 4, fd);
+    return 8;
+}
+
+static int lb_efs_stat(uint8_t *out, const char *path) {
+    lb_u32(out, 0x000f134b);
+    return lb_copy_path(out, 4, path);
 }
 
 /* Classic NV read request: [opcode 0x26][item u16 LE][129 B slot].

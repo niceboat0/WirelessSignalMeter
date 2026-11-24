@@ -17,8 +17,8 @@ function Select-TaskFunctionBlock([string]$Start, [string]$End) {
 }
 $taskFunctions = @(
     (Select-TaskFunctionBlock 'static int backup_mask(' 'static int put_file('),
-    (Select-TaskFunctionBlock 'static int lte_band_command(' '/* nr_band_pref'),
-    (Select-TaskFunctionBlock 'static int nr_marker_exists(' 'static int cell_list(')
+    (Select-TaskFunctionBlock 'static int lte_band_command(' 'static int backup_may_exist('),
+    (Select-TaskFunctionBlock 'static int backup_may_exist(' 'static int cell_list(')
 ) -join "`n"
 [IO.File]::WriteAllText((Join-Path $taskBuild 'band_lock_backup_under_test.inc'), $taskFunctions)
 foreach ($taskSuite in @('protocol', 'backup')) {

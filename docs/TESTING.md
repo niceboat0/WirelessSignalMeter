@@ -164,7 +164,8 @@ Windows 下使用项目 NDK 直接执行协议、原始掩码备份与恢复测�
 
 - 流程：`socket(AF_QIPCRTR)` → 发 QRTR `NEW_SERVER_LOOKUP` 解析 NAS 服务 → connect →
   依次发 `NAS_GET_SERVING_SYSTEM`(0x0024) 与 `NAS_GET_RF_BAND_INFO`(0x0031)，逐步打印
-  `STEP socket/lookup/connect` 与每条 GET 的往返结果，最后 `VERDICT ready|fail`。
+  `STEP socket/lookup/connect` 与每条 GET 的结果。两条查询均成功才输出 `VERDICT ready`；
+  收到有效 QMI 结果但未全部成功时输出 `VERDICT reachable`，未收到有效结果时输出 `VERDICT fail`。
 - 消息构建是纯函数（`qmi_probe_msg.h`），主机测试可独立覆盖：
 
 ```powershell
@@ -176,7 +177,7 @@ Windows 下使用项目 NDK 直接执行协议、原始掩码备份与恢复测�
   `su -c 'exec <nativeLibraryDir>/libwireless_qmi_probe.so'`
 
 > 说明：QMI 是锁小区的第二条通道，与现有 EFS/NV 路径互为独立客户端，不干扰 RIL。
-> `VERDICT=ready` 才值得继续实现锁命令；`lookup`/`connect` 失败则维持 NV 路径。
+> `VERDICT ready` 只说明只读查询成功，不代表设备支持 QMI 锁频或锁小区。
 > 传输层从协议自写，未拷贝任何第三方（GPL）实现。
 
 ## 海外服务清理后的数据库迁移

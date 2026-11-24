@@ -61,4 +61,38 @@ static int qp_is_response(const uint8_t *p, int n, uint16_t txn, uint16_t msg) {
         qp_read16(p + 1) == txn && qp_read16(p + 3) == msg;
 }
 
+enum qp_result {
+    QP_MALFORMED,
+    QP_REJECTED,
+    QP_SUCCESS,
+};
+
+/* The common result TLV carries two little-endian u16 values: result and error. */
+static enum qp_result qp_read_result(const uint8_t *p, size_t n,
+        uint16_t *error) {
+    if (n < QMI_HEADER || qp_read16(p + 5) != n - QMI_HEADER)
+        return QP_MALFORMED;
+
+    int found = 0;
+    uint16_t status = 0, code = 0;
+    for (size_t at = QMI_HEADER; at < n;) {
+        if (n - at < 3) return QP_MALFORMED;
+        uint8_t tag = p[at];
+        size_t length = qp_read16(p + at + 1);
+        at += 3;
+        if (length > n - at) return QP_MALFORMED;
+        if (tag == 0x02) {
+            if (found || length != 4) return QP_MALFORMED;
+            found = 1;
+            status = qp_read16(p + at);
+            code = qp_read16(p + at + 2);
+        }
+        at += length;
+    }
+    if (!found || status > 1 || (status == 0 && code != 0))
+        return QP_MALFORMED;
+    *error = code;
+    return status == 0 ? QP_SUCCESS : QP_REJECTED;
+}
+
 #endif

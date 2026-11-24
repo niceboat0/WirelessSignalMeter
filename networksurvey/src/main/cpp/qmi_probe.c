@@ -5,9 +5,9 @@
  *   STEP socket=ok
  *   STEP lookup=ok (node 0 port N)
  *   STEP connect=ok
- *   QMI NAS_GET_SERVING_SYSTEM ... ok reply=17 bytes 01 0a 00 00 ...
+ *   QMI NAS_GET_SERVING_SYSTEM ... ok reply=17 bytes
  *   QMI NAS_GET_RF_BAND_INFO ... ok reply=...
- *   VERDICT ready|fail
+ *   VERDICT ready|reachable|fail
  *
  * The transport is a plain AF_QIPCRTR datagram socket: send a QRTR
  * NEW_SERVER_LOOKUP to the control port, then exchange QMI datagrams on the
@@ -32,7 +32,8 @@
 
 #define LOOKUP_TIMEOUT_MS 1500
 #define EXCHANGE_TIMEOUT_MS 3000
-#define QMI_MAX 65536
+/* An extra byte lets length validation reject oversized truncated datagrams. */
+#define QMI_MAX (QMI_HEADER + UINT16_MAX + 1)
 
 static int64_t now_ms(void) {
     struct timespec ts;
@@ -102,9 +103,9 @@ static int qrtr_lookup(uint32_t service, uint32_t instance, struct sockaddr_qrtr
 
 /* Send the request held in buf and read until its response arrives. */
 static int qmi_exchange(int fd, uint8_t *buf, int len, int *reply_len) {
+    if (len < QMI_HEADER || len >= QMI_MAX) return EINVAL;
     uint16_t txn = qp_read16(buf + 1);
     uint16_t msg = qp_read16(buf + 3);
-    if (len < QMI_HEADER || len >= QMI_MAX) return EINVAL;
     if (send(fd, buf, (size_t)len, 0) != (ssize_t)len) return errno ? errno : EIO;
 
     int64_t deadline = now_ms() + EXCHANGE_TIMEOUT_MS;
@@ -124,12 +125,6 @@ static int qmi_exchange(int fd, uint8_t *buf, int len, int *reply_len) {
             return 0;
         }
     }
-}
-
-static void dump_hex(const uint8_t *p, int n) {
-    int show = n > 40 ? 40 : n;
-    for (int i = 0; i < show; i++) printf("%02x ", p[i]);
-    if (n > show) printf("...");
 }
 
 int main(int argc, char **argv) {
@@ -166,24 +161,38 @@ int main(int argc, char **argv) {
         { "NAS_GET_SERVING_SYSTEM", QMI_NAS_GET_SERVING_SYSTEM },
         { "NAS_GET_RF_BAND_INFO", QMI_NAS_GET_RF_BAND_INFO },
     };
-    int failed = 0;
+    int succeeded = 0, reachable = 0;
     for (int i = 0; i < (int)(sizeof tests / sizeof tests[0]); i++) {
         uint8_t buf[QMI_MAX];
         int n = tests[i].msg == QMI_NAS_GET_SERVING_SYSTEM ?
             (int)qp_nas_get_serving_system(buf, (uint32_t)(i + 1)) :
             (int)qp_nas_get_rf_band_info(buf, (uint32_t)(i + 1));
         int reply = 0;
-        int e = qmi_exchange(sd, buf, n, &reply);
-        printf("QMI %-26s %s", tests[i].name, e ? strerror(e) : "ok");
-if (!e) {
-            printf(" reply=%d bytes ", reply);
-            dump_hex(buf, reply);
+        int transport_error = qmi_exchange(sd, buf, n, &reply);
+        printf("QMI %-26s ", tests[i].name);
+        if (transport_error) {
+            printf("transport_error=%s\n", strerror(transport_error));
+            continue;
         }
-        printf("\n");
-        if (e) failed = 1;
+        uint16_t error;
+        switch (qp_read_result(buf, (size_t)reply, &error)) {
+        case QP_SUCCESS:
+            reachable = 1;
+            succeeded++;
+            printf("ok reply=%d bytes\n", reply);
+            break;
+        case QP_REJECTED:
+            reachable = 1;
+            printf("rejected qmi_error=%u\n", (unsigned)error);
+            break;
+        case QP_MALFORMED:
+            printf("malformed_response reply=%d bytes\n", reply);
+            break;
+        }
     }
 
     close(sd);
-    printf("VERDICT %s\n", failed ? "FAIL" : "ready");
-    return failed ? 5 : 0;
+    int ready = succeeded == (int)(sizeof tests / sizeof tests[0]);
+    printf("VERDICT %s\n", ready ? "ready" : reachable ? "reachable" : "fail");
+    return ready ? 0 : reachable ? 6 : 5;
 }

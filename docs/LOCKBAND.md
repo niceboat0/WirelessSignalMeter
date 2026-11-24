@@ -16,6 +16,15 @@
 
 ## 失败与恢复
 
+5G 频段恢复按本机备份分别写回 NR 和有备份的 NR-NSA 掩码，回读一致后请求一次基带 SSR。
+旧版“没有原始值”标记不证明基带项不存在，也不证明现存备份是原始掩码。
+当前已提交的 native 旧状态解除分支会删除 NR 和可读的 NR-NSA 配置，再清理本地备份和标记，
+请求基带 SSR；这不等于验证并恢复原始掩码。该分支尚未完成真机验收，本次不新增迁移行为。
+常规恢复按钮仍要求探测到可用备份，旧状态下不会开放该按钮。
+排查三星恢复后仍停留在原频段时，从设置导出诊断日志，查看 `band_lock` 记录中的
+`NR_BAND readback` 和 `SSR observe`。重启帧的回显、路由断开和观察超时都单独记录，
+均不等于基带已完成重启。日志不包含原始频段备份字节或命令台输出。
+
 打开页面只检测 Root 和 DIAG 注册，不下发锁定或重启命令。修改前显示具体参数和基带重启影响。执行期间禁止重复提交和返回销毁操作。
 
 备份位于应用私有 noBackupFilesDir/band-lock；卸载应用或清除应用数据会删除备份。不要在锁定未恢复时清除应用数据。频点和小区使用各自的解除入口，网络制式“自动”不会清除其他锁。
@@ -109,3 +118,14 @@ Windows 复现（使用项目 NDK 27.3.13750724）：
 依赖商用路测软件、授权或加固分析才能得到的路径只保留在参考文档中，不在本工具里实现。开发与测试不得向已连接手机自动下发锁频命令。
 
 分类单测见 `networksurvey/src/test/java/com/craxiom/networksurvey/ui/bandlock/BandLockProfileTest.kt`。
+
+## 2026-11-24 PR15 锁小区扩展
+
+- NR 多 PCI 记录支持单个 ARFCN 携带 1–8 个 PCI；NR 单小区、频点和多 PCI 命令支持显式选择 `index`、`pow2` 或 `enum` SCS 编码。默认仍为历史 `index` 编码，已有调用的字节布局不变；240 kHz 仅在 `pow2`/`enum` 编码下开放。
+- LTE 小区锁定可显式选 164B（20 槽）或 244B（30 槽）布局；不传时维持历史按条目数选择。
+- `lte-cell-probe` / `nr-cell-probe` 只读取工具管理的固定 NV 项，优先通过 EFS2 STAT 获取类型和大小；STAT 不可用时回退至 OPEN/READ/CLOSE，并报告识别出的布局。
+- SCS 编码、164/244 字节规格选择及 NR 多 PCI 写入尚未真机验证。新编码需要调用方显式指定，不能把探测到的长度或型号当成设备兼容性证明。
+
+锁网命令台可用 `lte-cell <EARFCN:PCI[,...]> [164|244]`、`nr-freq <ARFCN> <SCS> [index|pow2|enum]`、`nr-cell <band> <ARFCN> <PCI> <SCS> [index|pow2|enum]` 和 `nr-cell-multi <band> <ARFCN> <PCI[,PCI...]> <SCS> [index|pow2|enum]`。
+
+主机协议测试覆盖多 PCI 字节布局、输入边界、SCS 编码，以及 EFS2 STAT 和 OPEN/READ/CLOSE 帧格式。运行 `networksurvey/src/test/cpp/test_band_lock_host.ps1` 执行锁频协议与备份回归。
