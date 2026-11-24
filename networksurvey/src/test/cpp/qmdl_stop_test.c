@@ -44,6 +44,17 @@ static int close(int fd) { step(CLOSE); return 0; }
 static void qmdl_status_locked(const char *state) { step(ACK); }
 static void qmdl_request_mask(int enabled) { step(MASK); }
 
+/* QMDL2 wiring: the writer asks the clock for a wall-clock stamp. */
+struct timespec { long tv_sec; long tv_nsec; };
+#define CLOCK_REALTIME 1
+static long long g_clock_sec = 1700000000, g_clock_usec = 123456;
+static int clock_gettime(int clock, struct timespec *ts) {
+    ts->tv_sec = (long)g_clock_sec;
+    ts->tv_nsec = (long)g_clock_usec * 1000;
+    return 0;
+}
+
+#include "../../main/cpp/qmdl2_format.h"
 #include "qmdl_stop_under_test.inc"
 
 enum { DIAG_Q_SLOT = 64 };
@@ -180,5 +191,48 @@ __declspec(dllexport) int test_qmdl_stop(void) {
     trace = 0;
     qmdl_start("active.qmdl");
     if (g_qmdl_error != EINVAL || g_qmdl_fd != -1 || file_size != sizeof(expected_frame)) return __LINE__;
+    return 0;
+}
+
+/* QMDL2: magic on start, then records carrying wall-clock stamps. */
+__declspec(dllexport) int test_qmdl2_records(void) {
+    static const uint8_t record[] = { 12, 0, 0x7d, 0x7e, 0, 1, 2, 3, 4, 5, 6, 7 };
+    file_size = 0;
+    write_mode = 0;
+    write_calls = 0;
+    open_error = 0;
+    g_qmdl_error = g_qmdl_limit = 0;
+    g_qmdl_packets = 0;
+    g_qmdl_bytes = 0;
+    trace = 0;
+    g_qmdl_v2 = 1;
+
+    qmdl_start("active.qmdl");
+    if (g_qmdl_fd != 5 || g_qmdl_error) return __LINE__;
+    /* The 8-byte container magic is written when recording opens. */
+    if (file_size != QMDL2_HEADER_SIZE || g_qmdl_bytes != (long long)QMDL2_HEADER_SIZE) return __LINE__;
+    for (size_t i = 0; i < QMDL2_HEADER_SIZE; i++) if (file_bytes[i] != k_qmdl2_magic[i]) return __LINE__;
+
+    qmdl_write_locked(record, sizeof(record));
+    if (g_qmdl_packets != 1 || file_size != QMDL2_HEADER_SIZE) return __LINE__;   /* still buffered */
+    qmdl_flush(g_qmdl_fd);
+
+    size_t expected_size = QMDL2_HEADER_SIZE + 16 + sizeof(record) + 4;
+    if (file_size != expected_size) return __LINE__;
+    const uint8_t *r = file_bytes + QMDL2_HEADER_SIZE;
+    if (r[0] != 1 || r[1] || r[2] || r[3]) return __LINE__;                       /* type 1 */
+    if (r[4] != 16 || r[5] || r[6] || r[7]) return __LINE__;                      /* payload 16 */
+    if (r[8] != (uint8_t)(g_clock_sec & 0xff) || r[11] != (uint8_t)((g_clock_sec >> 24) & 0xff))
+        return __LINE__;
+    if (r[12] != (uint8_t)(g_clock_usec & 0xff) || r[15] != (uint8_t)((g_clock_usec >> 24) & 0xff))
+        return __LINE__;
+    if (r[16] != 0x10 || r[17] != 0 || r[18] != 12 || r[19] != 0) return __LINE__;
+    for (size_t i = 0; i < sizeof(record); i++) if (r[20 + i] != record[i]) return __LINE__;
+    /* No HDLC escaping in v2: the literal 0x7d/0x7e of the record survive. */
+    if (r[22] != 0x7d || r[23] != 0x7e) return __LINE__;
+
+    qmdl_stop(0);
+    if (g_qmdl_fd != -1 || g_qmdl_error) return __LINE__;
+    g_qmdl_v2 = 0;
     return 0;
 }

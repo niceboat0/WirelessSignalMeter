@@ -1388,7 +1388,7 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
             cp -- $quotedPath "${'$'}work/collector" || start_error 21 'Unable to copy the installed diagnostic helper'
             chmod 700 "${'$'}work/collector" || start_error 22 'Unable to make the diagnostic helper executable'
             cd "${'$'}work" || start_error 23 'Unable to enter the diagnostic working directory'
-            ./collector $quotedQmdl
+            ./collector --qmdl2 $quotedQmdl
             result=${'$'}?
             if [ "${'$'}result" -eq 126 ] || [ "${'$'}result" -eq 127 ]; then
                 start_error 24 'Unable to execute the diagnostic helper'

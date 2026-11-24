@@ -27,6 +27,9 @@
 #include <sys/types.h>
 #ifdef __ANDROID__
 #include <android/log.h>
+
+/* QMDL2 container helpers (see qmdl2_format.h: pure, no I/O). */
+#include "qmdl2_format.h"
 #endif
 
 /* ------------------------------------------------------------------ */
@@ -319,6 +322,8 @@ static void jb_emit(struct jb *j) { jb_add(j, "}"); emit_locked(j->b); }
 
 #define QMDL_LIMIT (128LL * 1024 * 1024)
 static int g_qmdl_fd = -1, g_qmdl_error, g_qmdl_limit;
+/* 0 = v1 HDLC frames (legacy, no timestamps), 1 = QMDL2 records. */
+static int g_qmdl_v2;
 static long long g_qmdl_bytes, g_qmdl_packets;
 static uint8_t g_qmdl_buffer[256 * 1024];
 static size_t g_qmdl_pending_bytes;
@@ -374,6 +379,26 @@ static void qmdl_flush(int fd) {
 
 static void qmdl_write_locked(const uint8_t *rec, uint16_t len) {
     if (g_qmdl_fd < 0 || g_qmdl_limit || g_qmdl_error) return;
+    if (g_qmdl_v2) {
+        size_t need = qmdl2_record_size(len);
+        if (need > sizeof(g_qmdl_buffer) - g_qmdl_pending_bytes) {
+            qmdl_flush(g_qmdl_fd);
+            if (g_qmdl_error) return;
+        }
+        struct timespec ts;
+        if (clock_gettime(CLOCK_REALTIME, &ts) != 0) {
+            ts.tv_sec = 0;
+            ts.tv_nsec = 0;
+        }
+        size_t size = qmdl2_record(g_qmdl_buffer + g_qmdl_pending_bytes, rec, len,
+                (uint32_t)ts.tv_sec, (uint32_t)(ts.tv_nsec / 1000));
+        if (g_qmdl_bytes + (long long)size > QMDL_LIMIT) { g_qmdl_limit = 1; return; }
+        g_qmdl_pending_bytes += size;
+        g_qmdl_pending_packets++;
+        g_qmdl_bytes += (long long)size;
+        g_qmdl_packets++;
+        return;
+    }
     size_t max_size = 2 * ((size_t)len + 6) + 1;
     if (max_size > sizeof(g_qmdl_buffer) - g_qmdl_pending_bytes) {
         qmdl_flush(g_qmdl_fd);
@@ -5406,6 +5431,17 @@ static void qmdl_start(const char *path) {
     if (fd < 0 || fstat(fd, &info) != 0) g_qmdl_error = errno;
     else if (!S_ISREG(info.st_mode) || info.st_size != 0) g_qmdl_error = EINVAL;
     if (g_qmdl_error && fd >= 0) close(fd);
+    if (!g_qmdl_error && g_qmdl_v2) {
+        /* QMDL2 files start with the 8-byte magic before the first record. */
+        for (size_t off = 0; off < QMDL2_HEADER_SIZE;) {
+            ssize_t n = write(fd, k_qmdl2_magic + off, QMDL2_HEADER_SIZE - off);
+            if (n > 0) { off += (size_t)n; continue; }
+            if (n < 0 && errno == EINTR) continue;
+            g_qmdl_error = n < 0 ? errno : EIO;
+            break;
+        }
+        if (!g_qmdl_error) g_qmdl_bytes = (long long)QMDL2_HEADER_SIZE;
+    }
     g_qmdl_fd = g_qmdl_error ? -1 : fd;
     qmdl_status_locked(g_qmdl_error ? "error" : "recording");
     pthread_mutex_unlock(&g_mu);
@@ -5429,7 +5465,15 @@ static void qmdl_stop(int requested) {
 }
 
 int main(int argc, char **argv) {
+    /* Recording target: plain path keeps the legacy v1 container, --qmdl2
+     * selects QMDL2 records with absolute timestamps. */
     const char *qmdl_path = argc == 2 ? argv[1] : NULL;
+    if (argc == 3 && strcmp(argv[1], "--qmdl2") == 0) {
+        qmdl_path = argv[2];
+        g_qmdl_v2 = 1;
+    } else if (argc == 3) {
+        qmdl_path = NULL;
+    }
     setvbuf(stdout, NULL, _IOLBF, 0);
     signal(SIGPIPE, SIG_IGN);
     struct sigaction stop = { .sa_handler = on_sig };

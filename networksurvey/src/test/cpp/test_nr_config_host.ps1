@@ -148,6 +148,8 @@ public static class QmdlStopTest {
     public static extern int test_diag_live_masks();
     [DllImport(@"$dll", CallingConvention = CallingConvention.Cdecl)]
     public static extern int test_qmdl_stop();
+    [DllImport(@"$dll", CallingConvention = CallingConvention.Cdecl)]
+    public static extern int test_qmdl2_records();
 }
 "@
 $result = [QmdlStopTest]::test_diag_live_without_recording()
@@ -159,3 +161,6 @@ Write-Output 'PASS DIAG startup: validated 15-code base mask, separate live/QMDL
 $result = [QmdlStopTest]::test_qmdl_stop()
 if ($result) { throw "QMDL stop ordering test failed at line $result" }
 Write-Output 'PASS QMDL: valid escaped HDLC frame, flush/close before ACK, asynchronous mask request, repeated stop, recovery on shutdown, short writes, full disk and open errors'
+$result = [QmdlStopTest]::test_qmdl2_records()
+if ($result) { throw "QMDL2 record test failed at line $result" }
+Write-Output 'PASS QMDL2: container magic on open, unescaped record payload, wall-clock seconds/microseconds, clean close'

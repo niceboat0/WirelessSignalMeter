@@ -157,6 +157,18 @@ Windows 下使用项目 NDK 直接执行协议、原始掩码备份与恢复测�
 读取失败时限制持久锁定、备份创建/写入/同步失败，以及 NR 备份失败与缺失标记区分。
 2026-11-18 两套主机测试通过，原实现会在新增备份回归中失败。
 
+## QMDL2 容器回归
+
+```powershell
+.\networksurvey\src\test\cpp\test_qmdl2_host.ps1
+.\networksurvey\src\test\cpp\test_nr_config_host.ps1
+```
+
+`qmdl2_test.c` 校验容器字节布局（8 字节 magic、记录类型 1、payload 长度、秒/微秒字段、
+DIAG_LOG_F 前导与数组原样拷贝），`test_nr_config_host.ps1` 里的 `test_qmdl2_records`
+用 stub 校验挂接：开始录制即写 magic、记录不外泄 HDLC 转义、时间戳取墙钟、关闭干净。
+采集器默认仍是 v1 容器，`--qmdl2` 才切换；App 侧录制固定传 `--qmdl2`。
+
 ## 海外服务清理后的数据库迁移
 
 `SurveyDatabase` v14 -> v15 清理海外服务表和上传标记，但保留六类本地测量记录、
