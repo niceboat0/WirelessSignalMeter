@@ -191,6 +191,7 @@
     <string name="lock_restart_sent">基带已确认配置，已请求重启基带。请等待网络注册后核对实际驻留小区。</string>
     <string name="lock_accepted">基带已确认操作，请核对实际驻留小区是否符合预期。</string>
     <string name="lock_failed">操作失败或结果未确认，可能已有部分更改。请查看执行记录。</string>
+    <string name="lock_nr_baseline_unverified">无法验证原始 5G 频段，未更改任何频段。</string>
     <string name="lock_confirm_apply_mode">将锁定所选目标并切换到对应网络制式，通话和数据可能暂时中断。</string>
     <string name="lock_confirm_apply_restart">将写入锁定配置并重启基带，随后切换到对应网络制式。期间通话和数据可能暂时中断。</string>
     <string name="lock_mode_unconfirmed">锁定配置已确认，但未确认制式切换。请查看执行记录或手动切换制式。</string>

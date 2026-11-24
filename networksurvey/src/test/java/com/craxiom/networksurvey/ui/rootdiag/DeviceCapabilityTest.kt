@@ -109,6 +109,22 @@ class DeviceCapabilityTest {
 
 class CollectorRestartPolicyTest {
     @Test
+    fun modemRecoveryOnlyRestartsWhenStatusOrPacketStreamIsStale() {
+        assertFalse(CollectorRestartPolicy.needsModemRecovery(true, 1_000, 2_000, 12_000))
+        assertTrue(CollectorRestartPolicy.needsModemRecovery(true, 1_000, 38_000, 36_000))
+        assertTrue(CollectorRestartPolicy.needsModemRecovery(true, 6_000, 2_000, 12_000))
+        assertTrue(CollectorRestartPolicy.needsModemRecovery(false, 1_000, 2_000, 12_000))
+        assertTrue(CollectorRestartPolicy.needsModemRecovery(true, 1_000, null, 12_000))
+    }
+
+    @Test
+    fun aShortBurstAfterRestartDoesNotPreventLaterRecovery() {
+        assertFalse(CollectorRestartPolicy.needsModemRecovery(true, 1_000, 4_000, 12_000))
+        assertTrue(CollectorRestartPolicy.needsModemRecovery(true, 1_000, 16_000, 24_000))
+        assertTrue(CollectorRestartPolicy.needsModemRecovery(true, 1_000, 4_000, 4_000))
+    }
+
+    @Test
     fun doesNotRetryDeniedOrMissingLibrary() {
         assertFalse(CollectorRestartPolicy.shouldRetry(RootDiagStatus.Denied, null, false, 0))
         assertFalse(CollectorRestartPolicy.shouldRetry(RootDiagStatus.Unavailable, null, false, 0))

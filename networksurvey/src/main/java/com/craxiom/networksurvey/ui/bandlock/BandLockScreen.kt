@@ -380,7 +380,10 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
                 }
             },
             confirmButton = {
-                TextButton(onClick = { pending = null; model.run(action) }, enabled = !state.busy) {
+                TextButton(onClick = {
+                    pending = null
+                    model.run(action, onModemRestartRequested = rootDiag::recoverAfterModemRestart)
+                }, enabled = !state.busy) {
                     Text(stringResource(R.string.lock_apply))
                 }
             },

@@ -1,8 +1,5 @@
 package com.craxiom.networksurvey.services
 
-import android.app.Notification
-import android.app.NotificationManager
-import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
@@ -17,12 +14,7 @@ import android.view.View
 import android.view.WindowManager
 import android.widget.LinearLayout
 import android.widget.TextView
-import androidx.core.app.NotificationCompat
-import androidx.core.app.ServiceCompat
-import com.craxiom.networksurvey.Application
-import com.craxiom.networksurvey.NetworkSurveyActivity
 import com.craxiom.networksurvey.R
-import com.craxiom.networksurvey.constants.NetworkSurveyConstants
 import com.craxiom.networksurvey.ui.rootdiag.DiagOverlaySnapshot
 import com.craxiom.networksurvey.ui.rootdiag.DiagOverlayState
 import com.craxiom.networksurvey.ui.rootdiag.RootDiagPrefs
@@ -47,13 +39,11 @@ class RootDiagCollectorService : Service() {
     private var window: WindowManager? = null
     private var overlay: View? = null
     private var label: TextView? = null
-    private var notificationMode: String? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
-        Application.createNotificationChannel(this)
         if (!startInForeground()) {
             serviceState.value = State.Idle
             stopSelf()
@@ -62,10 +52,7 @@ class RootDiagCollectorService : Service() {
         serviceState.value = State.Running
         scope.launch {
             DiagOverlayState.snapshot.collect { snap ->
-                if (snap.status != notificationMode) {
-                    notificationMode = snap.status
-                    updateNotification(snap)
-                }
+                CaptureServiceNotification.updateDiag(this@RootDiagCollectorService, snap.isTask())
             }
         }
         maybeShowOverlay()
@@ -87,23 +74,18 @@ class RootDiagCollectorService : Service() {
         serviceState.value = State.Idle
         hideOverlay()
         scope.cancel()
+        CaptureServiceNotification.stopDiag(this)
         super.onDestroy()
     }
 
     private fun startInForeground(): Boolean {
-        val snapshot = DiagOverlayState.snapshot.value
-        val notification = buildNotification(snapshot)
         try {
-            if (Build.VERSION.SDK_INT >= 29) {
-                ServiceCompat.startForeground(
-                    this, NOTIFICATION_ID, notification,
-                    if (Build.VERSION.SDK_INT >= 34) ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
-                    else ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
-                )
-            } else {
-                startForeground(NOTIFICATION_ID, notification)
-            }
-            notificationMode = snapshot.status
+            CaptureServiceNotification.startDiag(
+                this,
+                if (Build.VERSION.SDK_INT >= 34) ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                else ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
+                DiagOverlayState.snapshot.value.isTask(),
+            )
             return true
         } catch (error: RuntimeException) {
             Timber.w(error, "Unable to start the DIAG foreground service")
@@ -111,28 +93,7 @@ class RootDiagCollectorService : Service() {
         }
     }
 
-    private fun buildNotification(snap: DiagOverlaySnapshot): Notification {
-        val task = snap.collecting || snap.status == "task"
-        val title = if (task) R.string.diag_bg_notification_title_task else R.string.diag_bg_notification_title_listen
-        val text = if (task) R.string.diag_bg_notification_text_task else R.string.diag_bg_notification_text_listen
-        val open = PendingIntent.getActivity(
-            this, 0, Intent(this, NetworkSurveyActivity::class.java),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
-        val stop = PendingIntent.getService(
-            this, 1, Intent(this, RootDiagCollectorService::class.java).setAction(ACTION_STOP),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
-        return NotificationCompat.Builder(this, NetworkSurveyConstants.NOTIFICATION_CHANNEL_ID)
-            .setSmallIcon(R.drawable.logging_thick_icon)
-            .setContentTitle(getString(title))
-            .setContentText(getString(text))
-            .setContentIntent(open)
-            .setOngoing(true)
-            .setSilent(true)
-            .addAction(0, getString(R.string.diag_bg_stop), stop)
-            .build()
-    }
+    private fun DiagOverlaySnapshot.isTask() = collecting || status == "task"
 
     private fun maybeShowOverlay() {
         if (!RootDiagPrefs.overlayWanted(this) || !Settings.canDrawOverlays(this)) {
@@ -156,7 +117,8 @@ class RootDiagCollectorService : Service() {
             setOnClickListener {
                 RootDiagPrefs.setOverlayWanted(this@RootDiagCollectorService, false)
                 hideOverlay()
-                if (notificationMode != "task" && !RootDiagPrefs.backgroundEnabled(this@RootDiagCollectorService)) stopSelf()
+                if (!DiagOverlayState.snapshot.value.isTask() &&
+                    !RootDiagPrefs.backgroundEnabled(this@RootDiagCollectorService)) stopSelf()
             }
         }
         val card = LinearLayout(this).apply {
@@ -213,11 +175,6 @@ class RootDiagCollectorService : Service() {
             Timber.w(error, "Unable to add the DIAG overlay")
             hideOverlay()
         }
-    }
-
-    private fun updateNotification(snap: DiagOverlaySnapshot) {
-        val manager = getSystemService(NotificationManager::class.java) ?: return
-        manager.notify(NOTIFICATION_ID, buildNotification(snap))
     }
 
     private fun formatOverlay(snap: DiagOverlaySnapshot): String {
@@ -277,7 +234,6 @@ class RootDiagCollectorService : Service() {
     companion object {
         const val ACTION_STOP = "com.craxiom.networksurvey.action.STOP_ROOT_DIAG"
         const val ACTION_REFRESH_OVERLAY = "com.craxiom.networksurvey.action.REFRESH_OVERLAY"
-        const val NOTIFICATION_ID = 42
         internal enum class State { Idle, Starting, Running }
         private val serviceState = MutableStateFlow(State.Idle)
         internal val state = serviceState.asStateFlow()

@@ -10,6 +10,16 @@ internal object CollectorRestartPolicy {
     const val MAX_ATTEMPTS = 6
     const val BASE_DELAY_MS = 2_000L
     const val MAX_DELAY_MS = 60_000L
+    const val MODEM_RECOVERY_INTERVAL_MS = 12_000L
+    const val MODEM_RECOVERY_CHECKS = 4
+    const val MAX_MODEM_RECOVERY_RESTARTS = 2
+    const val MODEM_PACKET_STALE_MS = 10_000L
+    const val STATUS_STALE_MS = 5_000L
+
+    fun needsModemRecovery(
+        statusRunning: Boolean, statusAgeMs: Long, packetAgeMs: Long?, sinceRequestMs: Long,
+    ): Boolean = !statusRunning || statusAgeMs !in 0..STATUS_STALE_MS ||
+        packetAgeMs == null || packetAgeMs !in 0 until minOf(MODEM_PACKET_STALE_MS, sinceRequestMs)
 
     fun isTransient(status: RootDiagStatus, errorCode: Int?, hadBeenRunning: Boolean): Boolean {
         if (status == RootDiagStatus.Denied || status == RootDiagStatus.Unavailable) return false

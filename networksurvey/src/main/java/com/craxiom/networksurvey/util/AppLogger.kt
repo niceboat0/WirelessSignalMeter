@@ -28,6 +28,7 @@ object AppLogger {
     private const val TAG_FILE = "app.log"
     private const val MAX_LOG_BYTES = 512 * 1024L
     private const val KEEP_LINES = 3000
+    internal const val BAND_LOCK_TAG = "BandLock"
 
     private val dateFormat = DateTimeFormatter.ofPattern("MM-dd HH:mm:ss.SSS", Locale.US)
 
@@ -149,6 +150,12 @@ object AppLogger {
         } catch (_: Throwable) {
             null
         }
+    }
+
+    internal fun readBandLockDiagnostics(): List<String> {
+        val marker = " I/$BAND_LOCK_TAG: run="
+        return readLog()?.lineSequence()?.filter { it.startsWith(marker, startIndex = 18) }
+            ?.toList()?.takeLast(240).orEmpty()
     }
 
     /** 日志文件字节数（供 UI 提示），无则 0。 */

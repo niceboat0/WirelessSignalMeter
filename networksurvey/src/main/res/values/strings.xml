@@ -243,6 +243,7 @@
     <string name="lock_restart_sent">Configuration acknowledged; modem restart requested. Wait for registration and check the serving cell.</string>
     <string name="lock_accepted">The modem acknowledged the operation. Check the serving cell to confirm the result.</string>
     <string name="lock_failed">Operation failed or its result is unconfirmed. Changes may be partial; check the execution log.</string>
+    <string name="lock_nr_baseline_unverified">Original 5G bands could not be verified. No bands were changed.</string>
     <string name="lock_confirm_apply_mode">This applies the lock and switches to the matching network mode. Calls and data may be interrupted.</string>
     <string name="lock_confirm_apply_restart">This writes the lock settings, restarts the modem, and switches to the matching network mode. Calls and data may be interrupted.</string>
     <string name="lock_mode_unconfirmed">The lock settings were acknowledged, but the mode change is unconfirmed. Check the execution log or switch modes manually.</string>
