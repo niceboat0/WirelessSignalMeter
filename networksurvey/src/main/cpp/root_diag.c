@@ -205,7 +205,14 @@ static void on_sig(int signo) {
 #include "diag_queue.c"
 #include "ims_logcat.c"
 
+/* Two decode queues split by log-code priority. L1/layer-2 counter logs burst
+   at a high rate and carry only repeated snapshots, so they go to the low
+   queue and absorb drops first. Everything else (RRC/NAS/measurement DB/
+   serving) goes to the high queue so those records are never displaced by a
+   counter flood. Both queues share g_dq_mu/g_dq_cv; the worker drains high
+   before low. */
 static struct diag_queue g_dq;
+static struct diag_queue g_dq_lo;
 static pthread_mutex_t g_dq_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_dq_cv = PTHREAD_COND_INITIALIZER;
 static pthread_t g_dq_th;
@@ -4600,13 +4607,15 @@ static void *decode_worker(void *arg) {
     uint8_t tmp[DIAG_Q_SLOT];
     for (;;) {
         pthread_mutex_lock(&g_dq_mu);
-        while (!g_stop && diag_q_empty(&g_dq)) pthread_cond_wait(&g_dq_cv, &g_dq_mu);
-        if (diag_q_empty(&g_dq)) {
+        while (!g_stop && diag_q_empty(&g_dq) && diag_q_empty(&g_dq_lo))
+            pthread_cond_wait(&g_dq_cv, &g_dq_mu);
+        if (diag_q_empty(&g_dq) && diag_q_empty(&g_dq_lo)) {
             pthread_mutex_unlock(&g_dq_mu);
             break;
         }
         struct diag_q_item it;
-        diag_q_pop(&g_dq, &it);
+        if (!diag_q_empty(&g_dq)) diag_q_pop(&g_dq, &it);
+        else diag_q_pop(&g_dq_lo, &it);
         uint16_t n = it.len;
         memcpy(tmp, it.data, n);
         pthread_mutex_unlock(&g_dq_mu);
@@ -5084,8 +5093,10 @@ static void on_log(unsigned char *ptr, int len) {
                 pthread_mutex_unlock(&g_dq_mu);
             }
         } else {
+            /* log record = len(2) code(2) ts(8) body; route by code priority. */
+            struct diag_queue *q = diag_code_priority(rd16(ptr + pos + 2)) == DIAG_PRIO_LOW ? &g_dq_lo : &g_dq;
             pthread_mutex_lock(&g_dq_mu);
-            diag_q_push(&g_dq, ptr + pos, (uint16_t)rl);
+            diag_q_push(q, ptr + pos, (uint16_t)rl);
             pthread_cond_signal(&g_dq_cv);
             pthread_mutex_unlock(&g_dq_mu);
         }
@@ -5155,7 +5166,13 @@ static void emit_status_locked(const char *state, int rc) {
                g_details_mask.count, g_details_mask.batch_rc, g_details_mask.accepted,
                g_live_details_before_first_packet ? "true" : "false");
     jb_add(&j, ",\"decode_queued\":%u,\"decode_dropped\":%lu,\"decode_high_water\":%u,\"decode_oversized\":%lu",
-           diag_q_count(&g_dq), g_dq.stats.dropped, g_dq.stats.high_water, g_dq.stats.oversized);
+           diag_q_count(&g_dq) + diag_q_count(&g_dq_lo),
+           g_dq.stats.dropped + g_dq_lo.stats.dropped,
+           g_dq.stats.high_water > g_dq_lo.stats.high_water ? g_dq.stats.high_water : g_dq_lo.stats.high_water,
+           g_dq.stats.oversized);
+    jb_add(&j, ",\"decode_queued_hi\":%u,\"decode_queued_lo\":%u,\"decode_dropped_hi\":%lu,\"decode_dropped_lo\":%lu",
+           diag_q_count(&g_dq), diag_q_count(&g_dq_lo),
+           g_dq.stats.dropped, g_dq_lo.stats.dropped);
     jb_add(&j, ",\"logcat_alive\":%d,\"logcat_fmt\":%s,\"logcat_sip\":%lu,\"logcat_rcs_skipped\":%lu,\"diag_ims_pkts\":%d",
            g_lc_alive, g_lc_fmt ? "true" : "false", g_lc_sip, g_lc_rcs, g_diag_ims_pkts);
     if (g_last_pkt_mono) jb_add(&j, ",\"last_pkt_age_s\":%lld",
@@ -5449,6 +5466,7 @@ int main(int argc, char **argv) {
     emit_status_locked("authorized", 0);
     emit_ims_provider("mediatek", "unsupported", "false", "no_backend");
     diag_q_init(&g_dq);
+    diag_q_init(&g_dq_lo);
     if (pthread_create(&g_dq_th, NULL, decode_worker, NULL) == 0) g_dq_started = 1;
     alarm(12);
     int rc = dci_start();

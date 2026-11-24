@@ -36,4 +36,12 @@ int diag_q_pop(struct diag_queue *q, struct diag_q_item *item);
 int diag_q_empty(const struct diag_queue *q);
 unsigned diag_q_count(const struct diag_queue *q);
 
+/* Queue priority for a DIAG log code. Low-priority codes are periodic L1/layer-2
+   counters whose samples are replayed by the next frame; a drop there is
+   harmless. Everything else (RRC, NAS, measurement DB, serving) is high
+   priority and must not be displaced by a counter flood. */
+#define DIAG_PRIO_HIGH 0
+#define DIAG_PRIO_LOW 1
+int diag_code_priority(uint16_t code);
+
 #endif

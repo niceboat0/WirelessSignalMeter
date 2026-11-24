@@ -30,3 +30,19 @@ int diag_q_pop(struct diag_queue *q, struct diag_q_item *item) {
     q->stats.popped++;
     return 1;
 }
+
+/* See diag_queue.h. Keep this list in sync with the parser switch in
+   root_diag.c: only pure counter/stat logs belong here. */
+int diag_code_priority(uint16_t code) {
+    switch (code) {
+    case 0xB888:                                        /* NR L1 PDSCH counters */
+    case 0xB883: case 0xB884:                          /* NR L1 counters */
+    case 0xB8A7:                                       /* NR PDSCH stats */
+    case 0xB842: case 0xB860: case 0xB84D:
+    case 0xB868: case 0xB881:                          /* NR layer-2 stats */
+    case 0xB887:                                       /* NR MAC PDSCH per-TB */
+        return DIAG_PRIO_LOW;
+    default:
+        return DIAG_PRIO_HIGH;
+    }
+}
