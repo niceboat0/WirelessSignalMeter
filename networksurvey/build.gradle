@@ -44,7 +44,7 @@ android {
         buildConfigField "String", "MESSAGING_API_VERSION", "\"${libs.versions.networkSurveyMessaging.get()}\""
         buildConfigField 'String', "NS_API_KEY", "\"${nsApiKey}\""
         applicationId "com.wireless.signalmeter.new"
-        minSdkVersion 33
+        minSdkVersion 29
         targetSdkVersion 37
         versionCode 120
         versionName appVersion

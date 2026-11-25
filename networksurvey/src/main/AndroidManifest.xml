@@ -2,6 +2,12 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!-- miuix-blur's AAR declares minSdk 33 because its AGSL RuntimeShader path is 33+.
+         The app carries it below 33 only so one APK can install there; every call site is
+         gated on isRuntimeShaderSupported() and falls back to a plain translucent
+         background, so the 33+ code is never reached on older platforms. -->
+    <uses-sdk tools:overrideLibrary="top.yukonga.miuix.kmp.blur" />
+
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
