@@ -44,26 +44,6 @@ jobs:
           name: Network Survey CDR Debug APK
           path: networksurvey/build/outputs/apk/cdr/debug/*.apk
 
-      - name: Save google-services.json
-        env:
-          GOOGLE_SERVICES: ${{ secrets.GOOGLE_SERVICES }}
-        run: echo "$GOOGLE_SERVICES" > networksurvey/google-services.json
-
-      - name: Build Regular APK
-        env:
-          NS_API_KEY: ${{ secrets.NS_API_KEY }}
-          OCID_API_KEY: ${{ secrets.OCID_API_KEY }}
-        run: ./gradlew assembleRegularDebug
-          -PnsApiKey=$NS_API_KEY
-          -PocidApiKey=$OCID_API_KEY
-
-      - name: Upload Regular APK
-        uses: actions/upload-artifact@v6
-        with:
-          name: Network Survey Regular Debug APK
-          path: networksurvey/build/outputs/apk/regular/debug/*.apk
-
-
   test:
     if: "! startsWith(github.event.head_commit.message, 'Bump version to')"
     name: Run Tests
