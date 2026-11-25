@@ -13,17 +13,16 @@
     <string name="nr_carrier_activated">已激活</string>
     <string name="nr_carrier_configured">已配置</string>
     <string name="nr_carrier_deconfigured">未配置</string>
-    <string name="permissions_rationale_title">Network Survey Permissions</string>
-    <string name="permissions_rationale">Network Survey 需要一些权限才能正常工作。 拒绝这些权限将导致应用无法正常运行。 \n\n1. <b>查找附近的设备</b>：此应用不会连接附近的设备。相反，它需要此权限来执行蓝牙扫描以进行探测。 \n\n2. <b>拨打和管理电话</b>：此应用不会拨打或管理电话。相反，它需要此权限来获取当前蜂窝网络的连接类型（例如 LTE 与 UMTS）。 \n\n3. <b>访问此设备的位置</b>：此权限用于获取 Wi‑Fi 信息、蜂窝网络信息、GNSS（全球导航卫星系统）信息，并将这些地理相关数据写入日志文件。 \n\n4. <b>访问设备照片、媒体和文件</b>：此权限用于写入日志文件。 \n\n5. <b>通知</b>：此权限允许 NS 添加通知，以便您了解探测在后台运行时的情况。</string>
+    <string name="permissions_rationale_title">无线无忧权限说明</string>
+    <string name="permissions_rationale">无线无忧使用以下权限进行蜂窝测量与采集：
+        \n\n1. <b>电话</b>：读取当前蜂窝网络连接和网络状态。应用不会拨打或管理电话。
+        \n\n2. <b>位置</b>：读取服务小区和邻区信息、显示地图位置，并为测量记录补充位置。
+        \n\n3. <b>通知</b>：在后台采集时显示运行状态。</string>
     <string name="cdr_required_permissions_rationale_title">CDR 所需权限</string>
-    <string name="cdr_required_permissions_rationale">Network Survey 需要若干权限才能进行通话记录（CDR）日志记录。如果拒绝这些权限，CDR 日志记录将无法工作。
-        \n\n1. <b>拨打和管理电话</b>：此应用不拨打电话或管理通话。相反，它需要此权限来获取蜂窝网络详细信息，以写入 CDR 日志文件。
-        \n\n2. <b>访问此设备的位置</b>：需要位置权限以获取蜂窝网络详细信息，这些信息用于写入 CDR 文件。
-        \n\n3. <b>访问设备照片、媒体和文件</b>：此权限用于写入日志文件。
-        \n\n4. <b>通知</b>：此权限允许 NS 添加通知，以便您了解探测在后台运行时的情况。
-        \n\n有一个已知的 bug：此权限对话框会不断显示，但权限请求对话框却没有出现。
-        按下“OK”后并未显示。您可以通过卸载并重新安装应用，并允许所有权限来解决此问题。
-        首次运行时允许所有权限，或者打开 Android 设置并手动允许所需权限。</string>
+    <string name="cdr_required_permissions_rationale">无线无忧使用以下权限进行通话记录（CDR）日志记录：
+        \n\n1. <b>电话</b>：读取蜂窝网络信息和通话状态变化以写入日志。应用不会拨打或管理电话。
+        \n\n2. <b>位置</b>：读取蜂窝网络信息，并为记录补充位置。
+        \n\n3. <b>通知</b>：在后台记录时显示运行状态。</string>
     <string name="cdr_optional_permissions_rationale_title">CDR 可选权限</string>
     <string name="cdr_optional_permissions_rationale">除了在另一个对话框中列出的必需权限之外，CDR 日志记录还有一个可选权限。 \n\n1. <b>读取电话号码</b>：此权限用于获取本设备的电话号码，以便将其写入 CDR 日志文件。您可以拒绝此权限，CDR 日志记录功能仍可正常运行，只是不会记录您的电话号码。</string>
     <string name="request">请求</string>
@@ -101,8 +100,8 @@
     <string name="bluetooth_permissions_rationale_title">蓝牙权限</string>
     <string name="bluetooth_permissions_rationale">执行蓝牙扫描以进行探测需要“查找附近设备”权限。如果拒绝此权限，蓝牙探测将无法工作。</string>
     <string name="background_location_permission_rationale_title">后台位置权限</string>
-    <string name="background_location_permission_rationale">网络探测需要收集位置数据，以便在设备启动时自动开始蜂窝网络、Wi-Fi、蓝牙和 GNSS 探测，即使应用已关闭或未在使用中也是如此。
-        \n\n如果没有后台位置权限，此应用将无法在设备启动时开始蜂窝网络、Wi-Fi 或 GNSS 探测。如果您不希望手机启动时自动开始探测，则无需启用此权限。\n\n请通过点击下一页上的 <b>始终允许</b>，在 Android 设置中为这款应用启用后台位置权限。</string>
+    <string name="background_location_permission_rationale">无线无忧在测试任务或日志记录于后台运行时，使用后台位置权限为测量记录和轨迹补充位置。
+        \n\n如需后台定位，请在下一页的 Android 设置中选择 <b>始终允许</b>。</string>
     <string name="open_settings">打开设置</string>
     <string name="deny_permission">拒绝权限</string>
     <string name="drawer_menu_description">菜单导航按钮</string>
@@ -338,11 +337,11 @@
     <string name="nav_section_streaming">流媒体与云</string>
     <string name="nav_section_tools">参考工具</string>
     <string name="nav_section_help_resources">帮助与资源</string>
-    <string name="network_survey_service_description">当应用需要在后台执行工作时（例如写入日志文件或通过活动连接流式传输数据），Network Survey 服务会运行</string>
-    <string name="notification_channel_name">网络探测</string>
+    <string name="network_survey_service_description">无线无忧在采集运行期间，可在后台进行测量、记录日志或传输数据。</string>
+    <string name="notification_channel_name">无线无忧</string>
     <string name="logging_notification_text">正在写入日志文件</string>
     <string name="and">和</string>
-    <string name="network_survey_notification_title">网络探测已激活</string>
+    <string name="network_survey_notification_title">无线无忧正在采集</string>
     <!-- Wi-Fi 和蓝牙列表通用 -->
 	<string name="scan_status_scanning">正在扫描…</string>
     <string name="scan_status_paused">界面已暂停</string>
@@ -511,8 +510,14 @@
     <string name="pref_file_location_output_title">位置</string>
     <string name="privacy_policy">隐私政策</string>
     <string name="privacy_policy_preference_summary">点击此处查看隐私政策</string>
-    <string name="acknowledgments_title">致谢</string>
-    <string name="acknowledgments_summary">认可开源贡献</string>
+    <string name="acknowledgments_title">开源致谢</string>
+    <string name="acknowledgments_summary">上游项目与依赖许可</string>
+    <string name="acknowledgments_license_title">开源与许可</string>
+    <string name="acknowledgments_upstream_notice">无线无忧（WirelessSignalMeter）基于 christianrowlands/android-network-survey，遵循 Apache License 2.0。以下列出上游项目、相关实现参考与主要依赖的许可。</string>
+    <string name="acknowledgments_special_title">上游与相关项目</string>
+    <string name="acknowledgments_core_title">基础依赖</string>
+    <string name="acknowledgments_ui_title">界面与地图</string>
+    <string name="acknowledgments_utility_title">工具依赖</string>
     <!-- 底部导航 -->
 <string name="nav_dashboard">仪表盘</string>
     <!-- 通用 GNSS 常量 -->
@@ -644,8 +649,8 @@
     <string name="help_dialog_got_it">知道了</string>
     <!-- 电池优化 -->
 <string name="battery_optimization_title">重要提示：禁用电池优化</string>
-    <string name="battery_optimization_message">Android 的电池优化可能会在数据采集过程中停止 Network Survey，导致您丢失重要的探测数据。这一点在屏幕关闭时尤其重要。</string>
-    <string name="battery_optimization_recommendation">为防止数据丢失并确保可靠的探测，请立即为 Network Survey 禁用电池优化。</string>
+    <string name="battery_optimization_message">Android 的电池优化可能在采集时停止无线无忧，尤其是在屏幕关闭时。</string>
+    <string name="battery_optimization_recommendation">如需持续后台采集，请允许无线无忧不受电池限制地运行。</string>
     <string name="battery_optimization_device_specific">设备特定说明：</string>
     <string name="battery_optimization_dont_show_again">不再显示此消息</string>
     <string name="battery_optimization_go_to_settings">前往设置</string>
@@ -1024,7 +1029,7 @@
     <string name="diag_qmdl_start">开始录制 QMDL</string>
     <string name="diag_qmdl_stop">停止录制 QMDL</string>
     <string name="diag_qmdl_export">导出上次 QMDL</string>
-    <string name="diag_qmdl_description">仅在测试任务运行时录制基带 DIAG 原始包。文件含完整 RRC、NAS 以及可能的 SIP 报文和标识，请勿分享。开启后台采集后，运行中的任务离开应用仍可继续录制；达到 128 MB 时停止。</string>
+    <string name="diag_qmdl_description">仅在测试任务运行时录制基带 DIAG 原始包。文件含完整 RRC、NAS 以及可能的 SIP 报文和标识，请勿分享。运行中的任务离开应用仍可继续录制；达到 128 MB 时停止。</string>
     <string name="diag_qmdl_export_short">导出 QMDL</string>
     <string name="diag_open_related_message">查看关联信令</string>
     <string name="diag_event_cell_change">服务小区变化</string>

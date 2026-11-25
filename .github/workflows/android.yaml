@@ -1,11 +1,14 @@
 name: Network Survey CI
 
 on:
+  # This fork works on main; keep develop listed too for upstream parity.
   pull_request:
     branches:
+      - 'main'
       - 'develop'
   push:
     branches:
+      - 'main'
       - 'develop'
 
   # Allows you to run this workflow manually from the Actions tab

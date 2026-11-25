@@ -117,8 +117,6 @@ class RootDiagCollectorService : Service() {
             setOnClickListener {
                 RootDiagPrefs.setOverlayWanted(this@RootDiagCollectorService, false)
                 hideOverlay()
-                if (!DiagOverlayState.snapshot.value.isTask() &&
-                    !RootDiagPrefs.backgroundEnabled(this@RootDiagCollectorService)) stopSelf()
             }
         }
         val card = LinearLayout(this).apply {

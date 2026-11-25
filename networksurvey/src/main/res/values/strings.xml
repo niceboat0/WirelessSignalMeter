@@ -1,22 +1,17 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources xmlns:ns0="urn:oasis:names:tc:xliff:document:1.2">
 
-    <string name="permissions_rationale_title">Network Survey Permissions</string>
-    <string name="permissions_rationale">The Network Survey app requires a few permissions to work.  Denying these permissions will result in the app not functioning properly.
-        \n\n1. <b>Make and Manage Phone Calls</b>:  This app does not make or manage phone calls.  Instead, it needs this permission to get access to the current cellular connection type (e.g. LTE vs UMTS).
-        \n\n2. <b>Access this Device\'s Location</b>:  The location permission is needed to access Wi-Fi details, Cellular details, GNSS details, and also to write geo-relevant log files.
-        \n\n3. <b>Access Photos, Media, and Files on Your Device</b>:  This permission allows the log file to be written.
-        \n\n4. <b>Notifications</b>:  This permission allows NS to add a notification so you know when a survey is running in the background.</string>
+    <string name="permissions_rationale_title">WirelessSignalMeter Permissions</string>
+    <string name="permissions_rationale">WirelessSignalMeter uses these permissions for cellular measurements and collection:
+        \n\n1. <b>Phone</b>: Read the current cellular connection and network state. The app does not make or manage calls.
+        \n\n2. <b>Location</b>: Read serving and neighboring cell information, show your location on the map, and attach locations to measurement records.
+        \n\n3. <b>Notifications</b>: Show the collection status while the app runs in the background.</string>
 
     <string name="cdr_required_permissions_rationale_title">CDR Required Permissions</string>
-    <string name="cdr_required_permissions_rationale">The Network Survey app requires a few permissions for Call Detail Record (CDR) logging to work. Denying these permissions will result in CDR logging not working.
-        \n\n1. <b>Make and Manage Phone Calls</b>:  This app does not make or manage phone calls. Instead, it needs this permission to get cellular details to write to the CDR log file.
-        \n\n2. <b>Access this Device\'s Location</b>:  The location permission is needed to access Cellular details that are used to write to the CDR file.
-        \n\n3. <b>Access Photos, Media, and Files on Your Device</b>:  This permission allows the log file to be written.
-        \n\n4. <b>Notifications</b>:  This permission allows NS to add a notification so you know when a survey is running in the background.
-        \n\nThere is a known bug where this permission dialog keep showing, but the permission request dialog does not
-        show up after hitting OK. You can work around this by uninstalling and reinstalling the app and approving all
-        the permissions the first time, or opening the Android settings and manually approving the required permissions.</string>
+    <string name="cdr_required_permissions_rationale">WirelessSignalMeter uses these permissions for Call Detail Record (CDR) logging:
+        \n\n1. <b>Phone</b>: Read cellular details and call-state changes for the log. The app does not make or manage calls.
+        \n\n2. <b>Location</b>: Read cellular details and attach locations to records.
+        \n\n3. <b>Notifications</b>: Show the collection status while logging runs in the background.</string>
 
     <string name="cdr_optional_permissions_rationale_title">CDR Optional Permissions</string>
     <string name="cdr_optional_permissions_rationale">CDR logging has an optional permission.
@@ -109,9 +104,8 @@
     <string name="bluetooth_permissions_rationale">The Find Nearby Devices permission is needed to perform a Bluetooth scan for survey. If this permission is denied then Bluetooth survey will not work.</string>
 
     <string name="background_location_permission_rationale_title">Background Location</string>
-    <string name="background_location_permission_rationale">Network Survey collects location data to enable starting Cellular, Wi-Fi, Bluetooth, and GNSS survey at boot, even when the app is closed or not in use.
-        \n\nWithout the background location permission, this app will not be able to start surveying Cellular, Wi-Fi, or GNSS at boot. If you don\'t want to start surveying when the phone boots then you don\'t
-        need to enable this permission.\n\nEnable the background location permission in the Android settings for this app by selecting <b>Allow all the time</b> on the next page.</string>
+    <string name="background_location_permission_rationale">WirelessSignalMeter uses background location to attach positions to measurement records and tracks while a test task or logging continues in the background.
+        \n\nTo allow background location, select <b>Allow all the time</b> on the next Android settings page.</string>
     <string name="open_settings">Open Settings</string>
     <string name="deny_permission">Deny Permission</string>
 
@@ -436,12 +430,12 @@
     <string name="nav_section_tools">Reference Tools</string>
     <string name="nav_section_help_resources">Help &amp; Resources</string>
 
-    <string name="network_survey_service_description">The Network Survey Service runs when the app needs to do work in the background such as write to the log file or stream data out over active connection</string>
+    <string name="network_survey_service_description">WirelessSignalMeter collects measurements, writes logs, or streams data while an active collection runs in the background.</string>
 
-    <string name="notification_channel_name">Network Survey</string>
+    <string name="notification_channel_name">WirelessSignalMeter</string>
     <string name="logging_notification_text">Writing to the log file(s)</string>
     <string name="and">" and "</string>
-    <string name="network_survey_notification_title">Network Survey Active</string>
+    <string name="network_survey_notification_title">WirelessSignalMeter Active</string>
 
     <!-- Common for Wi-Fi and Bluetooth Lists -->
     <string name="scan_status_scanning">Scanning …</string>
@@ -670,8 +664,14 @@
     <string name="privacy_policy">Privacy Policy</string>
     <string name="privacy_policy_preference_summary">Click here to view the privacy policy</string>
 
-    <string name="acknowledgments_title">Acknowledgments</string>
-    <string name="acknowledgments_summary">Recognition of open source contributions</string>
+    <string name="acknowledgments_title">Open Source Acknowledgments</string>
+    <string name="acknowledgments_summary">Upstream projects and dependency licenses</string>
+    <string name="acknowledgments_license_title">Open source and licenses</string>
+    <string name="acknowledgments_upstream_notice">WirelessSignalMeter is derived from christianrowlands/android-network-survey under Apache License 2.0. Upstream projects, implementation references, and major dependencies are credited below.</string>
+    <string name="acknowledgments_special_title">Upstream and related projects</string>
+    <string name="acknowledgments_core_title">Core libraries</string>
+    <string name="acknowledgments_ui_title">Interface and maps</string>
+    <string name="acknowledgments_utility_title">Utility libraries</string>
 
     <!-- Bottom Navigation -->
     <string name="nav_dashboard">Dashboard</string>
@@ -828,8 +828,8 @@
 
     <!-- Battery Optimization -->
     <string name="battery_optimization_title">Important: Disable Battery Optimization</string>
-    <string name="battery_optimization_message">Android\'s battery optimization can stop Network Survey during data collection, causing you to lose important survey data. This is especially critical when your screen is off.</string>
-    <string name="battery_optimization_recommendation">To prevent data loss and ensure reliable surveys, please disable battery optimization for Network Survey now.</string>
+    <string name="battery_optimization_message">Android\'s battery optimization can stop WirelessSignalMeter during data collection, especially while the screen is off.</string>
+    <string name="battery_optimization_recommendation">To keep collection running in the background, allow WirelessSignalMeter to run without battery restrictions.</string>
     <string name="battery_optimization_device_specific">Device-Specific Instructions:</string>
     <string name="battery_optimization_dont_show_again">Don\'t show this again</string>
     <string name="battery_optimization_go_to_settings">Go to Settings</string>
@@ -1409,7 +1409,7 @@
     <string name="diag_qmdl_start">Start QMDL recording</string>
     <string name="diag_qmdl_stop">Stop QMDL recording</string>
     <string name="diag_qmdl_export">Export last QMDL</string>
-    <string name="diag_qmdl_description">Records raw cellular DIAG packets only while a test task is running. The file contains complete RRC, NAS and possibly SIP messages with identifiers; do not share it. If background collection is enabled, a running task can continue after you leave the app. Recording stops at 128 MB.</string>
+    <string name="diag_qmdl_description">Records raw cellular DIAG packets only while a test task is running. The file contains complete RRC, NAS and possibly SIP messages with identifiers; do not share it. A running task can continue after you leave the app. Recording stops at 128 MB.</string>
     <string name="diag_qmdl_export_short">Export QMDL</string>
     <string name="diag_open_related_message">Open related message</string>
     <string name="diag_event_cell_change">Serving cell change</string>

@@ -1,7 +1,6 @@
 package com.craxiom.networksurvey.ui.acknowledgments
 
 import android.content.Intent
-import android.net.Uri
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -29,11 +28,12 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.craxiom.networksurvey.R
 import com.craxiom.networksurvey.model.LibraryAcknowledgment
 import androidx.core.net.toUri
 
@@ -62,12 +62,12 @@ private fun AcknowledgmentsContent(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(text = "Acknowledgments") },
+                title = { Text(text = stringResource(R.string.acknowledgments_title)) },
                 navigationIcon = {
                     IconButton(onClick = onNavigateUp) {
                         Icon(
                             imageVector = Icons.Default.ArrowBack,
-                            contentDescription = "Navigate back"
+                            contentDescription = stringResource(R.string.navigate_back)
                         )
                     }
                 }
@@ -80,15 +80,14 @@ private fun AcknowledgmentsContent(
                 .padding(paddingValues),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            // Header card
             item {
-                HeaderCard()
+                LicenseIntroduction()
             }
 
             // Special Acknowledgments
             if (uiState.specialAcknowledgments.isNotEmpty()) {
                 item {
-                    CategoryHeader("Special Acknowledgments")
+                    CategoryHeader(stringResource(R.string.acknowledgments_special_title))
                 }
                 items(uiState.specialAcknowledgments) { library ->
                     LibraryCard(library = library, isSpecial = true)
@@ -98,7 +97,7 @@ private fun AcknowledgmentsContent(
             // Core Libraries
             if (uiState.coreLibraries.isNotEmpty()) {
                 item {
-                    CategoryHeader("Core Libraries")
+                    CategoryHeader(stringResource(R.string.acknowledgments_core_title))
                 }
                 items(uiState.coreLibraries) { library ->
                     LibraryCard(library = library)
@@ -108,7 +107,7 @@ private fun AcknowledgmentsContent(
             // UI Libraries
             if (uiState.uiLibraries.isNotEmpty()) {
                 item {
-                    CategoryHeader("UI Libraries")
+                    CategoryHeader(stringResource(R.string.acknowledgments_ui_title))
                 }
                 items(uiState.uiLibraries) { library ->
                     LibraryCard(library = library)
@@ -118,7 +117,7 @@ private fun AcknowledgmentsContent(
             // Utility Libraries
             if (uiState.utilityLibraries.isNotEmpty()) {
                 item {
-                    CategoryHeader("Utility Libraries")
+                    CategoryHeader(stringResource(R.string.acknowledgments_utility_title))
                 }
                 items(uiState.utilityLibraries) { library ->
                     LibraryCard(library = library)
@@ -134,31 +133,23 @@ private fun AcknowledgmentsContent(
 }
 
 @Composable
-private fun HeaderCard() {
-    Card(
+private fun LicenseIntroduction() {
+    Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 8.dp),
-        colors = CardDefaults.defaultColors(
-            color = MaterialTheme.colorScheme.primaryContainer
-        )
+            .padding(horizontal = 16.dp, vertical = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Column(
-            modifier = Modifier.padding(16.dp)
-        ) {
-            Text(
-                text = "开源许可声明",
-                style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onPrimaryContainer
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-            Text(
-                text = "Network Survey 的构建离不开众多优秀开源库的支持。我们衷心感谢创建和维护这些项目的开发者与社区。",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onPrimaryContainer
-            )
-        }
+        Text(
+            text = stringResource(R.string.acknowledgments_license_title),
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold,
+        )
+        Text(
+            text = stringResource(R.string.acknowledgments_upstream_notice),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
@@ -218,7 +209,7 @@ private fun LibraryCard(
                         }
                     )
                     Text(
-                        text = "by ${library.author}",
+                        text = library.author,
                         style = MaterialTheme.typography.bodySmall,
                         color = if (isSpecial) {
                             MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.8f)
@@ -239,8 +230,6 @@ private fun LibraryCard(
                 } else {
                     MaterialTheme.colorScheme.onSurface
                 },
-                maxLines = 3,
-                overflow = TextOverflow.Ellipsis
             )
 
             // License

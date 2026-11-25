@@ -4,7 +4,7 @@ import com.craxiom.networksurvey.model.LibraryAcknowledgment
 import com.craxiom.networksurvey.model.LibraryCategory
 
 /**
- * Repository providing acknowledgment data for open source libraries used in Network Survey.
+ * Repository providing upstream, reference project, and dependency acknowledgments for WirelessSignalMeter.
  */
 class AcknowledgmentsRepository {
 
@@ -16,12 +16,34 @@ class AcknowledgmentsRepository {
             // Special Acknowledgments
             add(
                 LibraryAcknowledgment(
+                    name = "Network Survey",
+                    author = "Christian Rowlands and contributors",
+                    description = "WirelessSignalMeter is derived from christianrowlands/android-network-survey. The upstream project provides the foundation for Android cellular measurements and survey data collection.",
+                    sourceUrl = "https://github.com/christianrowlands/android-network-survey",
+                    licenseName = "Apache License 2.0",
+                    licenseUrl = "https://www.apache.org/licenses/LICENSE-2.0",
+                    category = LibraryCategory.SPECIAL_ACKNOWLEDGMENTS
+                )
+            )
+            add(
+                LibraryAcknowledgment(
                     name = "GPSTest",
                     author = "Sean J. Barbeau",
                     description = "GNSS UI components and satellite visualization code were adapted from the GPSTest open source Android app. This includes the sky view, signal strength charts, and satellite status displays.",
                     sourceUrl = "https://github.com/barbeau/gpstest",
                     licenseName = "Apache License 2.0",
                     licenseUrl = "https://www.apache.org/licenses/LICENSE-2.0",
+                    category = LibraryCategory.SPECIAL_ACKNOWLEDGMENTS
+                )
+            )
+            add(
+                LibraryAcknowledgment(
+                    name = "Tower Collector",
+                    author = "Tower Collector contributors",
+                    description = "Related open source reference for cellular data collection.",
+                    sourceUrl = "https://github.com/zamojski/TowerCollector",
+                    licenseName = "Mozilla Public License 2.0",
+                    licenseUrl = "https://www.mozilla.org/MPL/2.0/",
                     category = LibraryCategory.SPECIAL_ACKNOWLEDGMENTS
                 )
             )
@@ -55,6 +77,17 @@ class AcknowledgmentsRepository {
                     author = "Square",
                     description = "Type-safe HTTP client for Android",
                     sourceUrl = "https://github.com/square/retrofit",
+                    licenseName = "Apache License 2.0",
+                    licenseUrl = "https://www.apache.org/licenses/LICENSE-2.0",
+                    category = LibraryCategory.CORE_LIBRARIES
+                )
+            )
+            add(
+                LibraryAcknowledgment(
+                    name = "OkHttp",
+                    author = "Square",
+                    description = "HTTP client for network requests",
+                    sourceUrl = "https://github.com/square/okhttp",
                     licenseName = "Apache License 2.0",
                     licenseUrl = "https://www.apache.org/licenses/LICENSE-2.0",
                     category = LibraryCategory.CORE_LIBRARIES
@@ -103,6 +136,39 @@ class AcknowledgmentsRepository {
                     sourceUrl = "https://github.com/material-components/material-components-android",
                     licenseName = "Apache License 2.0",
                     licenseUrl = "https://www.apache.org/licenses/LICENSE-2.0",
+                    category = LibraryCategory.UI_LIBRARIES
+                )
+            )
+            add(
+                LibraryAcknowledgment(
+                    name = "Miuix",
+                    author = "Miuix contributors",
+                    description = "Compose UI components and visual effects",
+                    sourceUrl = "https://github.com/miuix-kotlin-multiplatform/miuix",
+                    licenseName = "Apache License 2.0",
+                    licenseUrl = "https://github.com/miuix-kotlin-multiplatform/miuix/blob/v0.9.2/LICENSE",
+                    category = LibraryCategory.UI_LIBRARIES
+                )
+            )
+            add(
+                LibraryAcknowledgment(
+                    name = "MaterialKolor",
+                    author = "Jordon de Hoog",
+                    description = "Dynamic Material color scheme generation",
+                    sourceUrl = "https://github.com/jordond/MaterialKolor",
+                    licenseName = "MIT License",
+                    licenseUrl = "https://github.com/jordond/MaterialKolor/blob/5.0.1/LICENSE",
+                    category = LibraryCategory.UI_LIBRARIES
+                )
+            )
+            add(
+                LibraryAcknowledgment(
+                    name = "Baidu Maps SDK",
+                    author = "Baidu",
+                    description = "Map rendering and coordinate services. This proprietary SDK is used under the Baidu Map Open Platform service terms.",
+                    sourceUrl = "https://lbsyun.baidu.com/",
+                    licenseName = "Baidu Map Open Platform Service Terms",
+                    licenseUrl = "https://lbsyun.baidu.com/index.php?title=open/law",
                     category = LibraryCategory.UI_LIBRARIES
                 )
             )
@@ -158,6 +224,17 @@ class AcknowledgmentsRepository {
                     author = "Apache Software Foundation",
                     description = "Library for reading and writing CSV files",
                     sourceUrl = "https://github.com/apache/commons-csv",
+                    licenseName = "Apache License 2.0",
+                    licenseUrl = "https://www.apache.org/licenses/LICENSE-2.0",
+                    category = LibraryCategory.UTILITY_LIBRARIES
+                )
+            )
+            add(
+                LibraryAcknowledgment(
+                    name = "Apache Commons Net",
+                    author = "Apache Software Foundation",
+                    description = "Network protocol clients for test task transfers",
+                    sourceUrl = "https://github.com/apache/commons-net",
                     licenseName = "Apache License 2.0",
                     licenseUrl = "https://www.apache.org/licenses/LICENSE-2.0",
                     category = LibraryCategory.UTILITY_LIBRARIES
