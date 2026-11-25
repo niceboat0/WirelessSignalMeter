@@ -302,7 +302,7 @@ internal class BandLockViewModel(application: Application) : AndroidViewModel(ap
             if (recordDiagnostics) AppLogger.i(AppLogger.BAND_LOCK_TAG, "run=$started cmd=$name $message")
         }
         fun helperLine(line: String) {
-            if (line.startsWith("NR_BAND ") || line.startsWith("SSR ")) {
+            if (line.startsWith("NR_BAND ") || line.startsWith("SSR ") || line.startsWith("LOCK_DIAG ")) {
                 diagnostic(line)
                 return
             }

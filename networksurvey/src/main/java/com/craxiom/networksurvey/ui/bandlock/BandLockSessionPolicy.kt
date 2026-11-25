@@ -15,9 +15,9 @@ package com.craxiom.networksurvey.ui.bandlock
  * their own socket.
  */
 internal enum class BandLockTransport {
-    /** Start the long-lived helper. One `su`, and at most one router connect. */
+    /** Start the long-lived helper and register with a supported router. */
     OpenSession,
-    /** Helper is already connected. No new `su`, no `connect_router`. */
+    /** Reuse the helper; it re-registers if the modem closed the old connection. */
     ReuseSession,
 }
 
@@ -25,7 +25,7 @@ internal data class BandLockPlan(
     val transport: BandLockTransport,
     /** Show 「正在检测 Root 与 DIAG」. False once the collector or a helper is up. */
     val announceRootDiagCheck: Boolean,
-    /** Scan every diag-router transport. False when a known channel or a live helper is reused. */
+    /** Begin with discovery instead of trying a cached channel or a live helper first. */
     val discoverChannel: Boolean,
     /** Launch `su`. False when the helper process is already connected. */
     val spawnRootShell: Boolean,

@@ -133,8 +133,9 @@ internal class BandLockHelperSession(
             close()
             throw error
         }
-        if (!running.isAlive) close()
-        val exit = read.sessionExit ?: read.processExit ?: 1
+        if (!running.isAlive || read.sessionExit == null) close()
+        // A process exit after submission does not prove that the modem write was never sent.
+        val exit = read.sessionExit ?: 1
         diagnostic("exit=$exit elapsed_ms=${SystemClock.elapsedRealtime() - started}")
         return BandLockOutcome(exit, read.output.toString())
     }
@@ -151,11 +152,11 @@ internal class BandLockHelperSession(
         val input = running.inputStream
         val bytes = ByteArray(4096)
         fun takeLine(line: String): Boolean {
-            if (line == BandLockSessionPolicy.SESSION_CONNECTED) {
+            if (waitForConnect && line == BandLockSessionPolicy.SESSION_CONNECTED) {
                 frame.connected = true
                 return true
             }
-            val exit = BandLockSessionPolicy.sessionExitCode(line)
+            val exit = if (waitForConnect) null else BandLockSessionPolicy.sessionExitCode(line)
             if (exit != null) {
                 frame.sessionExit = exit
                 return true
@@ -192,12 +193,11 @@ internal class BandLockHelperSession(
                 end = pending.indexOf("\n")
             }
         }
-        if (pending.isNotEmpty()) takeLine(pending.toString())
-        if (!frame.connected && frame.sessionExit == null) {
-            frame.processExit = runCatching { running.waitFor() }.getOrNull()
-                ?: if (!running.isAlive) 1 else null
+        if (pending.isNotEmpty()) {
+            frame.output.append(pending).append('\n')
+            onLine(pending.toString())
         }
-        if (waitForConnect && !frame.connected && frame.processExit == null) frame.processExit = 1
+        if (waitForConnect) frame.processExit = runCatching { running.exitValue() }.getOrDefault(1)
         return frame
     }
 
