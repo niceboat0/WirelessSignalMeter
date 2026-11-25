@@ -560,7 +560,7 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
     private fun currentMode(): DiagRecordingPolicy.Mode = DiagRecordingPolicy.mode(
         taskRunning = activeTask != null,
         foreground = foreground,
-        backgroundAllowed = RootDiagPrefs.backgroundEnabled(app) && RootDiagCollectorService.isMaintained,
+        serviceMaintained = RootDiagCollectorService.isMaintained,
         paused = pausedByUser,
     )
 
@@ -639,9 +639,7 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
         val active = status == RootDiagStatus.Checking || status == RootDiagStatus.Starting ||
             status == RootDiagStatus.Running
         val mode = currentMode()
-        val hold = DiagRecordingPolicy.shouldHoldService(
-            mode, RootDiagPrefs.backgroundEnabled(app), RootDiagPrefs.overlayWanted(app),
-        )
+        val hold = DiagRecordingPolicy.shouldHoldService(mode)
         if (active && hold) {
             if (!RootDiagCollectorService.isMaintained && foreground) RootDiagCollectorService.start(app)
         } else {

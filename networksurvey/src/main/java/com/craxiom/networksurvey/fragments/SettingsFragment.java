@@ -82,13 +82,11 @@ public class SettingsFragment extends PreferenceFragmentCompat implements Shared
     {
         // Inflate the preferences XML resource
         setPreferencesFromResource(R.xml.preferences, rootKey);
+        removePreferenceGroup("survey_settings");
+        removePreferenceGroup("network_lookups");
+        removePreferenceGroup("wifi_settings");
         getPreferenceManager().getSharedPreferences().registerOnSharedPreferenceChangeListener(this);
 
-        setPreferenceAsIntegerOnly(findPreference(NetworkSurveyConstants.PROPERTY_CELLULAR_SCAN_INTERVAL_SECONDS));
-        setPreferenceAsIntegerOnly(findPreference(NetworkSurveyConstants.PROPERTY_WIFI_SCAN_INTERVAL_SECONDS));
-        setPreferenceAsIntegerOnly(findPreference(NetworkSurveyConstants.PROPERTY_BLUETOOTH_SCAN_INTERVAL_SECONDS));
-        setPreferenceAsIntegerOnly(findPreference(NetworkSurveyConstants.PROPERTY_GNSS_SCAN_INTERVAL_SECONDS));
-        setPreferenceAsIntegerOnly(findPreference(NetworkSurveyConstants.PROPERTY_DEVICE_STATUS_SCAN_INTERVAL_SECONDS));
         setPreferenceAsIntegerOnly(findPreference(NetworkSurveyConstants.PROPERTY_STREAMING_QUEUE_LIMIT));
 
         // Initialize tracking for streaming queue limit
@@ -145,16 +143,14 @@ public class SettingsFragment extends PreferenceFragmentCompat implements Shared
                 return true;
             });
         }
+    }
 
-        // SSID Exclusion List preference
-        final Preference ssidExclusionList = findPreference("ssid_exclusion_list");
-        if (ssidExclusionList != null)
+    private void removePreferenceGroup(String key)
+    {
+        final Preference preference = findPreference(key);
+        if (preference != null && preference.getParent() != null)
         {
-            ssidExclusionList.setOnPreferenceClickListener(preference -> {
-                SharedViewModel viewModel = new ViewModelProvider(requireActivity()).get(SharedViewModel.class);
-                viewModel.triggerNavigationToSsidExclusionList();
-                return true;
-            });
+            preference.getParent().removePreference(preference);
         }
     }
 

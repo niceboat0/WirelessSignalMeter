@@ -1,6 +1,5 @@
 package com.craxiom.networksurvey.ui.settings
 
-import android.content.SharedPreferences
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -27,9 +26,7 @@ import androidx.compose.material.icons.rounded.FileUpload
 import androidx.compose.material.icons.rounded.FileDownload
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Palette
-import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.SignalCellularAlt
-import androidx.compose.material.icons.rounded.Wifi
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.TextButton
@@ -59,20 +56,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.preference.PreferenceManager
 import com.craxiom.networksurvey.BuildConfig
 import com.craxiom.networksurvey.R
 import com.craxiom.networksurvey.ui.rootdiag.RootDiagViewModel
 import com.craxiom.networksurvey.ui.rootdiag.capabilityLine
 import com.craxiom.networksurvey.ui.rootdiag.imsStatusLine
-import android.Manifest
 import android.content.Intent
 import android.net.Uri
-import android.os.Build
 import android.provider.Settings
-import androidx.core.content.ContextCompat
-import android.content.pm.PackageManager
-import androidx.compose.material.icons.rounded.Notifications
 import androidx.compose.material.icons.rounded.OpenInNew
 import com.craxiom.networksurvey.ui.rootdiag.RootDiagPrefs
 import com.craxiom.networksurvey.services.RootDiagCollectorService
@@ -81,8 +72,6 @@ import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import com.craxiom.networksurvey.constants.NetworkSurveyConstants
-import com.craxiom.networksurvey.ui.common.dialogs.NsSingleChoiceDialog
 import com.craxiom.networksurvey.ui.dashboard.DashboardCardDefaults
 
 @Composable
@@ -93,10 +82,6 @@ fun SettingsScreen(
     bottomContentPadding: Dp = 24.dp,
     rootDiag: RootDiagViewModel? = null,
 ) {
-    val context = LocalContext.current
-    val preferences = remember(context) { PreferenceManager.getDefaultSharedPreferences(context) }
-    val ouiKey = NetworkSurveyConstants.PROPERTY_OUI_LOOKUP_ENABLED
-    var ouiEnabled by remember(preferences) { mutableStateOf(preferences.getBoolean(ouiKey, true)) }
     var showBarColors by remember { mutableStateOf(false) }
     if (showBarColors) SignalBarColorSettings { showBarColors = false }
 
@@ -114,43 +99,6 @@ fun SettingsScreen(
                         stringResource(R.string.signal_bar_colors_subtitle)) { showBarColors = true }
                     SettingsDivider()
                     SettingsLink(Icons.Rounded.FileUpload, "基站工参", "导入和管理 CSV 工参", onNavigateToEngParams)
-                }
-            }
-            item {
-                SettingsGroup("扫描") {
-                    ScanIntervalItem(
-                        preferences,
-                        NetworkSurveyConstants.PROPERTY_CELLULAR_SCAN_INTERVAL_SECONDS,
-                        "蜂窝扫描间隔",
-                        NetworkSurveyConstants.DEFAULT_CELLULAR_SCAN_INTERVAL_SECONDS,
-                        Icons.Rounded.SignalCellularAlt,
-                    )
-                    SettingsDivider()
-                    ScanIntervalItem(
-                        preferences,
-                        NetworkSurveyConstants.PROPERTY_WIFI_SCAN_INTERVAL_SECONDS,
-                        "Wi-Fi 扫描间隔",
-                        NetworkSurveyConstants.DEFAULT_WIFI_SCAN_INTERVAL_SECONDS,
-                        Icons.Rounded.Wifi,
-                    )
-                }
-            }
-            item {
-                SettingsGroup("Wi-Fi") {
-                    SettingsRow(
-                        icon = Icons.Rounded.Search,
-                        title = "在线查询设备厂商",
-                        subtitle = "根据 Wi-Fi 设备的 MAC 地址查询",
-                        modifier = Modifier.toggleable(
-                            value = ouiEnabled,
-                            role = Role.Switch,
-                            onValueChange = {
-                                preferences.edit().putBoolean(ouiKey, it).apply()
-                                ouiEnabled = it
-                            },
-                        ),
-                        trailing = { Switch(checked = ouiEnabled, onCheckedChange = null) },
-                    )
                 }
             }
             if (rootDiag != null) item {
@@ -253,34 +201,11 @@ private fun DeviceCapabilitySummary(rootDiag: RootDiagViewModel) {
 @Composable
 private fun DiagCollectionSettings(rootDiag: RootDiagViewModel? = null) {
     val context = LocalContext.current
-    var background by remember { mutableStateOf(RootDiagPrefs.backgroundEnabled(context)) }
     var overlay by remember { mutableStateOf(RootDiagPrefs.overlayWanted(context) && Settings.canDrawOverlays(context)) }
     var showRf by remember { mutableStateOf(RootDiagPrefs.showRf(context)) }
     var showIms by remember { mutableStateOf(RootDiagPrefs.showIms(context)) }
     var showQueue by remember { mutableStateOf(RootDiagPrefs.showQueue(context)) }
     var showOverlayHelp by rememberSaveable { mutableStateOf(false) }
-    val notificationLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
-    SettingsRow(
-        icon = Icons.Rounded.Notifications,
-        title = stringResource(R.string.diag_bg_title),
-        subtitle = stringResource(R.string.diag_bg_subtitle),
-        modifier = Modifier.toggleable(
-            value = background,
-            role = Role.Switch,
-            onValueChange = { enabled ->
-                if (enabled && Build.VERSION.SDK_INT >= 33 &&
-                    ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
-                    PackageManager.PERMISSION_GRANTED) {
-                    notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                }
-                RootDiagPrefs.setBackgroundEnabled(context, enabled)
-                background = enabled
-                rootDiag?.onCollectionPreferenceChanged()
-            },
-        ),
-        trailing = { Switch(checked = background, onCheckedChange = null) },
-    )
-    SettingsDivider()
     SettingsRow(
         icon = Icons.Rounded.OpenInNew,
         title = stringResource(R.string.diag_overlay_title),
@@ -424,34 +349,5 @@ private fun SettingsRow(
             }
         }
         trailing()
-    }
-}
-
-@Composable
-private fun ScanIntervalItem(
-    preferences: SharedPreferences,
-    key: String,
-    title: String,
-    defaultValue: Int,
-    icon: ImageVector,
-) {
-    var value by remember(preferences, key) {
-        mutableStateOf(preferences.getString(key, null)?.toIntOrNull() ?: defaultValue)
-    }
-    var showOptions by remember { mutableStateOf(false) }
-    SettingsLink(icon, title, "$value 秒") { showOptions = true }
-    if (showOptions) {
-        val options = (listOf(5, 10, 15, 30, 60, 120, 300) + value).distinct().sorted()
-        NsSingleChoiceDialog(
-            title = title,
-            options = options.map { "$it 秒" },
-            selectedIndex = options.indexOf(value),
-            onConfirm = { index ->
-                value = options[index]
-                preferences.edit().putString(key, value.toString()).apply()
-                showOptions = false
-            },
-            onDismiss = { showOptions = false },
-        )
     }
 }

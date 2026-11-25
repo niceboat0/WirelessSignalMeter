@@ -38,7 +38,7 @@ class DiagRecordingPolicyTest {
     @Test
     fun createdTaskDoesNotRecordUntilStarted() {
         // A dialog that only creates a name does not set taskRunning.
-        val mode = DiagRecordingPolicy.mode(taskRunning = false, foreground = true, backgroundAllowed = true, paused = false)
+        val mode = DiagRecordingPolicy.mode(taskRunning = false, foreground = true, serviceMaintained = true, paused = false)
         assertFalse(DiagRecordingPolicy.shouldRecord(mode))
     }
 
@@ -51,25 +51,25 @@ class DiagRecordingPolicyTest {
     }
 
     @Test
-    fun backgroundSwitchKeepsLiveDiagWithoutCreatingARecording() {
+    fun maintainedServiceKeepsLiveDiagInBackgroundWithoutCreatingARecording() {
         val recording = DiagRecordingPolicy.mode(true, false, true, false)
         assertEquals(DiagRecordingPolicy.Mode.TaskRecording, recording)
-        assertTrue(DiagRecordingPolicy.shouldHoldService(recording, backgroundEnabled = true, overlayWanted = false))
+        assertTrue(DiagRecordingPolicy.shouldHoldService(recording))
 
         val noTask = DiagRecordingPolicy.mode(false, false, true, false)
         assertEquals(DiagRecordingPolicy.Mode.LiveView, noTask)
         assertTrue(DiagRecordingPolicy.shouldListen(noTask))
         assertFalse(DiagRecordingPolicy.shouldRecord(noTask))
         assertNull(DiagRecordingPolicy.recordingTaskId(noTask, null, manual = true, blockedTaskId = null))
-        assertTrue(DiagRecordingPolicy.shouldHoldService(noTask, backgroundEnabled = true, overlayWanted = false))
+        assertTrue(DiagRecordingPolicy.shouldHoldService(noTask))
     }
 
     @Test
-    fun leavingWithoutBackgroundStopsARunningTaskSession() {
+    fun leavingWithoutAMaintainedServiceStopsARunningTaskSession() {
         val mode = DiagRecordingPolicy.mode(true, false, false, false)
         assertEquals(DiagRecordingPolicy.Mode.Idle, mode)
         assertFalse(DiagRecordingPolicy.shouldRecord(mode))
-        assertFalse(DiagRecordingPolicy.shouldHoldService(mode, backgroundEnabled = false, overlayWanted = true))
+        assertFalse(DiagRecordingPolicy.shouldHoldService(mode))
     }
 
     @Test
@@ -82,18 +82,39 @@ class DiagRecordingPolicyTest {
     }
 
     @Test
-    fun foregroundLiveViewHoldsServiceForBackgroundOrOverlay() {
-        val live = DiagRecordingPolicy.Mode.LiveView
-        assertTrue(DiagRecordingPolicy.shouldHoldService(live, backgroundEnabled = false, overlayWanted = true))
-        assertTrue(DiagRecordingPolicy.shouldHoldService(live, backgroundEnabled = true, overlayWanted = false))
-        assertFalse(DiagRecordingPolicy.shouldHoldService(live, backgroundEnabled = false, overlayWanted = false))
+    fun foregroundLiveViewAlwaysHoldsServiceBeforeLeavingTheActivity() {
+        val live = DiagRecordingPolicy.mode(false, true, false, false)
+        assertEquals(DiagRecordingPolicy.Mode.LiveView, live)
+        assertTrue(DiagRecordingPolicy.shouldHoldService(live))
     }
 
     @Test
-    fun leavingWithoutBackgroundStopsLiveView() {
+    fun leavingWithoutAMaintainedServiceStopsLiveView() {
         val mode = DiagRecordingPolicy.mode(false, false, false, false)
         assertFalse(DiagRecordingPolicy.shouldListen(mode))
         assertFalse(DiagRecordingPolicy.shouldRecord(mode))
+    }
+
+    @Test
+    fun manualPauseWinsOverAnActiveTaskAndMaintainedBackgroundService() {
+        for (foreground in listOf(true, false)) {
+            for (taskRunning in listOf(true, false)) {
+                val mode = DiagRecordingPolicy.mode(taskRunning, foreground, true, paused = true)
+                assertEquals(DiagRecordingPolicy.Mode.Idle, mode)
+                assertFalse(DiagRecordingPolicy.shouldHoldService(mode))
+                assertFalse(DiagRecordingPolicy.shouldRecord(mode))
+            }
+        }
+    }
+
+    @Test
+    fun taskWithoutNeedLogDoesNotAutomaticallyRecordInBackground() {
+        val task = SurveyTask("live", "test", 1, needLog = false)
+        val mode = DiagRecordingPolicy.mode(true, false, true, false)
+        assertTrue(DiagRecordingPolicy.shouldListen(mode))
+        assertTrue(DiagRecordingPolicy.shouldHoldService(mode))
+        assertNull(DiagRecordingPolicy.recordingTaskId(mode, task, manual = false, blockedTaskId = null))
+        assertEquals(task.id, DiagRecordingPolicy.recordingTaskId(mode, task.copy(needLog = true), false, null))
     }
 }
 
@@ -209,7 +230,7 @@ class DiagRecordingSessionTest {
     fun configChangeDoesNotStartASessionByItself() {
         val dir = temp()
         val session = DiagRecordingSession(dir)
-        // Turning background collection on or off is not a start() call.
+        // Updating overlay preferences is not a start() call.
         session.ensureLiveOnly()
         assertFalse(session.isOpen())
         assertEquals(0, dir.listFiles()?.size ?: 0)
