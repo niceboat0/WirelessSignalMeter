@@ -118,7 +118,7 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
     private val nrChart = CellularChartViewModel()
     private val lteChart = CellularChartViewModel()
     internal fun chartFor(rat: String) = if (rat == "NR") nrChart else lteChart
-    // NAS/IMS configuration changes infrequently and the collector restarts on foreground entry.
+    // NAS/IMS configuration changes infrequently. Screen lock must not restart a collector that is still alive.
     private val lastConfiguration = linkedMapOf<String, DiagRecord>()
     private val lastMeasurements = mutableMapOf<String, DiagRecord>()
     private val diagnosticRecords = ArrayDeque<JSONObject>()
@@ -453,6 +453,7 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
     private var nextId = 0L
     private var firstVisibleMessageId = 0L
     private var capture: Job? = null
+    private var collectorProcess: Process? = null
     private var modemRecovery: Job? = null
     private var foreground = false
     private var pausedByUser = false
@@ -557,11 +558,22 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
         applyCollectionPolicy()
     }
 
+    private fun collectorProcessAlive(): Boolean = collectorProcess?.isAlive == true
+
+    /** Test hook: screen lock must not cancel the capture job that owns the live process. */
+    internal fun captureWasCancelled(): Boolean = capture?.isCancelled == true
+
+    internal fun bindLiveCollectorForTest(process: Process, status: RootDiagStatus) {
+        collectorProcess = process
+        signalState.value = signalState.value.copy(status = status)
+    }
+
     private fun currentMode(): DiagRecordingPolicy.Mode = DiagRecordingPolicy.mode(
         taskRunning = activeTask != null,
         foreground = foreground,
         serviceMaintained = RootDiagCollectorService.isMaintained,
         paused = pausedByUser,
+        collectorAlive = collectorProcessAlive(),
     )
 
     private fun applyCollectionPolicy(explicitRetry: Boolean = false) {
@@ -570,7 +582,7 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
         if (qmdlTaskId != eligibleQmdlTask()) requestQmdlStop()
         if (DiagRecordingPolicy.shouldListen(mode)) {
             if (capture?.isCancelled == true) restartAfterStop = true
-            if (capture == null && (explicitRetry || signalState.value.status !in setOf(
+            if (capture == null && !collectorProcessAlive() && (explicitRetry || signalState.value.status !in setOf(
                     RootDiagStatus.Denied, RootDiagStatus.Unavailable, RootDiagStatus.Unsupported,
                 ))) start()
         } else {
@@ -587,7 +599,7 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
     }
 
     private fun start() {
-        if (capture != null) return
+        if (capture != null || collectorProcessAlive()) return
         if (!DiagRecordingPolicy.shouldListen(currentMode())) return
         signalState.value = RootSignalState(
             RootDiagStatus.Checking, lastMeasurements.values.toList() + lastConfiguration.values,
@@ -1322,7 +1334,10 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
                 ProcessBuilder("su", "-c", collectorCommand(helper))
                     .redirectErrorStream(true)
                     .start()
-                    .also { process = it }
+                    .also {
+                        process = it
+                        collectorProcess = it
+                    }
             }
             val stream = running.inputStream
             do {
@@ -1434,6 +1449,7 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
                     }
                 }
             }
+            if (collectorProcess === process) collectorProcess = null
             if (qmdlState.value.phase != QmdlPhase.Idle || qmdlState.value.recovering) {
                 withContext(NonCancellable) {
                     finishQmdl(QmdlResult.Interrupted)

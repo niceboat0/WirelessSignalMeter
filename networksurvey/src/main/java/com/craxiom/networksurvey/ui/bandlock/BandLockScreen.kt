@@ -160,10 +160,10 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     if (advanced) Text(model.device, style = MaterialTheme.typography.titleSmall)
                     Text(stringResource(when {
+                        state.availability == LockAvailability.Checking -> R.string.lock_checking
+                        state.busy -> R.string.lock_working
                         state.availability == LockAvailability.Unchecked -> R.string.lock_unchecked
                         state.availability == LockAvailability.Cached -> R.string.lock_cached_unconfirmed
-                        state.availability == LockAvailability.Checking -> R.string.lock_checking
-                        operating -> R.string.lock_working
                         state.availability == LockAvailability.Ready && state.profile.level == LockSupportLevel.Verified -> R.string.lock_ready
                         state.availability == LockAvailability.Ready -> R.string.lock_probe_only
                         else -> R.string.lock_unavailable
@@ -183,7 +183,9 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
                             color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
-                LockIconButton(R.string.lock_refresh, Icons.Rounded.Refresh, !state.busy, model::refresh)
+                LockIconButton(R.string.lock_refresh, Icons.Rounded.Refresh, !state.busy) {
+                    model.refresh(signal.status == RootDiagStatus.Running)
+                }
             }
             if (advanced && state.availability == LockAvailability.Ready &&
                 (state.channel.isNotEmpty() || state.caps.isNotEmpty())) {
@@ -370,7 +372,11 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
             confirmEnabled = !state.busy,
             onConfirm = {
                 pending = null
-                model.run(action, onModemRestartRequested = rootDiag::recoverAfterModemRestart)
+                model.run(
+                    action,
+                    collectorRunning = signal.status == RootDiagStatus.Running,
+                    onModemRestartRequested = rootDiag::recoverAfterModemRestart,
+                )
             },
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
