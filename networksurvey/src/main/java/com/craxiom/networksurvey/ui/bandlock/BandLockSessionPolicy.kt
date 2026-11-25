@@ -1,0 +1,95 @@
+package com.craxiom.networksurvey.ui.bandlock
+
+/**
+ * How a band-lock command reaches the modem.
+ *
+ * The live DIAG collector already proved root (`id -u`) and a working DIAG
+ * session. Band lock must not launch another `su` or scan diag-router
+ * transports just to prove that again. Capability and backup reads still
+ * happen, on one long-lived helper: the first check may open a raw
+ * diag-router client, and every later command reuses it.
+ *
+ * That helper is not the collector process. The collector speaks libdiag DCI
+ * and its stdin is only the QMDL start/stop channel. Mixing EFS and NV writes
+ * into that process would stall the live log stream, so lock frames stay on
+ * their own socket.
+ */
+internal enum class BandLockTransport {
+    /** Start the long-lived helper. One `su`, and at most one router connect. */
+    OpenSession,
+    /** Helper is already connected. No new `su`, no `connect_router`. */
+    ReuseSession,
+}
+
+internal data class BandLockPlan(
+    val transport: BandLockTransport,
+    /** Show 「正在检测 Root 与 DIAG」. False once the collector or a helper is up. */
+    val announceRootDiagCheck: Boolean,
+    /** Scan every diag-router transport. False when a known channel or a live helper is reused. */
+    val discoverChannel: Boolean,
+    /** Launch `su`. False when the helper process is already connected. */
+    val spawnRootShell: Boolean,
+    /**
+     * A probe still has to read lock items and backups. The collector being
+     * up does not by itself authorize a write.
+     */
+    val checksCapabilityAndBackup: Boolean,
+    val knownChannel: String?,
+)
+
+internal object BandLockSessionPolicy {
+    private val channelName = Regex("[a-z0-9-]{1,64}")
+
+    fun normalizedChannel(channel: String?): String? =
+        channel?.takeIf { channelName.matches(it) }
+
+    fun plan(
+        collectorRunning: Boolean,
+        helperConnected: Boolean,
+        knownChannel: String?,
+        kind: LockWriteKind,
+    ): BandLockPlan {
+        val channel = normalizedChannel(knownChannel)
+        val transport = if (helperConnected) BandLockTransport.ReuseSession else BandLockTransport.OpenSession
+        val provingDiscovery = !collectorRunning && !helperConnected
+        return BandLockPlan(
+            transport = transport,
+            announceRootDiagCheck = provingDiscovery && kind == LockWriteKind.Probe,
+            discoverChannel = transport == BandLockTransport.OpenSession && channel == null,
+            spawnRootShell = transport == BandLockTransport.OpenSession,
+            checksCapabilityAndBackup = kind == LockWriteKind.Probe,
+            knownChannel = channel.takeIf { transport == BandLockTransport.OpenSession },
+        )
+    }
+
+    /** One command per stdin frame. Arguments stay off the shell. */
+    fun encodeSessionCommand(arguments: List<String>): String {
+        require(arguments.isNotEmpty() && arguments.size <= 12) { "Invalid lock command." }
+        require(arguments.all { argument ->
+            argument.isNotEmpty() && argument.length <= 240 && '\n' !in argument && '\r' !in argument
+        }) { "Invalid lock command." }
+        return buildString {
+            append("CMD ").append(arguments.size).append('\n')
+            arguments.forEach { append(it).append('\n') }
+        }
+    }
+
+    fun sessionExitCode(line: String): Int? {
+        if (!line.startsWith("SESSION exit ")) return null
+        return line.removePrefix("SESSION exit ").trim().toIntOrNull()
+    }
+
+    const val SESSION_CONNECTED = "SESSION connected"
+    const val SESSION_CLOSE = "session-close"
+}
+
+internal interface BandLockCommandRunner {
+    val helperConnected: Boolean
+    fun close()
+    suspend fun run(
+        command: BandLockCommand,
+        plan: BandLockPlan,
+        onLine: (String) -> Unit,
+        diagnostic: (String) -> Unit,
+    ): BandLockOutcome
+}

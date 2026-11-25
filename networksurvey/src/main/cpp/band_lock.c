@@ -18,6 +18,7 @@ static uint32_t client_id, transaction = 0x80;
 static int router = -1, state_dir = -1;
 static int have_device;
 static char device_model[256], device_soc[256], device_fingerprint[256];
+static char connected_label[64];
 
 static int write_backup_origin(void) {
     int n, ok, fd;
@@ -146,9 +147,15 @@ static int register_client(void) {
     return 0;
 }
 
-static int connect_router(void) {
+/* `only` limits the scan to one already-known label. `report` prints the
+ * failure; a caller that still has another candidate passes 0. */
+static int connect_router(const char *only, int report) {
+    int tried = 0;
+    connected_label[0] = 0;
     for (unsigned t = 0; t < sizeof(lb_transports) / sizeof(lb_transports[0]); t++) {
         const struct lb_transport *tr = &lb_transports[t];
+        if (only && only[0] && strcmp(only, tr->label)) continue;
+        tried++;
         int fd = socket(AF_UNIX,
             (tr->seqpacket ? SOCK_SEQPACKET : SOCK_STREAM) | SOCK_CLOEXEC, 0);
         if (fd < 0) continue;
@@ -162,6 +169,7 @@ static int connect_router(void) {
                 (socklen_t)(offsetof(struct sockaddr_un, sun_path) + namelen)) == 0) {
             router = fd;
             if (register_client()) {
+                snprintf(connected_label, sizeof(connected_label), "%s", tr->label);
                 printf("CHANNEL %s\n", tr->label);
                 return 0;
             }
@@ -169,6 +177,9 @@ static int connect_router(void) {
         }
         close(fd);
     }
+    if (!report) return 1;
+    if (!tried) return fail("The saved DIAG channel is not supported.");
+    if (only && only[0]) return fail("The saved DIAG channel is not connected.");
     return fail("This device does not expose a supported diag channel "
         "(tried samsung-diag-router, diag-stream, diag-seqpacket).");
 }
@@ -810,10 +821,87 @@ static int execute(int argc, char **argv) {
     return reboot_modem(0);
 }
 
+static void trim_line(char *text) {
+    size_t n = strlen(text);
+    while (n && (text[n - 1] == '\n' || text[n - 1] == '\r')) text[--n] = 0;
+}
+
+static int read_line(char *buf, int cap) {
+    if (!fgets(buf, cap, stdin)) return -1;
+    trim_line(buf);
+    return 0;
+}
+
+static int channel_name_ok(const char *name) {
+    if (!name || !name[0]) return 0;
+    for (const char *p = name; *p; p++) {
+        if (!((*p >= 'a' && *p <= 'z') || (*p >= '0' && *p <= '9') || *p == '-')) return 0;
+        if ((size_t)(p - name) >= 63) return 0;
+    }
+    return 1;
+}
+
+/* One router client for every command on stdin. The collector's libdiag
+ * session is a different client and is not borrowed here. */
+static int run_session(const char *only) {
+    /* Named channel: try only that transport. A full scan happens only when
+     * the caller has no saved channel. Later commands reuse this socket. */
+    alarm(100);
+    if (connect_router(only && only[0] ? only : NULL, 1)) return 2;
+    alarm(0);
+    puts("SESSION connected");
+    fflush(stdout);
+    for (;;) {
+        char header[64];
+        if (read_line(header, sizeof(header))) break;
+        if (!strcmp(header, "session-close")) break;
+        int count = 0;
+        if (strncmp(header, "CMD ", 4) != 0) {
+            puts("SESSION exit 1");
+            fflush(stdout);
+            continue;
+        }
+        count = atoi(header + 4);
+        if (count < 1 || count > 12) {
+            puts("SESSION exit 1");
+            fflush(stdout);
+            continue;
+        }
+        char storage[12][256];
+        char *args[12];
+        int bad = 0;
+        for (int i = 0; i < count; i++) {
+            if (read_line(storage[i], (int)sizeof(storage[i]))) return 0;
+            if (!storage[i][0] || strlen(storage[i]) > 240) bad = 1;
+            args[i] = storage[i];
+        }
+        if (router < 0 && connect_router(NULL, 1)) {
+            puts("SESSION exit 2");
+            fflush(stdout);
+            continue;
+        }
+        alarm(100);
+        int rc = 1;
+        if (bad) rc = fail("Invalid lock command.");
+        else {
+            if (connected_label[0]) printf("CHANNEL %s\n", connected_label);
+            rc = execute(count, args);
+        }
+        alarm(0);
+        if (rc == 2 && router >= 0) {
+            close(router);
+            router = -1;
+            connected_label[0] = 0;
+        }
+        printf("SESSION exit %d\n", rc);
+        fflush(stdout);
+    }
+    return 0;
+}
+
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IOLBF, 0);
     signal(SIGPIPE, SIG_IGN);
-    alarm(100);
     if (getuid() != 0) return fail("Root authorization is required.");
     if (argc < 4 || strcmp(argv[1], "--state-dir")) return fail("Missing private state directory.");
     state_dir = open(argv[2], O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
@@ -821,8 +909,25 @@ int main(int argc, char **argv) {
     if (load_session_identity()) return fail("Invalid device identity.");
     int lock = openat(state_dir, "operation.lock", O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0600);
     if (lock < 0 || flock(lock, LOCK_EX | LOCK_NB)) return fail("Another lock operation is in progress.");
-    if (connect_router()) return 2;
-    int result = execute(argc - 3, argv + 3);
-    close(router); close(lock); close(state_dir);
+
+    int result;
+    if (!strcmp(argv[3], "--session")) {
+        const char *only = NULL;
+        int end = 4;
+        if (argc >= 6 && !strcmp(argv[4], "--channel")) {
+            if (!channel_name_ok(argv[5])) return fail("Invalid DIAG channel.");
+            only = argv[5];
+            end = 6;
+        }
+        if (argc != end) return fail("Session mode takes commands on stdin.");
+        result = run_session(only);
+    } else {
+        alarm(100);
+        if (connect_router(NULL, 1)) return 2;
+        result = execute(argc - 3, argv + 3);
+    }
+    if (router >= 0) close(router);
+    close(lock);
+    close(state_dir);
     return result;
 }
