@@ -403,9 +403,23 @@ static void unknown_layout(uint16_t code, uint32_t ver, const uint8_t *body, int
         for (int i = 0; i < s->nwarned; i++) if (s->warned_vers[i] == ver) return;
         if (s->nwarned < 8) s->warned_vers[s->nwarned++] = ver;
     }
+    /* The first 16 body bytes are enough to settle layout questions offline
+       (count-byte position, header stride, version field) without exporting
+       the whole payload; full frames are already preserved by QMDL capture.
+       Layout failures are deduplicated per (code, ver), so this stays a
+       handful of one-line records per session. */
+    char head[16 * 3 + 1] = {0};
+    int hn = (blen > 16) ? 16 : blen;
+    if (hn < 0 || !body) hn = 0;
+    static const char hex[] = "0123456789abcdef";
+    for (int i = 0; i < hn; i++) {
+        head[i * 3] = hex[body[i] >> 4];
+        head[i * 3 + 1] = hex[body[i] & 0xf];
+        head[i * 3 + 2] = (i + 1 < hn) ? ' ' : '\0';
+    }
     struct jb j; jb_init(&j, "unknown_layout");
-    jb_add(&j, ",\"code\":\"0x%04X\",\"ver\":\"0x%x\",\"len\":%d,\"why\":\"%s\"", code, ver, blen, why);
-    (void)body;
+    jb_add(&j, ",\"code\":\"0x%04X\",\"ver\":\"0x%x\",\"len\":%d,\"why\":\"%s\",\"head\":\"%s\"",
+           code, ver, blen, why, head);
     jb_emit(&j);
 }
 
