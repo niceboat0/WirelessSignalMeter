@@ -764,43 +764,18 @@ class NetworkSurveyActivity : AppCompatActivity(), StartupDialogActions {
 
     companion object {
         private const val ACCESS_PERMISSION_REQUEST_ID = 1
-        val PERMISSIONS: Array<String>
+        val PERMISSIONS = arrayOf(
+            Manifest.permission.ACCESS_FINE_LOCATION,
+            Manifest.permission.ACCESS_COARSE_LOCATION,
+            Manifest.permission.READ_PHONE_STATE,
+            Manifest.permission.POST_NOTIFICATIONS
+        )
 
-        // The BLUETOOTH_CONNECT and BLUETOOTH_SCAN permissions are only for Android 12 and above.
         @JvmField
-        val BLUETOOTH_PERMISSIONS: Array<String>
-
-        init {
-            // Android 13+ (SDK 33) requires permission for push notifications
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                BLUETOOTH_PERMISSIONS = arrayOf(
-                    Manifest.permission.BLUETOOTH_CONNECT,
-                    Manifest.permission.BLUETOOTH_SCAN
-                )
-                PERMISSIONS = arrayOf(
-                    Manifest.permission.ACCESS_FINE_LOCATION,
-                    Manifest.permission.READ_PHONE_STATE,
-                    Manifest.permission.POST_NOTIFICATIONS
-                )
-            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                BLUETOOTH_PERMISSIONS = arrayOf(
-                    Manifest.permission.BLUETOOTH_CONNECT,
-                    Manifest.permission.BLUETOOTH_SCAN
-                )
-                PERMISSIONS = arrayOf(
-                    Manifest.permission.ACCESS_FINE_LOCATION,
-                    Manifest.permission.WRITE_EXTERNAL_STORAGE,
-                    Manifest.permission.READ_PHONE_STATE
-                )
-            } else {
-                BLUETOOTH_PERMISSIONS = arrayOf()
-                PERMISSIONS = arrayOf(
-                    Manifest.permission.ACCESS_FINE_LOCATION,
-                    Manifest.permission.WRITE_EXTERNAL_STORAGE,
-                    Manifest.permission.READ_PHONE_STATE
-                )
-            }
-        }
+        val BLUETOOTH_PERMISSIONS = arrayOf(
+            Manifest.permission.BLUETOOTH_CONNECT,
+            Manifest.permission.BLUETOOTH_SCAN
+        )
 
         private const val ACCESS_BACKGROUND_LOCATION_PERMISSION_REQUEST_ID = 2
     }

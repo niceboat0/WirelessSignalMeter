@@ -144,9 +144,9 @@ class AcknowledgmentsRepository {
                     name = "Miuix",
                     author = "Miuix contributors",
                     description = "Compose UI components and visual effects",
-                    sourceUrl = "https://github.com/miuix-kotlin-multiplatform/miuix",
+                    sourceUrl = "https://github.com/compose-miuix-ui/miuix",
                     licenseName = "Apache License 2.0",
-                    licenseUrl = "https://github.com/miuix-kotlin-multiplatform/miuix/blob/v0.9.2/LICENSE",
+                    licenseUrl = "https://github.com/compose-miuix-ui/miuix/blob/v0.9.5-rc01/LICENSE",
                     category = LibraryCategory.UI_LIBRARIES
                 )
             )

@@ -1,5 +1,3 @@
-@file:OptIn(ExperimentalMaterial3Api::class)
-
 package com.craxiom.networksurvey.ui.cellular
 
 import androidx.compose.foundation.layout.Box
@@ -15,19 +13,12 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.CardDefaults
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExposedDropdownMenuBox
-import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
@@ -36,6 +27,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.craxiom.networksurvey.ui.cellular.model.CalculatorNetworkType
 import com.craxiom.networksurvey.ui.cellular.model.CalculatorViewModel
 import com.craxiom.networksurvey.ui.cellular.model.GnbIdLengthOption
+import top.yukonga.miuix.kmp.preference.WindowDropdownPreference
 
 @Composable
 fun CalculatorScreen(viewModel: CalculatorViewModel = viewModel()) {
@@ -75,39 +67,13 @@ fun NetworkTypeDropdown(
     selectedNetworkType: CalculatorNetworkType,
     onSelectionChanged: (CalculatorNetworkType) -> Unit
 ) {
-    var expanded by remember { mutableStateOf(false) }
-    val networkTypes = CalculatorNetworkType.entries.toTypedArray()
-
-    ExposedDropdownMenuBox(
-        expanded = expanded,
-        onExpandedChange = { expanded = !expanded }
-    ) {
-        OutlinedTextField(
-            modifier = Modifier
-                .fillMaxWidth()
-                .menuAnchor(),
-            readOnly = true,
-            value = selectedNetworkType.name,
-            onValueChange = { },
-            label = { Text("Network Type") },
-            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-            colors = ExposedDropdownMenuDefaults.outlinedTextFieldColors(),
-        )
-        ExposedDropdownMenu(
-            expanded = expanded,
-            onDismissRequest = { expanded = false }
-        ) {
-            networkTypes.forEach { type ->
-                DropdownMenuItem(
-                    text = { Text(type.name) },
-                    onClick = {
-                        onSelectionChanged(type)
-                        expanded = false
-                    }
-                )
-            }
-        }
-    }
+    val networkTypes = CalculatorNetworkType.entries
+    WindowDropdownPreference(
+        title = "Network Type",
+        items = networkTypes.map { it.name },
+        selectedIndex = selectedNetworkType.ordinal,
+        onSelectedIndexChange = { onSelectionChanged(networkTypes[it]) },
+    )
 }
 
 @Composable
@@ -145,38 +111,13 @@ fun GnbIdLengthDropdown(
     options: List<GnbIdLengthOption>,
     onSelectionChanged: (GnbIdLengthOption) -> Unit
 ) {
-    var expanded by remember { mutableStateOf(false) }
-
-    ExposedDropdownMenuBox(
-        expanded = expanded,
-        onExpandedChange = { expanded = !expanded }
-    ) {
-        OutlinedTextField(
-            modifier = Modifier
-                .fillMaxWidth()
-                .menuAnchor(),
-            readOnly = true,
-            value = selectedGnbIdLength.label,
-            onValueChange = { },
-            label = { Text("gNB ID Length") },
-            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-            colors = ExposedDropdownMenuDefaults.outlinedTextFieldColors(),
-        )
-        ExposedDropdownMenu(
-            expanded = expanded,
-            onDismissRequest = { expanded = false }
-        ) {
-            options.forEach { option ->
-                DropdownMenuItem(
-                    text = { Text(option.label) },
-                    onClick = {
-                        onSelectionChanged(option)
-                        expanded = false
-                    }
-                )
-            }
-        }
-    }
+    if (options.isEmpty()) return
+    WindowDropdownPreference(
+        title = "gNB ID Length",
+        items = options.map { it.label },
+        selectedIndex = options.indexOf(selectedGnbIdLength).coerceAtLeast(0),
+        onSelectedIndexChange = { onSelectionChanged(options[it]) },
+    )
 }
 
 @Composable

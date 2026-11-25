@@ -2,8 +2,6 @@
 
 package com.craxiom.networksurvey.ui.kernelsu
 
-import android.annotation.SuppressLint
-import android.graphics.RuntimeShader
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.VectorConverter
 import androidx.compose.animation.core.VisibilityThreshold
@@ -13,19 +11,13 @@ import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.ShaderBrush
-import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.util.fastCoerceIn
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
-import org.intellij.lang.annotations.Language
 
-/**
- * 交互式高光效果（基于 AGSL RuntimeShader）
- */
-@SuppressLint("NewApi")
 class InteractiveHighlight(
     val animationScope: CoroutineScope,
     val position: (size: Size, offset: Offset) -> Offset = { _, offset -> offset }
@@ -44,43 +36,22 @@ class InteractiveHighlight(
     private var startPosition = Offset.Zero
     val offset: Offset get() = positionAnimation.value - startPosition
 
-    @Language("AGSL")
-    private val shader =
-        RuntimeShader(
-            """
-    uniform float2 size;
-    layout(color) uniform half4 color;
-    uniform float radius;
-    uniform float2 position;
-    
-    half4 main(float2 coord) {
-        float dist = distance(coord, position);
-        float intensity = smoothstep(radius, radius * 0.5, dist);
-        return color * intensity;
-    }"""
-        )
-
     val modifier: Modifier =
         Modifier.drawWithContent {
-            val progress = pressProgressAnimation.value
-            if (progress > 0f) {
+            val progress = pressProgressAnimation.value.fastCoerceIn(0f, 1f)
+            if (progress > 0f && size.minDimension > 0f) {
                 drawRect(
                     Color.White.copy(0.06f * progress),
                     blendMode = BlendMode.Plus
                 )
-                shader.apply {
-                    val position = position(size, positionAnimation.value)
-                    setFloatUniform("size", size.width, size.height)
-                    setColorUniform("color", Color.White.copy(0.12f * progress).toArgb())
-                    setFloatUniform("radius", size.minDimension * 1.2f)
-                    setFloatUniform(
-                        "position",
-                        position.x.fastCoerceIn(0f, size.width),
-                        position.y.fastCoerceIn(0f, size.height)
-                    )
-                }
+                val center = position(size, positionAnimation.value)
                 drawRect(
-                    ShaderBrush(shader),
+                    Brush.radialGradient(
+                        0.5f to Color.White.copy(0.12f * progress),
+                        1f to Color.Transparent,
+                        center = Offset(center.x.fastCoerceIn(0f, size.width), center.y.fastCoerceIn(0f, size.height)),
+                        radius = size.minDimension * 1.2f,
+                    ),
                     blendMode = BlendMode.Plus
                 )
             }

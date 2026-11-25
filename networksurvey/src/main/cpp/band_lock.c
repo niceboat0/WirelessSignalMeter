@@ -18,6 +18,7 @@ static uint32_t client_id, transaction = 0x80;
 static int router = -1, state_dir = -1;
 static int have_device;
 static char device_model[256], device_soc[256], device_fingerprint[256];
+static char connected_label[64];
 
 static int write_backup_origin(void) {
     int n, ok, fd;
@@ -103,12 +104,28 @@ static long long monotonic_ms(void) {
     return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
+static void disconnect_router(const char *reason) {
+    if (router < 0) return;
+    if (client_id) printf("LOCK_DIAG disconnect=%s channel=%s\n", reason, connected_label);
+    close(router);
+    router = -1;
+    client_id = 0;
+}
+
 static int receive(uint8_t *data, int size, int timeout) {
-    struct pollfd p = { .fd = router, .events = POLLIN };
+    struct pollfd p = { .fd = router, .events = POLLIN | POLLRDHUP };
     int result;
     do { result = poll(&p, 1, timeout); } while (result < 0 && errno == EINTR);
-    if (result <= 0 || !(p.revents & POLLIN)) return -1;
-    return (int)recv(router, data, (size_t)size, 0);
+    if (result > 0 && (p.revents & POLLIN)) {
+        int length = (int)recv(router, data, (size_t)size, 0);
+        if (length > 0) return length;
+        if (length < 0 && (errno == EINTR || errno == EAGAIN) &&
+            !(p.revents & (POLLHUP | POLLERR | POLLNVAL | POLLRDHUP))) return -1;
+        disconnect_router(length == 0 ? "eof" : "read_failed");
+    } else if (result < 0 || (result > 0 && (p.revents & (POLLHUP | POLLERR | POLLNVAL | POLLRDHUP)))) {
+        disconnect_router("poll_failed");
+    }
+    return -1;
 }
 
 /* Transport candidates, tried in order. The Samsung diag-router binds an
@@ -136,50 +153,96 @@ static int register_client(void) {
     lb_u32(reg + 14, 18);
     if (write(router, reg, sizeof(reg)) != sizeof(reg)) return 0;
     long long deadline = monotonic_ms() + 1500;
-    while (monotonic_ms() < deadline) {
+    while (router >= 0 && monotonic_ms() < deadline) {
         int size = receive(response, sizeof(response), 300);
         if (size >= 8 && lb_read32(response) == 0x20000) {
-            client_id = lb_read32(response + 4);
-            return client_id && client_id != UINT32_MAX;
+            uint32_t id = lb_read32(response + 4);
+            if (!id || id == UINT32_MAX) return 0;
+            client_id = id;
+            return 1;
         }
     }
     return 0;
 }
 
-static int connect_router(void) {
-    for (unsigned t = 0; t < sizeof(lb_transports) / sizeof(lb_transports[0]); t++) {
-        const struct lb_transport *tr = &lb_transports[t];
-        int fd = socket(AF_UNIX,
-            (tr->seqpacket ? SOCK_SEQPACKET : SOCK_STREAM) | SOCK_CLOEXEC, 0);
-        if (fd < 0) continue;
-        struct sockaddr_un address;
-        memset(&address, 0, sizeof(address));
-        address.sun_family = AF_UNIX;
-        int namelen = tr->zero_name ?
-            lb_zero_abstract_name((uint8_t *)address.sun_path) :
-            lb_short_abstract_name((uint8_t *)address.sun_path, "diag");
-        if (connect(fd, (struct sockaddr *)&address,
-                (socklen_t)(offsetof(struct sockaddr_un, sun_path) + namelen)) == 0) {
-            router = fd;
-            if (register_client()) {
-                printf("CHANNEL %s\n", tr->label);
-                return 0;
-            }
-            router = -1;
+static int connect_candidate(const struct lb_transport *tr) {
+    int fd = socket(AF_UNIX,
+        (tr->seqpacket ? SOCK_SEQPACKET : SOCK_STREAM) | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
+    if (fd < 0) return 1;
+    struct sockaddr_un address;
+    memset(&address, 0, sizeof(address));
+    address.sun_family = AF_UNIX;
+    int namelen = tr->zero_name ?
+        lb_zero_abstract_name((uint8_t *)address.sun_path) :
+        lb_short_abstract_name((uint8_t *)address.sun_path, "diag");
+    int rc = connect(fd, (struct sockaddr *)&address,
+        (socklen_t)(offsetof(struct sockaddr_un, sun_path) + namelen));
+    if (rc < 0 && errno == EINPROGRESS) {
+        struct pollfd p = { .fd = fd, .events = POLLOUT };
+        int error;
+        socklen_t len = sizeof(error);
+        if (poll(&p, 1, 1000) > 0 &&
+            getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &len) == 0 && error == 0) rc = 0;
+    }
+    if (rc == 0) {
+        router = fd;
+        if (register_client()) {
+            snprintf(connected_label, sizeof(connected_label), "%s", tr->label);
+            printf("LOCK_DIAG registered channel=%s\n", connected_label);
+            return 0;
         }
+        printf("LOCK_DIAG registration_failed channel=%s\n", tr->label);
+        disconnect_router("registration_failed");
+    } else {
         close(fd);
+    }
+    return 1;
+}
+
+static int connect_router(const char *preferred) {
+    const struct lb_transport *first = NULL;
+    for (unsigned t = 0; preferred && t < sizeof(lb_transports) / sizeof(lb_transports[0]); t++) {
+        if (!strcmp(preferred, lb_transports[t].label)) {
+            first = &lb_transports[t];
+            if (connect_candidate(first) == 0) return 0;
+            printf("LOCK_DIAG preferred_unavailable channel=%s\n", first->label);
+            break;
+        }
+    }
+    for (unsigned t = 0; t < sizeof(lb_transports) / sizeof(lb_transports[0]); t++) {
+        if (&lb_transports[t] != first && connect_candidate(&lb_transports[t]) == 0) return 0;
     }
     return fail("This device does not expose a supported diag channel "
         "(tried samsung-diag-router, diag-stream, diag-seqpacket).");
 }
 
+static void check_router_closed(void) {
+    if (router >= 0) {
+        struct pollfd p = { .fd = router, .events = POLLRDHUP };
+        if (poll(&p, 1, 0) > 0 && (p.revents & (POLLHUP | POLLERR | POLLNVAL | POLLRDHUP)))
+            disconnect_router("idle_socket_closed");
+    }
+}
+
+/* Check idle connections before dispatching any part of a new command. */
+static int ensure_router(const char *preferred) {
+    check_router_closed();
+    if (router >= 0) return 0;
+    return connect_router(connected_label[0] ? connected_label : preferred);
+}
+
 static int send_frame(const uint8_t *payload, int size, uint32_t *tx) {
     uint8_t frame[512];
     if (size < 4 || size > (int)sizeof(frame) - 12) return 1;
+    if (router < 0) { errno = ENOTCONN; return 1; }
     *tx = transaction++;
     lb_u32(frame, 0x40); lb_u32(frame + 4, *tx); lb_u32(frame + 8, client_id);
     memcpy(frame + 12, payload, (size_t)size);
-    return write(router, frame, (size_t)size + 12) != size + 12;
+    if (write(router, frame, (size_t)size + 12) == size + 12) return 0;
+    int error = errno;
+    disconnect_router("write_failed");
+    errno = error;
+    return 1;
 }
 
 static int exchange(const uint8_t *payload, int size, int kind, uint32_t tag,
@@ -189,7 +252,7 @@ static int exchange(const uint8_t *payload, int size, int kind, uint32_t tag,
     uint8_t response[8192];
     long long deadline = monotonic_ms() + 3500;
     uint32_t cmd = lb_read32(payload);
-    while (monotonic_ms() < deadline) {
+    while (router >= 0 && monotonic_ms() < deadline) {
         int length = receive(response, sizeof(response), 350);
         if (length < 0) continue;
         int at = lb_find_reply(response, length, cmd);
@@ -201,6 +264,7 @@ static int exchange(const uint8_t *payload, int size, int kind, uint32_t tag,
         if (verdict == 0) return 0;
         return fail("The modem rejected the command; see its status above.");
     }
+    disconnect_router("ack_timeout");
     return fail("No recognized modem acknowledgement. The operation may be partial; refresh before retrying.");
 }
 
@@ -218,7 +282,7 @@ static int read_mask_to(const char *path, int bytes, uint8_t *mask,
     uint32_t tx;
     if (send_frame(payload, size, &tx)) return 1;
     long long deadline = monotonic_ms() + timeout_ms;
-    while (monotonic_ms() < deadline) {
+    while (router >= 0 && monotonic_ms() < deadline) {
         int length = receive(response, sizeof(response), 300);
         if (length > 0 && lb_get_data(response, length, tx, bytes, mask)) {
             for (int i = 0; i < bytes; i++) if (mask[i]) return 0;
@@ -241,7 +305,7 @@ static int efs_read(const char *path, uint8_t *out, int cap, int *size) {
     if (n >= (int)sizeof(payload) || send_frame(payload, n, &tx)) return 1;
     int opened = 0;
     long long deadline = monotonic_ms() + 3000;
-    while (monotonic_ms() < deadline) {
+    while (router >= 0 && monotonic_ms() < deadline) {
         int length = receive(response, sizeof(response), 300);
         if (length <= 0) continue;
         int at = lb_find_reply(response, length, 0x0002134b);
@@ -260,7 +324,7 @@ static int efs_read(const char *path, uint8_t *out, int cap, int *size) {
         if (send_frame(payload, n, &tx)) { rc = 1; break; }
         int got = -1;
         deadline = monotonic_ms() + 3000;
-        while (monotonic_ms() < deadline) {
+        while (router >= 0 && monotonic_ms() < deadline) {
             int length = receive(response, sizeof(response), 300);
             if (length <= 0) continue;
             int at = lb_find_reply(response, length, 0x0004134b);
@@ -290,7 +354,7 @@ static int efs_stat_size(const char *path, int *size, uint32_t *mode) {
     uint32_t tx;
     if (n >= (int)sizeof(payload) || send_frame(payload, n, &tx)) return 1;
     long long deadline = monotonic_ms() + 2500;
-    while (monotonic_ms() < deadline) {
+    while (router >= 0 && monotonic_ms() < deadline) {
         int length = receive(response, sizeof(response), 300);
         if (length <= 0) continue;
         int at = lb_find_reply(response, length, 0x000f134b);
@@ -430,6 +494,7 @@ static int reboot_modem(int observe) {
         printf("SSR send=sent tx=%u\n", tx);
         observe_modem_restart();
     }
+    disconnect_router("modem_restart_requested");
     puts("RESULT restart_sent");
     puts("Modem restart requested. Wait for registration, then refresh to check the serving cell.");
     return 0;
@@ -622,7 +687,7 @@ static int nv_dial_tone(void) {
     uint32_t tx;
     if (send_frame(payload, size, &tx)) return 0;
     long long deadline = monotonic_ms() + 1500;
-    while (monotonic_ms() < deadline) {
+    while (router >= 0 && monotonic_ms() < deadline) {
         int length = receive(response, sizeof(response), 300);
         if (length >= 100) return 1;
     }
@@ -653,20 +718,28 @@ static int at_command(const char *node, const char *cmd) {
     if (write(fd, line, (size_t)n) != n) { close(fd); return fail("AT write failed."); }
     printf("[AT] -> %s\n", cmd);
     long long deadline = monotonic_ms() + 2500;
-    int any = 0;
+    int any = 0, at_line_start = 1;
     while (monotonic_ms() < deadline) {
         struct pollfd p = { .fd = fd, .events = POLLIN };
         int r;
         do { r = poll(&p, 1, 200); } while (r < 0 && errno == EINTR);
         if (r > 0 && (p.revents & POLLIN)) {
             int nr = (int)read(fd, buf, sizeof(buf));
-            if (nr > 0) { fwrite(buf, 1, (size_t)nr, stdout); any = 1; }
+            if (nr > 0) {
+                for (int i = 0; i < nr; i++) {
+                    if (at_line_start) fputs("[AT] <- ", stdout);
+                    putchar(buf[i]);
+                    at_line_start = buf[i] == '\n';
+                }
+                any = 1;
+            }
         } else if (r == 0 && any) {
             break;
         }
     }
     close(fd);
     if (!any) return fail("AT response not found on this port.");
+    if (!at_line_start) putchar('\n');
     return 0;
 }
 
@@ -674,7 +747,6 @@ static int execute(int argc, char **argv) {
     const char *cmd = argv[0];
     if (!strcmp(cmd, "probe") && argc <= 3) {
         uint8_t mask[64];
-        puts("RESULT ready");
         if (argc >= 2) printf("DEVICE model %s\n", argv[1]);
         if (argc >= 3) printf("DEVICE soc %s\n", argv[2]);
         print_cap("lte_bandpref", LB_LTE_BANDS, 8);
@@ -685,11 +757,14 @@ static int execute(int argc, char **argv) {
         print_cap("nr_earfcn_lock", LB_NR_FREQ, 8);
         print_cap("nr_pci_lock_info", LB_NR_CELL, 12);
         printf("CAP nv %d\n", nv_dial_tone());
+        check_router_closed();
+        if (router < 0) return fail("DIAG connection was lost during the probe.");
         printf("BACKUP lte %d\n", !backup_origin_conflict() &&
             !restore_mask("lte-original.bin", 8, mask));
         printf("BACKUP nr %d\n", !backup_may_exist("nr-no-original") &&
             !restore_mask("nr-original.bin", 64, mask));
         printf("BACKUP nr_nsa %d\n", !restore_mask("nr-nsa-original.bin", 64, mask));
+        puts("RESULT ready");
         return 0;
     }
     if (!strcmp(cmd, "lte-cell-probe") && argc == 1) {
@@ -810,10 +885,78 @@ static int execute(int argc, char **argv) {
     return reboot_modem(0);
 }
 
+static void trim_line(char *text) {
+    size_t n = strlen(text);
+    while (n && (text[n - 1] == '\n' || text[n - 1] == '\r')) text[--n] = 0;
+}
+
+static int read_line(char *buf, int cap) {
+    if (!fgets(buf, cap, stdin)) return -1;
+    trim_line(buf);
+    return 0;
+}
+
+static int channel_name_ok(const char *name) {
+    if (!name || !name[0]) return 0;
+    for (const char *p = name; *p; p++) {
+        if (!((*p >= 'a' && *p <= 'z') || (*p >= '0' && *p <= '9') || *p == '-')) return 0;
+        if ((size_t)(p - name) >= 63) return 0;
+    }
+    return 1;
+}
+
+/* One router client for every command on stdin. The collector's libdiag
+ * session is a different client and is not borrowed here. */
+static int run_session(const char *preferred) {
+    alarm(100);
+    if (ensure_router(preferred)) return 2;
+    alarm(0);
+    puts("SESSION connected");
+    fflush(stdout);
+    for (;;) {
+        char header[64];
+        if (read_line(header, sizeof(header))) break;
+        if (!strcmp(header, "session-close")) break;
+        int count = 0;
+        if (strncmp(header, "CMD ", 4) != 0) {
+            puts("SESSION exit 1");
+            fflush(stdout);
+            continue;
+        }
+        count = atoi(header + 4);
+        if (count < 1 || count > 12) {
+            puts("SESSION exit 1");
+            fflush(stdout);
+            continue;
+        }
+        char storage[12][256];
+        char *args[12];
+        int bad = 0;
+        for (int i = 0; i < count; i++) {
+            if (read_line(storage[i], (int)sizeof(storage[i]))) return 0;
+            if (!storage[i][0] || strlen(storage[i]) > 240) bad = 1;
+            args[i] = storage[i];
+        }
+        alarm(100);
+        int rc = 1;
+        if (bad) rc = fail("Invalid lock command.");
+        else if (ensure_router(preferred)) rc = 2;
+        else {
+            printf("CHANNEL %s\n", connected_label);
+            rc = execute(count, args);
+            /* Only a connection failure before dispatch is safe to retry. */
+            if (rc == 2) rc = 1;
+        }
+        alarm(0);
+        printf("SESSION exit %d\n", rc);
+        fflush(stdout);
+    }
+    return 0;
+}
+
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IOLBF, 0);
     signal(SIGPIPE, SIG_IGN);
-    alarm(100);
     if (getuid() != 0) return fail("Root authorization is required.");
     if (argc < 4 || strcmp(argv[1], "--state-dir")) return fail("Missing private state directory.");
     state_dir = open(argv[2], O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
@@ -821,8 +964,26 @@ int main(int argc, char **argv) {
     if (load_session_identity()) return fail("Invalid device identity.");
     int lock = openat(state_dir, "operation.lock", O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0600);
     if (lock < 0 || flock(lock, LOCK_EX | LOCK_NB)) return fail("Another lock operation is in progress.");
-    if (connect_router()) return 2;
-    int result = execute(argc - 3, argv + 3);
-    close(router); close(lock); close(state_dir);
+
+    int result;
+    if (!strcmp(argv[3], "--session")) {
+        const char *preferred = NULL;
+        int end = 4;
+        if (argc >= 6 && !strcmp(argv[4], "--channel")) {
+            if (!channel_name_ok(argv[5])) return fail("Invalid DIAG channel.");
+            preferred = argv[5];
+            end = 6;
+        }
+        if (argc != end) return fail("Session mode takes commands on stdin.");
+        result = run_session(preferred);
+    } else {
+        alarm(100);
+        if (ensure_router(NULL)) return 2;
+        printf("CHANNEL %s\n", connected_label);
+        result = execute(argc - 3, argv + 3);
+    }
+    if (router >= 0) close(router);
+    close(lock);
+    close(state_dir);
     return result;
 }

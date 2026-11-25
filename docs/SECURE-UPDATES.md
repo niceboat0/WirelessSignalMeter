@@ -1,11 +1,35 @@
 # Secure App Updates
 
-App updates use `https://rsrp.cn/nsrebuild`, trying `/api/version` and then
+## Current GitHub Update Entry
+
+Settings > About > Check for updates performs a manual request to the latest
+stable release at
+`https://api.github.com/repos/niceboat0/WirelessSignalMeter/releases/latest`.
+Startup no longer automatically checks the old update service. Drafts and
+prereleases are excluded, and dotted version names are compared numerically.
+A repository with no published stable release is reported separately from a
+network error or an already installed version.
+
+The user can open an uploaded ARM64 release APK in the browser, with a universal
+APK as a fallback. Debug and unsigned APK names are excluded. The release page
+and download link must both use HTTPS and belong to this exact GitHub
+repository and release tag. If there is no compatible APK, the release page
+remains available.
+
+This GitHub entry opens the browser; it does not use the in-app downloader or
+claim that the app has verified an APK's SHA-256, package name, or signing
+certificate. Android performs its normal checks when the user installs the
+download. The verification guarantees below apply only to the retained legacy
+installer, which is not called by this manual GitHub entry.
+
+## Legacy Verified Installer
+
+The retained legacy implementation uses `https://rsrp.cn/nsrebuild`, trying `/api/version` and then
 `/version.json`. Both metadata and APK requests require HTTPS with the platform's
 normal certificate and hostname validation. Each redirect is checked again;
 HTTP fallback is deliberately unavailable.
 
-## Server Deployment
+### Server Deployment
 
 The server must serve a manifest like this over HTTPS:
 
@@ -43,11 +67,11 @@ are rejected. The `apkMd5` field from the old server is not a substitute for
 On November 24, 2026, the configured HTTPS manifest path returned 404. The legacy
 port-9000 service returned HTTP URLs and MD5 metadata. Deploy the HTTPS route,
 certificate, signed APK and SHA-256 metadata before relying on in-app updates.
-Until then automatic checks remain silent and in-app updates are unavailable;
-the client will not use the insecure endpoint. The current UI initiates
-automatic checks only.
+The startup UI no longer invokes this legacy update channel. Its installer
+remains available in source for a future integration with a verified manifest;
+it never falls back to the insecure endpoint.
 
-## Installation Boundary
+### Installation Boundary
 
 Downloads stay in a randomly named file under the app's private
 `cache/verified-updates/` directory. No publicly writable APK path or download
@@ -68,8 +92,8 @@ existing release signing configuration.
 Only verified files are renamed to `.apk` and shared read-only through the
 application-ID-specific FileProvider. Android's interactive installer still
 validates APK signatures and asks the user to install. The app requests
-unknown-source installation permission before downloading, if needed. It never
-installs silently and offers no browser-download button that bypasses these
+unknown-source installation permission before downloading, if needed. The legacy
+installer never installs silently or offers a shortcut around its verification
 checks. After verification the prompt offers "Install now"; only that foreground
 user action opens the installer, so background-activity restrictions cannot
 silently consume the completed download. Failed downloads restore the prompt

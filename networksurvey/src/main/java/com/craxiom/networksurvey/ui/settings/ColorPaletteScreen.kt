@@ -1,6 +1,8 @@
 package com.craxiom.networksurvey.ui.settings
 
-import androidx.compose.foundation.BorderStroke
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -8,8 +10,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
-import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.BlurOn
 import androidx.compose.material.icons.rounded.Build
@@ -17,7 +19,7 @@ import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.SignalCellularAlt
-import androidx.compose.material.icons.rounded.Tune
+import androidx.compose.material.icons.rounded.ViewDay
 import androidx.compose.material.icons.rounded.Wallpaper
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -25,49 +27,67 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.preference.PreferenceManager
+import androidx.compose.ui.unit.sp
 import com.craxiom.networksurvey.R
+import com.craxiom.networksurvey.ui.cellular.SignalMetricReading
+import com.craxiom.networksurvey.ui.common.AppBottomNavigation
+import com.craxiom.networksurvey.ui.common.AppFloatingNavigation
+import com.craxiom.networksurvey.ui.common.AppNavigationItem
+import com.craxiom.networksurvey.ui.common.PreferenceGroup
 import com.craxiom.networksurvey.ui.dashboard.DashboardCardDefaults
-import com.craxiom.networksurvey.ui.kernelsu.FloatingBottomBar
-import com.craxiom.networksurvey.ui.kernelsu.FloatingBottomBarItem
 import com.craxiom.networksurvey.ui.main.appbar.TitleBar
+import com.craxiom.networksurvey.ui.theme.InterfaceStyle
+import com.craxiom.networksurvey.ui.theme.LocalInterfaceStyle
+import com.craxiom.networksurvey.ui.theme.themeSeedColor
 import com.craxiom.networksurvey.util.ThemePref
-import com.materialkolor.PaletteStyle
-import com.materialkolor.dynamiccolor.ColorSpec
-import top.yukonga.miuix.kmp.basic.TabRow
-import top.yukonga.miuix.kmp.blur.isRuntimeShaderSupported
+import top.yukonga.miuix.kmp.anim.folmeSpring
+import top.yukonga.miuix.kmp.basic.Card
+import top.yukonga.miuix.kmp.basic.HorizontalDivider
+import top.yukonga.miuix.kmp.basic.LinearProgressIndicator
+import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.blur.layerBackdrop
 import top.yukonga.miuix.kmp.blur.rememberLayerBackdrop
+import top.yukonga.miuix.kmp.material.isRuntimeShaderSupported
+import top.yukonga.miuix.kmp.preference.ArrowPreference
+import top.yukonga.miuix.kmp.preference.RadioButtonLocation
+import top.yukonga.miuix.kmp.preference.RadioButtonPreference
+import top.yukonga.miuix.kmp.preference.SwitchPreference
+import top.yukonga.miuix.kmp.theme.ThemePaletteStyle
 
 private val displayModes = listOf(ThemePref.MODE_SYSTEM, ThemePref.MODE_LIGHT, ThemePref.MODE_DARK)
-private val themeSeeds = listOf(
-    "默认" to Color(0xFF0F6681), "蓝色" to Color(0xFF1565C0), "绿色" to Color(0xFF2E7D32),
-    "紫色" to Color(0xFF7B1FA2), "橙色" to Color(0xFFE65100), "红色" to Color(0xFFC62828),
-    "玫红" to Color(0xFFAD3259), "青色" to Color(0xFF00696D),
-)
+private val themeSeeds = listOf("默认", "蓝色", "绿色", "紫色", "橙色", "红色", "玫红", "青色")
+private val paletteStyles = ThemePaletteStyle.entries.map { it.name }
+private val colorSpecs = listOf("SPEC_2021", "SPEC_2025")
 
 @Composable
 fun ColorPaletteScreen(onBack: () -> Unit) {
     val context = LocalContext.current
-    val prefs = remember(context) { PreferenceManager.getDefaultSharedPreferences(context) }
     val version = ThemePref.currentThemeVersion
     val mode = remember(version, context) { ThemePref.get(context) }
     val dynamicSupported = ThemePref.isDynamicColorSupported()
     val dynamic = dynamicSupported && remember(version, context) { ThemePref.isMonet(context) }
     val seed = remember(version, context) { ThemePref.getSeed(context) }
+    val paletteStyle = remember(version, context) { ThemePref.getPaletteStyle(context) }
+    val colorSpec = remember(version, context) { ThemePref.getColorSpec(context) }
     val amoled = remember(version, context) { ThemePref.isAmoled(context) }
     val dark = mode == ThemePref.MODE_DARK || (mode == ThemePref.MODE_SYSTEM && isSystemInDarkTheme())
     val glassSupported = remember { isRuntimeShaderSupported() }
-    val glass = glassSupported && remember(version, context) { ThemePref.isLiquidGlassEnabled(context) }
+    val glassPreference = remember(version, context) { ThemePref.isLiquidGlassEnabled(context) }
+    val floatingNavigation = remember(version, context) { ThemePref.isFloatingNavigationEnabled(context) }
+    val glass = floatingNavigation && glassSupported && glassPreference
+    val interfaceStyle = LocalInterfaceStyle.current
     val colors = MaterialTheme.colorScheme
 
     Scaffold(
@@ -80,26 +100,34 @@ fun ColorPaletteScreen(onBack: () -> Unit) {
             LazyColumn(
                 Modifier.widthIn(max = 600.dp).fillMaxSize(),
                 contentPadding = PaddingValues(horizontal = DashboardCardDefaults.margin, vertical = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
+                verticalArrangement = Arrangement.spacedBy(interfaceStyle.sectionSpacing),
             ) {
-                item("preview") { ThemePreview(glass, dark, dark && amoled) }
+                item("preview") { ThemePreview(glass, floatingNavigation, dark, dark && amoled) }
+                item("interface-style") {
+                    ThemeGroup(stringResource(R.string.interface_style)) {
+                        Column(Modifier.selectableGroup()) {
+                            InterfaceStyle.entries.forEachIndexed { index, style ->
+                                if (index > 0) ThemeDivider()
+                                ThemeRadio(stringResource(style.labelRes), interfaceStyle == style) {
+                                    ThemePref.setInterfaceStyle(context, style.preferenceValue)
+                                }
+                            }
+                        }
+                    }
+                }
                 item("mode") {
                     ThemeGroup("显示模式") {
-                        TabRow(
-                            tabs = listOf("跟随系统", "浅色", "深色"),
-                            selectedTabIndex = displayModes.indexOf(mode).coerceAtLeast(0),
-                            onTabSelected = { index ->
-                                val next = displayModes[index]
+                        Box(Modifier.padding(8.dp)) {
+                            DisplayModeSelector(selectedMode = mode, onModeSelected = { next ->
                                 if (mode != next) {
                                     ThemePref.set(context, next)
                                     ThemePref.apply(context)
                                 }
-                            },
-                        )
+                            })
+                        }
                         if (mode != ThemePref.MODE_LIGHT) {
                             ThemeToggle(Icons.Rounded.DarkMode, "纯黑背景", "深色模式下生效", amoled) {
                                 ThemePref.setAmoled(context, it)
-                                ThemePref.apply(context)
                             }
                         }
                     }
@@ -108,33 +136,35 @@ fun ColorPaletteScreen(onBack: () -> Unit) {
                     ThemeGroup("主题配色") {
                         if (dynamicSupported) {
                             ThemeToggle(Icons.Rounded.Wallpaper, "跟随系统壁纸", "使用系统动态取色", dynamic) {
-                                prefs.edit().putBoolean(ThemePref.KEY_MONET, it).apply()
-                                ThemePref.apply(context)
+                                ThemePref.setMonet(context, it)
                             }
                             ThemeDivider()
                         }
                         Text(
-                            if (dynamic) "自定义主题色" else "主题色 · ${themeSeeds.getOrNull(seed)?.first ?: "默认"}",
-                            Modifier.padding(start = 12.dp, end = 12.dp, top = 10.dp),
-                            style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant,
+                            if (dynamic) "自定义主题色" else "主题色 · ${themeSeeds[seed]}",
+                            Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp),
+                            style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant,
                         )
                         Column(Modifier.selectableGroup().padding(vertical = 4.dp)) {
                             themeSeeds.chunked(4).forEachIndexed { row, swatches ->
                                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                                    swatches.forEachIndexed { column, (label, color) ->
+                                    swatches.forEachIndexed { column, label ->
                                         val index = row * 4 + column
                                         val selected = !dynamic && index == seed
                                         Box(
                                             Modifier.size(48.dp).clip(CircleShape).selectable(selected, role = Role.RadioButton) {
-                                                if (dynamic) prefs.edit().putBoolean(ThemePref.KEY_MONET, false).apply()
                                                 ThemePref.setSeed(context, index)
-                                                ThemePref.apply(context)
                                             }.semantics { contentDescription = label },
                                             contentAlignment = Alignment.Center,
                                         ) {
                                             Box(
-                                                Modifier.size(31.dp).clip(CircleShape).background(color)
-                                                    .border(1.dp, colors.outlineVariant, CircleShape),
+                                                Modifier.size(36.dp)
+                                                    .border(
+                                                        2.dp,
+                                                        if (selected) colors.primary else Color.Transparent,
+                                                        CircleShape,
+                                                    )
+                                                    .padding(4.dp).clip(CircleShape).background(themeSeedColor(index)),
                                                 contentAlignment = Alignment.Center,
                                             ) {
                                                 if (selected) Icon(Icons.Rounded.Check, null, Modifier.size(18.dp), tint = Color.White)
@@ -146,14 +176,12 @@ fun ColorPaletteScreen(onBack: () -> Unit) {
                         }
                         if (!dynamic && seed != ThemePref.SEED_DEFAULT) {
                             ThemeDivider()
-                            ThemeMenu("配色风格", ThemePref.getPaletteStyle(context), PaletteStyle.entries.map { it.name }) {
+                            ThemeOptions("配色风格", paletteStyle, paletteStyles) {
                                 ThemePref.setPaletteStyle(context, it)
-                                ThemePref.apply(context)
                             }
                             ThemeDivider()
-                            ThemeMenu("配色算法", ThemePref.getColorSpec(context), ColorSpec.SpecVersion.entries.map { it.name }) {
+                            ThemeOptions("配色算法", colorSpec, colorSpecs) {
                                 ThemePref.setColorSpec(context, it)
-                                ThemePref.apply(context)
                             }
                         }
                     }
@@ -161,17 +189,23 @@ fun ColorPaletteScreen(onBack: () -> Unit) {
                 item("effects") {
                     ThemeGroup("界面效果") {
                         ThemeToggle(
-                            Icons.Rounded.BlurOn,
-                            "液态玻璃",
-                            if (glassSupported) "悬浮底栏随页面内容折射" else "当前设备不支持玻璃折射",
-                            glass,
-                            enabled = glassSupported,
-                        ) { ThemePref.setLiquidGlassEnabled(context, it) }
+                            Icons.Rounded.ViewDay,
+                            stringResource(R.string.floating_navigation),
+                            null,
+                            floatingNavigation,
+                        ) { ThemePref.setFloatingNavigationEnabled(context, it) }
                         ThemeDivider()
-                        ThemeToggle(Icons.Rounded.Tune, "Miuix 进度条", "用于信号参数", ThemePref.isMiuixProgressBar(context)) {
-                            ThemePref.setProgressBarStyle(context,
-                                if (it) ThemePref.PROGRESS_BAR_MIUIX else ThemePref.PROGRESS_BAR_MATERIAL3)
-                        }
+                        ThemeToggle(
+                            Icons.Rounded.BlurOn,
+                            stringResource(R.string.liquid_glass),
+                            when {
+                                !glassSupported -> stringResource(R.string.liquid_glass_unsupported)
+                                !floatingNavigation -> stringResource(R.string.liquid_glass_needs_floating)
+                                else -> null
+                            },
+                            glassSupported && glassPreference,
+                            enabled = floatingNavigation && glassSupported,
+                        ) { ThemePref.setLiquidGlassEnabled(context, it) }
                     }
                 }
             }
@@ -180,65 +214,132 @@ fun ColorPaletteScreen(onBack: () -> Unit) {
 }
 
 @Composable
-private fun ThemeGroup(title: String, content: @Composable ColumnScope.() -> Unit) {
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text(title, Modifier.padding(start = 4.dp), style = MaterialTheme.typography.titleSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Surface(
-            modifier = Modifier.fillMaxWidth(),
-            shape = DashboardCardDefaults.shape,
-            color = DashboardCardDefaults.cardContainerColor(),
-            border = BorderStroke(1.dp, DashboardCardDefaults.outlineVariant()),
-        ) {
-            Column(Modifier.padding(5.dp), content = content)
+internal fun DisplayModeSelector(selectedMode: Int, onModeSelected: (Int) -> Unit) {
+    val labels = listOf("跟随系统", "浅色", "深色")
+    val colors = MaterialTheme.colorScheme
+    val activeMode = selectedMode.takeIf { it in displayModes } ?: ThemePref.MODE_SYSTEM
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val horizontal = maxWidth / displayModes.size >= 96.dp * LocalDensity.current.fontScale
+        val track = Modifier.fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(colors.surfaceContainerHighest)
+            .selectableGroup()
+            .padding(4.dp)
+        if (horizontal) {
+            Row(track, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                displayModes.forEachIndexed { index, mode ->
+                    DisplayModeOption(
+                        label = labels[index],
+                        selected = activeMode == mode,
+                        onClick = { onModeSelected(mode) },
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+        } else {
+            Column(track, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                displayModes.forEachIndexed { index, mode ->
+                    DisplayModeOption(
+                        label = labels[index],
+                        selected = activeMode == mode,
+                        onClick = { onModeSelected(mode) },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            }
         }
     }
 }
 
 @Composable
+private fun DisplayModeOption(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier,
+) {
+    val colors = MaterialTheme.colorScheme
+    Box(
+        modifier.clip(RoundedCornerShape(8.dp))
+            .background(if (selected) colors.primaryContainer else Color.Transparent)
+            .selectable(selected = selected, role = Role.RadioButton, onClick = onClick)
+            .heightIn(min = 48.dp)
+            .padding(horizontal = 8.dp, vertical = 10.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyMedium.copy(letterSpacing = 0.sp),
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            color = if (selected) colors.onPrimaryContainer else colors.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+        )
+    }
+}
+
+@Composable
+private fun ThemeGroup(title: String, content: @Composable ColumnScope.() -> Unit) {
+    PreferenceGroup(title, content)
+}
+
+@Composable
 private fun ThemeDivider() {
-    HorizontalDivider(Modifier.padding(horizontal = 12.dp), color = DashboardCardDefaults.outlineVariant())
+    HorizontalDivider(Modifier.padding(horizontal = 16.dp))
 }
 
 @Composable
 private fun ThemeToggle(
     icon: ImageVector,
     title: String,
-    summary: String,
+    summary: String?,
     checked: Boolean,
     enabled: Boolean = true,
     onChange: (Boolean) -> Unit,
 ) {
-    val colors = MaterialTheme.colorScheme
-    Row(
-        Modifier.fillMaxWidth().clip(DashboardCardDefaults.smallShape)
-            .toggleable(value = checked, enabled = enabled, role = Role.Switch, onValueChange = onChange)
-            .heightIn(min = 60.dp).padding(horizontal = 12.dp, vertical = 7.dp),
-        horizontalArrangement = Arrangement.spacedBy(11.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(icon, null, Modifier.size(21.dp), tint = if (enabled) colors.primary else colors.onSurfaceVariant)
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-            Text(title, style = MaterialTheme.typography.bodyLarge)
-            Text(summary, style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
-        }
-        Switch(checked = checked, onCheckedChange = null, enabled = enabled)
-    }
+    SwitchPreference(
+        title = title,
+        checked = checked,
+        onCheckedChange = onChange,
+        summary = summary,
+        enabled = enabled,
+        startAction = {
+            val colors = MaterialTheme.colorScheme
+            Icon(icon, null, Modifier.padding(end = 6.dp).size(22.dp),
+                tint = if (enabled) colors.primary else colors.onSurfaceVariant)
+        },
+    )
 }
 
 @Composable
-private fun ThemeMenu(title: String, current: String, items: List<String>, onSelect: (String) -> Unit) {
-    var expanded by remember { mutableStateOf(false) }
-    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text(title, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
-        Box {
-            TextButton(onClick = { expanded = true }) { Text(current) }
-            DropdownMenu(expanded, onDismissRequest = { expanded = false }) {
-                items.forEach { item ->
-                    DropdownMenuItem(text = { Text(item) }, onClick = {
-                        expanded = false
-                        onSelect(item)
-                    })
+private fun ThemeRadio(title: String, checked: Boolean, onClick: () -> Unit) {
+    RadioButtonPreference(
+        title = title,
+        selected = checked,
+        modifier = Modifier.semantics { selected = checked },
+        radioButtonLocation = RadioButtonLocation.End,
+        onClick = onClick,
+    )
+}
+
+@Composable
+private fun ThemeOptions(title: String, current: String, items: List<String>, onSelect: (String) -> Unit) {
+    var expanded by rememberSaveable { mutableStateOf(false) }
+    val selectedItem = current.takeIf { it in items } ?: items.first()
+    ArrowPreference(
+        title = title,
+        summary = selectedItem,
+        onClick = { expanded = !expanded },
+    )
+    AnimatedVisibility(
+        visible = expanded,
+        enter = expandVertically(folmeSpring(damping = 0.85f, response = 0.3f)),
+        exit = shrinkVertically(folmeSpring(damping = 0.9f, response = 0.28f)),
+    ) {
+        Column(Modifier.selectableGroup()) {
+            items.forEach { item ->
+                ThemeRadio(item, item == selectedItem) {
+                    expanded = false
+                    onSelect(item)
                 }
             }
         }
@@ -246,56 +347,93 @@ private fun ThemeMenu(title: String, current: String, items: List<String>, onSel
 }
 
 @Composable
-private fun ThemePreview(glass: Boolean, dark: Boolean, amoled: Boolean) {
+private fun ThemePreview(glass: Boolean, floatingNavigation: Boolean, dark: Boolean, amoled: Boolean) {
     val colors = MaterialTheme.colorScheme
+    val style = LocalInterfaceStyle.current
     val backdrop = if (glass) rememberLayerBackdrop() else null
     var page by rememberSaveable { mutableIntStateOf(0) }
     val icons = listOf(Icons.Rounded.SignalCellularAlt, Icons.Rounded.Build, Icons.Rounded.Settings)
     val labels = listOf(R.string.home_signal, R.string.home_tools, R.string.settings)
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = DashboardCardDefaults.shape,
-        color = DashboardCardDefaults.cardContainerColor(),
-        border = BorderStroke(1.dp, DashboardCardDefaults.outlineVariant()),
-    ) {
-        Column(Modifier.padding(13.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
-            Row(Modifier.fillMaxWidth().padding(horizontal = 3.dp), horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically) {
-                Text("主题预览", style = MaterialTheme.typography.titleSmall)
-                Text(if (amoled) "纯黑" else if (dark) "深色" else "浅色",
-                    style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
-            }
-            Box(Modifier.fillMaxWidth().height(165.dp).clip(DashboardCardDefaults.smallShape)) {
-                Column(
-                    Modifier.fillMaxSize().then(if (backdrop != null) Modifier.layerBackdrop(backdrop) else Modifier)
-                        .background(Brush.linearGradient(listOf(colors.background, colors.secondaryContainer, colors.primaryContainer)))
-                        .padding(horizontal = 13.dp, vertical = 9.dp),
-                    verticalArrangement = Arrangement.spacedBy(9.dp),
-                ) {
-                    Text(stringResource(labels[page]), style = MaterialTheme.typography.titleMedium)
-                    Surface(shape = DashboardCardDefaults.smallShape, color = colors.surfaceContainerLow) {
-                        Row(
-                            Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Icon(icons[page], null, Modifier.size(17.dp), tint = colors.primary)
-                            Text(when (page) { 1 -> "基站地图"; 2 -> "外观"; else -> "蜂窝网络" },
-                                Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
-                            if (page == 0) Text("−86 dBm", style = MaterialTheme.typography.labelMedium, color = colors.primary)
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("主题预览", Modifier.weight(1f), style = MaterialTheme.typography.titleSmall, letterSpacing = 0.sp)
+            Text(if (amoled) "纯黑" else if (dark) "深色" else "浅色",
+                style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant, letterSpacing = 0.sp)
+        }
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            cornerRadius = style.cardRadius,
+        ) {
+            Box {
+                Column {
+                    Column(
+                        Modifier.fillMaxWidth()
+                            .then(if (backdrop != null) Modifier.layerBackdrop(backdrop) else Modifier)
+                            .padding(style.cardPadding)
+                            .padding(bottom = if (floatingNavigation) 88.dp else 0.dp),
+                        verticalArrangement = Arrangement.spacedBy(style.sectionSpacing),
+                    ) {
+                        Text(stringResource(labels[page]), style = MaterialTheme.typography.titleSmall,
+                            color = colors.onSurface, letterSpacing = 0.sp)
+                        if (page == 0) {
+                            ThemePreviewReadings()
+                        } else {
+                            val titles = if (page == 1) listOf("基站地图", "测试任务", "锁网") else listOf("外观", "关于")
+                            titles.forEachIndexed { index, title ->
+                                if (index > 0) ThemeDivider()
+                                Row(
+                                    Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(vertical = style.parameterRowPadding),
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Icon(icons[page], null, Modifier.size(20.dp), tint = colors.primary)
+                                    Text(title, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium,
+                                        color = colors.onSurface, letterSpacing = 0.sp)
+                                }
+                            }
                         }
                     }
+                    if (!floatingNavigation) AppBottomNavigation(
+                        items = icons.mapIndexed { index, icon -> AppNavigationItem(labels[index], icon) },
+                        selectedIndex = page,
+                        onSelected = { page = it },
+                        windowInsets = WindowInsets(0),
+                    )
                 }
-                FloatingBottomBar(
+                if (floatingNavigation) AppFloatingNavigation(
+                    items = icons.mapIndexed { index, icon -> AppNavigationItem(labels[index], icon) },
                     modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 9.dp),
-                    selectedIndex = page, onSelected = { page = it }, backdrop = backdrop, isBlurEnabled = glass,
-                    accentColor = colors.primary, surfaceContainer = colors.surfaceContainer,
-                ) { select ->
-                    icons.forEachIndexed { index, icon ->
-                        val tint = if (index == page) colors.primary else colors.onSurfaceVariant
-                        FloatingBottomBarItem(onClick = { select(index) }, isSelected = index == page) {
-                            Icon(icon, null, Modifier.size(17.dp), tint = tint)
-                            Text(stringResource(labels[index]), style = MaterialTheme.typography.labelSmall, color = tint)
-                        }
+                    selectedIndex = page,
+                    onSelected = { page = it },
+                    backdrop = backdrop,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ThemePreviewReadings() {
+    val style = LocalInterfaceStyle.current
+    val readings = listOf(Triple("RSRP", "-86", "dBm"), Triple("RSRQ", "-10", "dB"), Triple("SINR", "23", "dB"))
+    val progresses = listOf(0.68f, 0.6f, 0.82f)
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val columns = style == InterfaceStyle.CLASSIC && maxWidth >= 280.dp &&
+            LocalDensity.current.fontScale <= 1.15f
+        if (columns) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                readings.forEachIndexed { index, (label, reading, unit) ->
+                    SignalMetricReading(label, reading, unit, true, Modifier.weight(1f)) {
+                        LinearProgressIndicator(progress = { progresses[index] }, modifier = Modifier.fillMaxWidth())
+                    }
+                }
+            }
+        } else {
+            Column {
+                readings.forEachIndexed { index, (label, reading, unit) ->
+                    SignalMetricReading(label, reading, unit, true, Modifier.fillMaxWidth(), horizontal = true) {
+                        LinearProgressIndicator(progress = { progresses[index] }, modifier = Modifier.fillMaxWidth())
                     }
                 }
             }

@@ -162,7 +162,7 @@ public class SettingsFragment extends PreferenceFragmentCompat implements Shared
 
         switch (key)
         {
-            case "monet_enabled":
+            case ThemePref.KEY_MONET:
                 // Material You 动态取色开关：重建界面以重新应用/取消动态配色
                 if (getActivity() != null)
                 {

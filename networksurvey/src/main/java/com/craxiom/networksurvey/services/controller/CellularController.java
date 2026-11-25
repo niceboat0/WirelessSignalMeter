@@ -908,6 +908,7 @@ public class CellularController extends AController
         int registeredDataRat = TelephonyManager.NETWORK_TYPE_UNKNOWN;
         long registeredNci = -1;
         List<TelephonyStateUtils.RegistrationRow> registrationRows = null;
+        boolean registrationLost = false;
 
         int dataNetworkTypeInt = TelephonyManager.NETWORK_TYPE_UNKNOWN;
         boolean hasPhoneStatePermission = surveyService != null
@@ -975,6 +976,7 @@ public class CellularController extends AController
                     {
                         final var freshRows = TelephonyStateUtils.extractRows(freshServiceState);
                         if (!freshRows.isEmpty()) registrationRows = freshRows;
+                        registrationLost = TelephonyStateUtils.isWwanDeregistered(freshRows);
                         final var registration = TelephonyStateUtils.registeredWwanData(freshServiceState);
                         if (registration != null)
                         {
@@ -985,6 +987,10 @@ public class CellularController extends AController
                                 if (nci >= 0 && nci < (1L << 36)) registeredNci = nci;
                             }
                         }
+                    } else
+                    {
+                        registrationLost = dataNetworkTypeInt == TelephonyManager.NETWORK_TYPE_UNKNOWN
+                                && freshServiceState.getState() != ServiceState.STATE_IN_SERVICE;
                     }
                 }
             } catch (Exception e)
@@ -1015,7 +1021,7 @@ public class CellularController extends AController
         }
         return new NetworkTechnologyInfo(subscriptionId, voiceDisplay, dataDisplay, overrideDisplay,
                 rawOverride, baseRat, nrMode, cellBandwidthsKhz, registrationRows,
-                primaryChannel, registeredDataRat, registeredNci, registeredPlmn, subscriptionCarrier);
+                primaryChannel, registeredDataRat, registeredNci, registeredPlmn, registrationLost, subscriptionCarrier);
     }
 
     /**

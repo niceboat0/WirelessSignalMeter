@@ -29,7 +29,6 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.livedata.observeAsState
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -38,7 +37,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -46,7 +44,6 @@ import androidx.compose.ui.semantics.hideFromAccessibility
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.input.nestedscroll.nestedScroll
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidViewBinding
@@ -57,8 +54,9 @@ import com.craxiom.networksurvey.databinding.ContainerCellularFragmentBinding
 import com.craxiom.networksurvey.fragments.MainCellularFragment
 import com.craxiom.networksurvey.ui.cellular.model.ServingCellInfo
 import com.craxiom.networksurvey.ui.component.PagerSpringSpec
-import com.craxiom.networksurvey.ui.kernelsu.FloatingBottomBar
-import com.craxiom.networksurvey.ui.kernelsu.FloatingBottomBarItem
+import com.craxiom.networksurvey.ui.common.AppBottomNavigation
+import com.craxiom.networksurvey.ui.common.AppFloatingNavigation
+import com.craxiom.networksurvey.ui.common.AppNavigationItem
 import com.craxiom.networksurvey.ui.main.appbar.AppBarAction
 import com.craxiom.networksurvey.ui.main.appbar.TitleBar
 import com.craxiom.networksurvey.ui.settings.SettingsScreen
@@ -71,13 +69,12 @@ import com.craxiom.networksurvey.update.UpdateChecker
 import com.craxiom.networksurvey.update.UpdateDialog
 import com.craxiom.networksurvey.update.UpdateDownloader
 import com.craxiom.networksurvey.util.ThemePref
-import top.yukonga.miuix.kmp.blur.isRuntimeShaderSupported
 import top.yukonga.miuix.kmp.blur.layerBackdrop
 import top.yukonga.miuix.kmp.blur.rememberLayerBackdrop
 import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
 import top.yukonga.miuix.kmp.basic.ScrollBehavior
-import kotlin.math.abs
+import top.yukonga.miuix.kmp.material.isRuntimeShaderSupported
 
 private enum class HomeTab(@StringRes val title: Int, val icon: ImageVector) {
     Signal(R.string.home_signal, Icons.Rounded.SignalCellularAlt),
@@ -95,12 +92,9 @@ fun HomeScreen(
 ) {
     val pagerState = rememberPagerState { HomeTab.entries.size }
     val pagerScope = rememberCoroutineScope()
-    var bubbleProgress by remember { mutableFloatStateOf(pagerState.currentPage.toFloat()) }
 
     val colors = MaterialTheme.colorScheme
     val background = colors.background
-    val bottomPadding = FloatingNavigationClearance +
-        WindowInsets.safeDrawing.asPaddingValues().calculateBottomPadding()
 
     val openMap = {
         mainNavController.currentBackStackEntry?.savedStateHandle?.set(
@@ -112,14 +106,17 @@ fun HomeScreen(
 
     val context = LocalContext.current
     val themeVersion = ThemePref.currentThemeVersion
+    val floatingNavigation = remember(context, themeVersion) {
+        ThemePref.isFloatingNavigationEnabled(context)
+    }
+    val bottomPadding = if (floatingNavigation) {
+        FloatingNavigationClearance + WindowInsets.safeDrawing.asPaddingValues().calculateBottomPadding()
+    } else 24.dp
     val glassEnabled = remember(context, themeVersion) {
-        ThemePref.isLiquidGlassEnabled(context) && isRuntimeShaderSupported()
+        floatingNavigation && ThemePref.isLiquidGlassEnabled(context) && isRuntimeShaderSupported()
     }
     val backdrop = if (glassEnabled) rememberLayerBackdrop() else null
     val pendingUpdate by UpdateChecker.pendingUpdate
-    LaunchedEffect(Unit) {
-        UpdateChecker.check(context, force = false)
-    }
     pendingUpdate?.let { update ->
         UpdateDialog(
             version = update,
@@ -137,52 +134,65 @@ fun HomeScreen(
     }
 
     Box(Modifier.fillMaxSize()) {
-        Box(
-            Modifier.fillMaxSize().then(if (backdrop != null) Modifier.layerBackdrop(backdrop) else Modifier)
-                .background(background),
-        ) {
-            HorizontalPager(
-                state = pagerState,
-                modifier = Modifier.fillMaxSize()
-                    .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal)),
-                // The signal page hosts an Android Fragment. Keep it mounted when switching tabs.
-                beyondViewportPageCount = HomeTab.entries.lastIndex,
-                overscrollEffect = null,
-            ) { page ->
-                when (HomeTab.entries[page]) {
-                    HomeTab.Signal -> SignalTab(rootDiag, bottomPadding, pagerState.settledPage == HomeTab.Signal.ordinal)
-                    HomeTab.Tools -> HomeTabPage(R.string.professional_tools_title) {
-                        ToolsScreen(
-                            bottomPadding = bottomPadding,
-                            onOpenMap = openMap,
-                            onOpenBandLock = {
-                                mainNavController.navigate(NavOption.BandLock.name) { launchSingleTop = true }
-                            },
-                            onOpenRoadCoverage = {
-                                mainNavController.navigate(NavOption.RoadCoverage.name) { launchSingleTop = true }
-                            },
-                            onOpenSpeedTest = {
-                                mainNavController.navigate(NavDrawerOption.SpeedTest.name) { launchSingleTop = true }
-                            },
-                            onOpenSignaling = {
-                                mainNavController.navigate(NavOption.Signaling.name) { launchSingleTop = true }
-                            },
-                        )
-                    }
-                    HomeTab.Settings -> HomeTabPage(R.string.settings) {
-                        SettingsScreen(
-                            onNavigateToAcknowledgments = { mainNavController.navigate(NavOption.Acknowledgments.name) },
-                            onNavigateToEngParams = { mainNavController.navigate(NavDrawerOption.EngineeringParams.name) },
-                            onNavigateToTheme = { mainNavController.navigate(NavOption.ColorPalette.name) },
-                            bottomContentPadding = bottomPadding,
-                            rootDiag = rootDiag,
-                        )
+        Column(Modifier.fillMaxSize()) {
+            Box(
+                Modifier.fillMaxWidth().weight(1f)
+                    .then(if (backdrop != null) Modifier.layerBackdrop(backdrop) else Modifier)
+                    .background(background),
+            ) {
+                HorizontalPager(
+                    state = pagerState,
+                    modifier = Modifier.fillMaxSize()
+                        .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal)),
+                    // The signal page hosts an Android Fragment. Keep it mounted when switching tabs.
+                    beyondViewportPageCount = HomeTab.entries.lastIndex,
+                    overscrollEffect = null,
+                ) { page ->
+                    when (HomeTab.entries[page]) {
+                        HomeTab.Signal -> SignalTab(rootDiag, bottomPadding, pagerState.settledPage == HomeTab.Signal.ordinal)
+                        HomeTab.Tools -> HomeTabPage(R.string.professional_tools_title) {
+                            ToolsScreen(
+                                bottomPadding = bottomPadding,
+                                onOpenMap = openMap,
+                                onOpenBandLock = {
+                                    mainNavController.navigate(NavOption.BandLock.name) { launchSingleTop = true }
+                                },
+                                onOpenRoadCoverage = {
+                                    mainNavController.navigate(NavOption.RoadCoverage.name) { launchSingleTop = true }
+                                },
+                                onOpenSpeedTest = {
+                                    mainNavController.navigate(NavDrawerOption.SpeedTest.name) { launchSingleTop = true }
+                                },
+                                onOpenSignaling = {
+                                    mainNavController.navigate(NavOption.Signaling.name) { launchSingleTop = true }
+                                },
+                            )
+                        }
+                        HomeTab.Settings -> HomeTabPage(R.string.settings) {
+                            SettingsScreen(
+                                onNavigateToAcknowledgments = { mainNavController.navigate(NavOption.Acknowledgments.name) },
+                                onNavigateToEngParams = { mainNavController.navigate(NavDrawerOption.EngineeringParams.name) },
+                                onNavigateToTheme = { mainNavController.navigate(NavOption.ColorPalette.name) },
+                                bottomContentPadding = bottomPadding,
+                                rootDiag = rootDiag,
+                            )
+                        }
                     }
                 }
             }
+            if (!floatingNavigation) {
+                AppBottomNavigation(
+                    items = HomeTab.entries.map { AppNavigationItem(it.title, it.icon) },
+                    selectedIndex = pagerState.currentPage,
+                    onSelected = { index ->
+                        pagerScope.launch { pagerState.animateScrollToPage(index, animationSpec = PagerSpringSpec) }
+                    },
+                )
+            }
         }
 
-        FloatingBottomBar(
+        if (floatingNavigation) AppFloatingNavigation(
+            items = HomeTab.entries.map { AppNavigationItem(it.title, it.icon) },
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .windowInsetsPadding(
@@ -193,31 +203,8 @@ fun HomeScreen(
             onSelected = { index ->
                 pagerScope.launch { pagerState.animateScrollToPage(index, animationSpec = PagerSpringSpec) }
             },
-            tabsCount = HomeTab.entries.size,
             backdrop = backdrop,
-            isBlurEnabled = glassEnabled,
-            accentColor = colors.primary,
-            surfaceContainer = colors.surfaceContainer,
-            onBubbleProgress = { bubbleProgress = it },
-        ) { activateTab ->
-            HomeTab.entries.forEachIndexed { index, tab ->
-                val distance = abs(bubbleProgress - index).coerceIn(0f, 1f)
-                val tint = lerp(colors.primary, colors.onSurfaceVariant, distance)
-                FloatingBottomBarItem(
-                    onClick = { activateTab(index) },
-                    isSelected = pagerState.currentPage == index,
-                ) {
-                    Icon(tab.icon, contentDescription = null, tint = tint, modifier = Modifier.size(24.dp))
-                    Text(
-                        text = stringResource(tab.title),
-                        style = MaterialTheme.typography.labelMedium.copy(fontSize = 12.sp, lineHeight = 16.sp),
-                        color = tint,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-            }
-        }
+        )
     }
 }
 
@@ -256,7 +243,11 @@ private fun SignalTab(rootDiag: RootDiagViewModel, bottomPadding: Dp, active: Bo
     val now = SystemClock.elapsedRealtime()
     val diagServing = signal.hasLiveServingCell(protocol?.name, now) ||
         (protocol == CellularProtocol.LTE && nrServing != null && signal.hasLiveServingCell("NR", now))
-    val useRoot = DeviceCapabilities.displayUsesDiag(simCount, protocol?.name, diagServing)
+    // A returning HomeScreen can have live DIAG data before the selected SIM fragment is restored.
+    val diagCells = androidCells?.takeIf {
+        DeviceCapabilities.displayUsesDiag(fragment?.simCount ?: simCount, protocol?.name, diagServing)
+    }
+    val useRoot = diagCells != null
     LaunchedEffect(active, useRoot, protocol, simCount) {
         if (active) {
             rootDiag.recordSignalMode(useRoot, protocol?.name, simCount)
@@ -289,8 +280,8 @@ private fun SignalTab(rootDiag: RootDiagViewModel, bottomPadding: Dp, active: Bo
                     fragment = cellular
                 }
             }
-            if (useRoot) {
-                RootSignalScreen(signal, rootDiag::chartFor, bottomPadding, androidCells, active)
+            if (diagCells != null) {
+                RootSignalScreen(signal, rootDiag::chartFor, bottomPadding, diagCells, active)
             } else if (diagLive && simCount > 1) {
                 Text(
                     stringResource(R.string.diag_dual_sim_unmapped),

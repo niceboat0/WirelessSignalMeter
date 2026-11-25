@@ -11,17 +11,23 @@ import androidx.preference.PreferenceManager
  * 主题偏好：浅色 / 深色 / 跟随系统 + Material You（Monet）动态取色开关。
  * 存储于默认 SharedPreferences（与 preferences.xml 的 Preference 打通）：
  *  - theme_mode ：ListPreference，存 String（"0"=浅色 "1"=深色 "2"=跟随系统）
- *  - monet_enabled ：SwitchPreferenceCompat，存 Boolean
+ *  - wallpaper_colors_enabled ：SwitchPreferenceCompat，存 Boolean
  */
 object ThemePref {
     const val MODE_LIGHT = 0
     const val MODE_DARK = 1
     const val MODE_SYSTEM = 2
     const val KEY_THEME = "theme_mode"
-    const val KEY_MONET = "monet_enabled"
+    // The old key was automatically set to true on install; require a fresh opt-in.
+    const val KEY_MONET = "wallpaper_colors_enabled"
     const val KEY_SEED = "theme_seed"
     const val KEY_AMOLED = "amoled_enabled"
     private const val KEY_LIQUID_GLASS = "liquid_glass_navigation"
+    private const val KEY_FLOATING_NAVIGATION = "floating_navigation"
+    const val KEY_INTERFACE_STYLE = "interface_style"
+    const val STYLE_CLASSIC = "classic"
+    const val STYLE_MINIMAL = "minimal"
+    const val STYLE_COMPACT = "compact"
     // KernelSU ColorPalette 扩展：配色风格 + 规格
     const val KEY_PALETTE_STYLE = "theme_palette_style"
     const val KEY_COLOR_SPEC = "theme_color_spec"
@@ -44,6 +50,7 @@ object ThemePref {
     @JvmStatic
     fun setPaletteStyle(context: Context, style: String) {
         prefs(context).edit().putString(KEY_PALETTE_STYLE, style).apply()
+        themeVersion.intValue++
     }
 
     /** 配色规格（ColorSpec.SpecVersion 枚举名），SPEC_2021 / SPEC_2025 */
@@ -55,6 +62,7 @@ object ThemePref {
     @JvmStatic
     fun setColorSpec(context: Context, spec: String) {
         prefs(context).edit().putString(KEY_COLOR_SPEC, spec).apply()
+        themeVersion.intValue++
     }
 
     /** 进度条风格：Miuix 或 Material3，默认 Miuix */
@@ -82,10 +90,31 @@ object ThemePref {
     val currentThemeVersion: Int get() = themeVersion.intValue
 
     fun isLiquidGlassEnabled(context: Context): Boolean =
-        prefs(context).getBoolean(KEY_LIQUID_GLASS, true)
+        try { prefs(context).getBoolean(KEY_LIQUID_GLASS, false) } catch (_: ClassCastException) { false }
 
     fun setLiquidGlassEnabled(context: Context, enabled: Boolean) {
         prefs(context).edit().putBoolean(KEY_LIQUID_GLASS, enabled).apply()
+        themeVersion.intValue++
+    }
+
+    fun isFloatingNavigationEnabled(context: Context): Boolean =
+        try { prefs(context).getBoolean(KEY_FLOATING_NAVIGATION, false) } catch (_: ClassCastException) { false }
+
+    fun setFloatingNavigationEnabled(context: Context, enabled: Boolean) {
+        prefs(context).edit().putBoolean(KEY_FLOATING_NAVIGATION, enabled).apply()
+        themeVersion.intValue++
+    }
+
+    fun getInterfaceStyle(context: Context): String {
+        val style = try { prefs(context).getString(KEY_INTERFACE_STYLE, STYLE_CLASSIC) }
+        catch (_: ClassCastException) { null }
+        return style.takeIf { it == STYLE_CLASSIC || it == STYLE_MINIMAL || it == STYLE_COMPACT } ?: STYLE_CLASSIC
+    }
+
+    fun setInterfaceStyle(context: Context, style: String) {
+        val selected = style.takeIf { it == STYLE_CLASSIC || it == STYLE_MINIMAL || it == STYLE_COMPACT }
+            ?: STYLE_CLASSIC
+        prefs(context).edit().putString(KEY_INTERFACE_STYLE, selected).apply()
         themeVersion.intValue++
     }
 
@@ -96,10 +125,11 @@ object ThemePref {
     @JvmStatic
     fun setAmoled(context: Context, enabled: Boolean) {
         prefs(context).edit().putBoolean(KEY_AMOLED, enabled).apply()
+        themeVersion.intValue++
     }
 
     // 自定义主题主色（静态色板）：关闭 Monet 后可手动选择。
-    // 与 arrays.xml 的 theme_seed_values 保持一致：0=默认青蓝 1=蓝色 2=绿色 3=紫色 4=橙色 5=红色 6=粉色 7=青色
+    // 与 arrays.xml 的 theme_seed_values 保持一致：0=默认 1=蓝色 2=绿色 3=紫色 4=橙色 5=红色 6=粉色 7=青色
     const val SEED_DEFAULT = 0
     const val SEED_BLUE = 1
     const val SEED_GREEN = 2
@@ -109,12 +139,17 @@ object ThemePref {
     const val SEED_PINK = 6
     const val SEED_CYAN = 7
 
-    /** Material You 动态取色是否开启（Android 12+ 且用户未关闭时生效）。 */
+    /** Material You 动态取色是否开启（默认关闭）。 */
     @JvmStatic
     fun isMonet(context: Context): Boolean =
-        try { prefs(context).getBoolean(KEY_MONET, true) } catch (_: ClassCastException) { true }
+        try { prefs(context).getBoolean(KEY_MONET, false) } catch (_: ClassCastException) { false }
 
-    /** 用户选定的自定义主题主色（关闭 Monet 时生效）。默认 0 = 应用自带青蓝色。 */
+    fun setMonet(context: Context, enabled: Boolean) {
+        prefs(context).edit().putBoolean(KEY_MONET, enabled).apply()
+        themeVersion.intValue++
+    }
+
+    /** 用户选定的自定义主题主色（关闭 Monet 时生效）。 */
     @JvmStatic
     fun getSeed(context: Context): Int {
         val sp = prefs(context)
@@ -122,11 +157,11 @@ object ThemePref {
         // ListPreference 以 String 存储（"0"/"1"/"2"...）；兼容旧版 Int
         try {
             val s = sp.getString(KEY_SEED, null)
-            if (s != null) return s.toIntOrNull() ?: SEED_DEFAULT
+            if (s != null) return s.toIntOrNull()?.takeIf { it in SEED_DEFAULT..SEED_CYAN } ?: SEED_DEFAULT
         } catch (_: ClassCastException) {
         }
         return try {
-            sp.getInt(KEY_SEED, SEED_DEFAULT)
+            sp.getInt(KEY_SEED, SEED_DEFAULT).takeIf { it in SEED_DEFAULT..SEED_CYAN } ?: SEED_DEFAULT
         } catch (_: ClassCastException) {
             SEED_DEFAULT
         }
@@ -134,7 +169,11 @@ object ThemePref {
 
     @JvmStatic
     fun setSeed(context: Context, seed: Int) {
-        prefs(context).edit().putString(KEY_SEED, seed.toString()).apply()
+        prefs(context).edit()
+            .putString(KEY_SEED, seed.toString())
+            .putBoolean(KEY_MONET, false)
+            .apply()
+        themeVersion.intValue++
     }
 
     /** Android 12（API 31）+ 才支持从系统壁纸提取动态色。 */

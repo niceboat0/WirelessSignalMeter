@@ -9,9 +9,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -30,10 +28,12 @@ import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -43,6 +43,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import com.craxiom.networksurvey.R
 import com.craxiom.networksurvey.ui.rootdiag.SIGNAL_UNAVAILABLE
+import com.craxiom.networksurvey.ui.theme.InterfaceStyle
+import com.craxiom.networksurvey.ui.theme.LocalInterfaceStyle
 import kotlinx.coroutines.delay
 import kotlin.math.ceil
 import kotlin.math.floor
@@ -66,58 +68,63 @@ internal fun CellularChartComponent(viewModel: CellularChartViewModel) {
         }
     }
     val end = maxOf(clock, lastTime ?: clock)
+    CellularTrendCard(history, end)
+}
+
+@Composable
+internal fun CellularTrendCard(history: CellularSignalHistory, end: Long) {
     val samples = remember(history.samples, end) {
         history.samples.dropWhile { it.time < end - SIGNAL_WINDOW_MS }
     }
     val values = remember(samples) { samples.mapNotNull { it.dbm } }
     val latest = samples.lastOrNull()?.dbm?.takeIf { end - samples.last().time <= 30_000L }
     val colors = MaterialTheme.colorScheme
+    val style = LocalInterfaceStyle.current
     val title = stringResource(R.string.cellular_trend)
 
-    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    SignalSectionCard {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                Text(title, style = MaterialTheme.typography.titleSmall.copy(fontSize = 18.sp, lineHeight = 24.sp),
+                Text(title, style = MaterialTheme.typography.titleSmall.copy(letterSpacing = 0.sp),
+                    modifier = Modifier.semantics { heading() },
                     fontWeight = FontWeight.SemiBold)
                 Text(
                     stringResource(R.string.cellular_trend_window, history.title),
-                    style = MaterialTheme.typography.bodySmall,
+                    style = MaterialTheme.typography.bodySmall.copy(letterSpacing = 0.sp),
                     color = colors.onSurfaceVariant,
                 )
             }
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(3.dp)) {
-                Text(latest?.toString() ?: SIGNAL_UNAVAILABLE, style = MaterialTheme.typography.titleMedium,
+                Text(latest?.toString() ?: SIGNAL_UNAVAILABLE,
+                    style = MaterialTheme.typography.titleMedium.copy(fontFeatureSettings = "tnum", letterSpacing = 0.sp),
+                    fontFamily = if (style == InterfaceStyle.COMPACT) FontFamily.Monospace else null,
                     fontWeight = FontWeight.SemiBold, color = colors.primary)
-                Text("dBm", style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
+                Text("dBm", style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 0.sp),
+                    color = colors.onSurfaceVariant)
             }
         }
 
-        Surface(
-            color = colors.surfaceContainer.copy(alpha = 0.56f),
-            shape = RoundedCornerShape(16.dp),
-        ) {
-            if (values.size < 2) {
-                Box(Modifier.fillMaxWidth().height(signalPlotHeight), contentAlignment = Alignment.Center) {
-                    Text(
-                        stringResource(if (values.isEmpty()) R.string.cellular_trend_waiting else R.string.cellular_trend_waiting_next),
-                        Modifier.padding(12.dp),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = colors.onSurfaceVariant,
-                    )
-                }
-            } else {
-                SignalPlot(
-                    samples = samples,
-                    values = values,
-                    end = end,
-                    title = title,
-                    showCurrent = latest != null,
+        if (values.size < 2) {
+            Box(Modifier.fillMaxWidth().height(signalPlotHeight), contentAlignment = Alignment.Center) {
+                Text(
+                    stringResource(if (values.isEmpty()) R.string.cellular_trend_waiting else R.string.cellular_trend_waiting_next),
+                    Modifier.padding(style.cardPadding),
+                    style = MaterialTheme.typography.bodySmall.copy(letterSpacing = 0.sp),
+                    color = colors.onSurfaceVariant,
                 )
             }
+        } else {
+            SignalPlot(
+                samples = samples,
+                values = values,
+                end = end,
+                title = title,
+                showCurrent = latest != null,
+            )
         }
     }
 }
@@ -132,7 +139,7 @@ private fun SignalPlot(
 ) {
     val colors = MaterialTheme.colorScheme
     val textMeasurer = rememberTextMeasurer()
-    val textStyle = MaterialTheme.typography.labelSmall.copy(color = colors.onSurfaceVariant)
+    val textStyle = MaterialTheme.typography.labelSmall.copy(color = colors.onSurfaceVariant, letterSpacing = 0.sp)
     val labels = listOf(stringResource(R.string.cellular_trend_start), "−60 s", stringResource(R.string.cellular_trend_latest))
     val bottomDbm = floor((values.min() - 4) / 10f).toInt() * 10
     val topDbm = maxOf(bottomDbm + 20, ceil((values.max() + 4) / 10f).toInt() * 10)
