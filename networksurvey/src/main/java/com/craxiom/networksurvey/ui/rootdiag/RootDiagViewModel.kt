@@ -73,6 +73,7 @@ internal data class RootSignalState(
     val nrCarriers: List<NrCarrier> = emptyList(),
     val hasModemPackets: Boolean = false,
     val modemWaitTimedOut: Boolean = false,
+    val lastNeighborMeasurementAt: Map<String, Long> = emptyMap(),
 ) {
     fun hasLiveServingCell(protocol: String?, now: Long): Boolean =
         status == RootDiagStatus.Running && records.any { record ->
@@ -89,6 +90,7 @@ internal data class RootSignalState(
 internal enum class QmdlPhase { Idle, Starting, Recording, Stopping }
 internal enum class QmdlResult { Saved, Limited, Interrupted, Empty, Error }
 internal const val NR_RX_SAMPLE_TIMEOUT = 4_000L
+internal const val DIAG_MEASUREMENT_TIMEOUT_MS = 30_000L
 
 internal data class QmdlState(
     val phase: QmdlPhase = QmdlPhase.Idle,
@@ -324,7 +326,7 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
         val androidLteSinr = AndroidLteSinrReader.snapshot()
         val androidNrBatches = AndroidNrCarriers.diagnostics()
         val rootNrCa = nrCaObservations.toList()
-        val neighborTables = neighborTableDiagnostics(snapshot.records)
+        val neighborTables = neighborTableDiagnostics(snapshot)
         val invalidLines = invalidLineCount
         withContext(Dispatchers.IO) {
             val tasks = SurveyTaskStore.get(app)
@@ -604,6 +606,7 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
         signalState.value = RootSignalState(
             RootDiagStatus.Checking, lastMeasurements.values.toList() + lastConfiguration.values,
             cachedMeasureIds = lastMeasurements.values.mapTo(mutableSetOf()) { it.id },
+            lastNeighborMeasurementAt = signalState.value.lastNeighborMeasurementAt,
         )
         capture = viewModelScope.launch(start = CoroutineStart.LAZY) {
             try {
@@ -720,6 +723,7 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
         var hasModemPackets = false
         val metrics = mutableMapOf<String, DiagRecord>()
         val cached = lastMeasurements.toMutableMap()
+        val lastNeighborMeasurementAt = signalState.value.lastNeighborMeasurementAt.toMutableMap()
         val nrCarriers = RootNrCarriers()
         val measurementConfigs = mutableMapOf<String, RrcMeasurementConfig>()
         var readyAt: Long? = null
@@ -745,10 +749,10 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
                 when (record.type) {
                     "nr_rach" -> false
                     "nr_ssb_rx" -> now - record.receivedAt > NR_RX_SAMPLE_TIMEOUT
-                    else -> now - record.receivedAt > MEASUREMENT_TIMEOUT
+                    else -> now - record.receivedAt > DIAG_MEASUREMENT_TIMEOUT_MS
                 }
             }
-            if (readyAt?.let { now - it > MEASUREMENT_TIMEOUT } == true) cached.clear()
+            if (readyAt?.let { now - it > DIAG_MEASUREMENT_TIMEOUT_MS } == true) cached.clear()
             lastMeasurements.clear()
             lastMeasurements.putAll(cached)
             lastMeasurements.putAll(metrics)
@@ -782,6 +786,7 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
                 hasModemPackets = hasModemPackets,
                 modemWaitTimedOut = status == RootDiagStatus.Running && !hasModemPackets &&
                     readyAt?.let { now - it >= MODEM_WAIT_TIMEOUT } == true,
+                lastNeighborMeasurementAt = lastNeighborMeasurementAt.toMap(),
             )
             publishOverlay(status, signalState.value.records)
             publishCapability()
@@ -812,6 +817,12 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
         fun storeMeasurement(key: String, record: DiagRecord) {
             cached.remove(key)
             metrics[key] = record
+            val rat = when (record.type) {
+                "lte_meas" -> "LTE"
+                "nr_meas", "nr_neighbor_sinr" -> "NR"
+                else -> return
+            }
+            lastNeighborMeasurementAt[rat] = record.receivedAt
         }
 
         fun removeMeasurements(prefix: String) {
@@ -1496,7 +1507,6 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
 
     private companion object {
         const val MAX_MESSAGES = 4_000
-        const val MEASUREMENT_TIMEOUT = 30_000L
         const val MODEM_WAIT_TIMEOUT = 20_000L
         const val QMDL_ACK_TIMEOUT = 8_000L
         const val MAX_DIAGNOSTIC_MESSAGES = 400

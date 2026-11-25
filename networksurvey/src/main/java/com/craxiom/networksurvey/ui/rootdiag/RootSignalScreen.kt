@@ -1093,12 +1093,18 @@ private fun directNeighborReadings(rat: String, serving: JSONObject?, records: L
     }
 }
 
-internal fun neighborTableDiagnostics(records: List<DiagRecord>): List<JSONObject> = listOf("LTE", "NR").map { rat ->
+internal fun neighborTableDiagnostics(
+    snapshot: RootSignalState,
+    now: Long = SystemClock.elapsedRealtime(),
+): List<JSONObject> = listOf("LTE", "NR").map { rat ->
+    val records = snapshot.records
     val serving = records.lastOrNull { it.type == "serving" && it.data.optString("rat") == rat }?.data
     val grouped = directNeighborReadings(rat, serving, records).groupBy { it.matchKey }
     val visible = grouped.values.map(::mergeNeighborReadings).filterNot { it.isServingNeighbor(serving) }
     val sources = JSONObject()
     grouped.values.flatten().groupingBy { it.source }.eachCount().forEach { (source, count) -> sources.put(source, count) }
+    // The timestamp survives eviction, so a pruned table can still report staleness.
+    val newestAge = snapshot.lastNeighborMeasurementAt[rat]?.let { (now - it).coerceAtLeast(0) }
     JSONObject().put("type", "neighbor_table_snapshot").put("rat", rat).put("source_entries", sources)
         .put("rows", visible.size).put("rows_with_rsrp", visible.count { it.rsrp != null })
         .put("rows_with_rsrq", visible.count { it.rsrq != null }).put("rows_with_sinr", visible.count { it.sinr != null })
@@ -1106,6 +1112,8 @@ internal fun neighborTableDiagnostics(records: List<DiagRecord>): List<JSONObjec
         .put("rows_with_sinr_only", visible.count { it.sinrOnly })
         .put("serving_rows_excluded", grouped.size - visible.size)
         .put("rrc_sinr_samples", records.count { it.type == "rrc_neighbor_sinr" && it.data.optString("rat") == rat })
+        .put("newest_age_ms", newestAge ?: -1L)
+        .put("stale", newestAge != null && newestAge > DIAG_MEASUREMENT_TIMEOUT_MS)
 }
 
 private fun NeighborReading.isServingNeighbor(serving: JSONObject?) =
