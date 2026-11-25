@@ -1093,33 +1093,18 @@ private fun directNeighborReadings(rat: String, serving: JSONObject?, records: L
     }
 }
 
-/* Measurement records that feed the neighbor table for a RAT; keep in sync
-   with directNeighborReadings(). */
-private val neighborSourceTypes = mapOf(
-    "NR" to setOf("nr_neighbor_sinr", "nr_meas"),
-    "LTE" to setOf("lte_meas"),
-)
-private const val NEIGHBOR_SNAPSHOT_WINDOW_MS = 30_000L
-
-/* Diagnostics snapshot of the neighbor table state at export time.
- *
- * rows alone cannot distinguish "no neighbours detected" from "readings
- * expired out of MEASUREMENT_TIMEOUT" (e.g. a DIY band-lock SSR stalls the
- * DIAG stream for >30 s and every measurement record is dropped). The
- * newest_age_ms / stale pair makes that difference explicit:
- *   stale=1                    -> data window lapsed; rows=0 is not evidence
- *                                 of "no neighbours"
- *   newest_age_ms=-1, stale=0  -> no measurement record for this RAT at all
- *   newest_age_ms small        -> rows reflect live data. */
-internal fun neighborTableDiagnostics(records: List<DiagRecord>): List<JSONObject> = listOf("LTE", "NR").map { rat ->
+internal fun neighborTableDiagnostics(
+    snapshot: RootSignalState,
+    now: Long = SystemClock.elapsedRealtime(),
+): List<JSONObject> = listOf("LTE", "NR").map { rat ->
+    val records = snapshot.records
     val serving = records.lastOrNull { it.type == "serving" && it.data.optString("rat") == rat }?.data
     val grouped = directNeighborReadings(rat, serving, records).groupBy { it.matchKey }
     val visible = grouped.values.map(::mergeNeighborReadings).filterNot { it.isServingNeighbor(serving) }
     val sources = JSONObject()
     grouped.values.flatten().groupingBy { it.source }.eachCount().forEach { (source, count) -> sources.put(source, count) }
-    val sourceTypes = neighborSourceTypes[rat] ?: emptySet()
-    val newestAge = records.asSequence().filter { it.type in sourceTypes }
-        .maxOfOrNull { it.receivedAt }?.let { (SystemClock.elapsedRealtime() - it).coerceAtLeast(0) }
+    // The timestamp survives eviction, so a pruned table can still report staleness.
+    val newestAge = snapshot.lastNeighborMeasurementAt[rat]?.let { (now - it).coerceAtLeast(0) }
     JSONObject().put("type", "neighbor_table_snapshot").put("rat", rat).put("source_entries", sources)
         .put("rows", visible.size).put("rows_with_rsrp", visible.count { it.rsrp != null })
         .put("rows_with_rsrq", visible.count { it.rsrq != null }).put("rows_with_sinr", visible.count { it.sinr != null })
@@ -1128,7 +1113,7 @@ internal fun neighborTableDiagnostics(records: List<DiagRecord>): List<JSONObjec
         .put("serving_rows_excluded", grouped.size - visible.size)
         .put("rrc_sinr_samples", records.count { it.type == "rrc_neighbor_sinr" && it.data.optString("rat") == rat })
         .put("newest_age_ms", newestAge ?: -1L)
-        .put("stale", newestAge != null && newestAge > NEIGHBOR_SNAPSHOT_WINDOW_MS)
+        .put("stale", newestAge != null && newestAge > DIAG_MEASUREMENT_TIMEOUT_MS)
 }
 
 private fun NeighborReading.isServingNeighbor(serving: JSONObject?) =
