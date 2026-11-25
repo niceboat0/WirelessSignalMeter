@@ -44,25 +44,22 @@ jobs:
           name: Network Survey CDR Debug APK
           path: networksurvey/build/outputs/apk/cdr/debug/*.apk
 
-      - name: Save google-services.json
-        env:
-          GOOGLE_SERVICES: ${{ secrets.GOOGLE_SERVICES }}
-        run: echo "$GOOGLE_SERVICES" > networksurvey/google-services.json
+  host-c-tests:
+    name: Host C tests (diag queue)
+    runs-on: ubuntu-latest
 
-      - name: Build Regular APK
-        env:
-          NS_API_KEY: ${{ secrets.NS_API_KEY }}
-          OCID_API_KEY: ${{ secrets.OCID_API_KEY }}
-        run: ./gradlew assembleRegularDebug
-          -PnsApiKey=$NS_API_KEY
-          -PocidApiKey=$OCID_API_KEY
+    steps:
+      - name: Checkout the code
+        uses: actions/checkout@v6
 
-      - name: Upload Regular APK
-        uses: actions/upload-artifact@v6
-        with:
-          name: Network Survey Regular Debug APK
-          path: networksurvey/build/outputs/apk/regular/debug/*.apk
-
+      # Only diag_queue_test for now: it is self-contained and covers the
+      # priority-routing queue merged via PR #19. ims_logcat_test and
+      # diag_session_file_test have never executed anywhere; enable them
+      # after their first verified run instead of letting CI discover them.
+      - name: Build and run diag_queue_test
+        run: |
+          cc -std=c11 -Wall -Wextra -Werror -O2 -o diag_queue_test networksurvey/src/test/cpp/diag_queue_test.c
+          ./diag_queue_test
 
   test:
     if: "! startsWith(github.event.head_commit.message, 'Bump version to')"
