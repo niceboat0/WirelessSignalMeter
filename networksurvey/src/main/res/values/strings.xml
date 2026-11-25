@@ -1376,6 +1376,9 @@
     <string name="diag_show_diagnostics">Show events and unknown packets</string>
     <string name="diag_hide_diagnostics">Hide events and unknown packets</string>
     <string name="diag_neighbor_count">Neighbors: %1$d</string>
+    <string name="diag_neighbor_expired">Neighbor measurements expired. This is not an empty neighbor list.</string>
+    <string name="diag_neighbor_cell_changed">Serving cell changed. Waiting for a new neighbor snapshot.</string>
+    <string name="diag_sinr_max_rx">Max-RX SINR</string>
     <string name="diag_registered_plmn">Registered PLMN</string>
     <string name="diag_cell_plmns">Cell PLMNs</string>
     <string name="diag_filter_nas">NAS</string>

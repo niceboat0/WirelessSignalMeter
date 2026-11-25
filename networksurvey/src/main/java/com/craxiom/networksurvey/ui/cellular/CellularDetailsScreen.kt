@@ -369,6 +369,8 @@ internal fun ServingSignalMetrics(
     signalOne: Number?,
     signalTwo: Number?,
     signalThree: Number?,
+    sinrLabel: String? = null,
+    sinrNote: String? = null,
 ) {
     val oneLabel = when (protocol) {
         CellularProtocol.GSM, CellularProtocol.UMTS -> "RSSI"
@@ -383,7 +385,7 @@ internal fun ServingSignalMetrics(
         else -> null
     }
     val threeLabel = when (protocol) {
-        CellularProtocol.LTE -> "SINR"
+        CellularProtocol.LTE -> sinrLabel ?: "SINR"
         CellularProtocol.NR -> "SS-SINR"
         else -> null
     }
@@ -405,6 +407,10 @@ internal fun ServingSignalMetrics(
             style = MaterialTheme.typography.titleSmall.copy(letterSpacing = 0.sp),
             modifier = Modifier.semantics { heading() },
         )
+        if (!sinrNote.isNullOrBlank()) {
+            Text(sinrNote, style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 0.sp),
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
         BoxWithConstraints(Modifier.fillMaxWidth()) {
             val columns = style == InterfaceStyle.CLASSIC && metrics.size > 1 &&
                 maxWidth >= 280.dp && LocalDensity.current.fontScale <= 1.15f
