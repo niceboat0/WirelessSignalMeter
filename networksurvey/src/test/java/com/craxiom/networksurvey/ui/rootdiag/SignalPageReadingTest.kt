@@ -1,12 +1,18 @@
 package com.craxiom.networksurvey.ui.rootdiag
 
+import android.app.Application
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [34], application = Application::class)
 class SignalPageReadingTest {
     private fun chain(source: String, pci: Int, channel: Int, rsrp: Double, at: Long, id: Long = at) =
         NeighborReading("LTE", channel, pci, NeighborMetric("%.1f".format(rsrp), rsrp), null, null,
