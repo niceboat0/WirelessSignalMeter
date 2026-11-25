@@ -12,6 +12,8 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-6E5494?style=flat-square" alt="Apache License 2.0"></a>
 </p>
 
+> **上游来源**：本仓库基于 [christianrowlands/android-network-survey](https://github.com/christianrowlands/android-network-survey)（[Apache License 2.0](LICENSE)）派生，并在其基础上新增了 5G NR DIAG 信令、锁频/锁小区、QMDL 录制与基站地图等功能。
+
 <p align="center">
   <a href="#快速开始">快速开始</a> ·
   <a href="#从源码构建">源码构建</a> ·
