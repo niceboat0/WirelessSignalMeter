@@ -7,8 +7,6 @@ import android.location.LocationListener
 import android.location.LocationManager
 import android.net.TrafficStats
 import android.os.SystemClock
-import android.telephony.SubscriptionManager
-import android.telephony.TelephonyManager
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -23,15 +21,12 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.TextAutoSize
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.compose.LifecycleResumeEffect
@@ -50,15 +45,16 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.craxiom.messaging.LteRecordData
 import com.craxiom.messaging.NrRecordData
 import com.craxiom.networksurvey.R
-import com.craxiom.networksurvey.fragments.model.CarrierAggregationViewState
 import com.craxiom.networksurvey.util.CarrierAggregation
 import com.craxiom.networksurvey.constants.LteMessageConstants
 import com.craxiom.networksurvey.db.EngineeringParamDbHelper
@@ -68,22 +64,23 @@ import com.craxiom.networksurvey.model.StationInfo
 import com.craxiom.networksurvey.ui.cellular.baidumap.MapNeighborCell
 import com.craxiom.networksurvey.model.NrCarrier
 import com.craxiom.networksurvey.ui.cellular.NrCarrierSection
-import com.craxiom.networksurvey.ui.cellular.NrBandwidthCell
-import com.craxiom.networksurvey.ui.cellular.saveMeasuredNrBandwidth
 import com.craxiom.networksurvey.model.CellularProtocol
 import com.craxiom.networksurvey.ui.cellular.CellularChartComponent
 import com.craxiom.networksurvey.ui.cellular.CellularChartViewModel
 import com.craxiom.networksurvey.ui.cellular.ColoredSignalBar
 import com.craxiom.networksurvey.ui.cellular.rememberSignalBarColors
 import com.craxiom.networksurvey.ui.cellular.SignalBarColors
-import com.craxiom.networksurvey.ui.cellular.ServingCellHeader
+import com.craxiom.networksurvey.ui.cellular.NetworkStatusPills
+import com.craxiom.networksurvey.ui.cellular.ServingNetworkCard
 import com.craxiom.networksurvey.ui.cellular.ServingSignalMetrics
 import com.craxiom.networksurvey.ui.cellular.SignalSectionCard
 import com.craxiom.networksurvey.ui.cellular.baidumap.isRecent
-import com.craxiom.networksurvey.ui.dashboard.DashboardCardDefaults
+import com.craxiom.networksurvey.ui.theme.InterfaceStyle
+import com.craxiom.networksurvey.ui.common.AppMenu
+import com.craxiom.networksurvey.ui.common.AppMenuItem
+import com.craxiom.networksurvey.ui.theme.LocalInterfaceStyle
 import com.craxiom.networksurvey.util.CalculationUtils
 import com.craxiom.networksurvey.util.CellularUtils
-import com.craxiom.networksurvey.util.TelephonyStateUtils.NrMode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -111,66 +108,24 @@ private data class ServingIdentity(
         data?.optInt("arfcn", -1) ?: -1, data?.optInt("mcc", -1) ?: -1, data?.optInt("mnc", -1) ?: -1,
         data?.optInt("mnc_digits", -1) ?: -1,
     )
-
-    fun toStation() = StationInfo().apply {
-        isServing = true
-        cellId = cid
-        networkType = rat
-        pci = this@ServingIdentity.pci
-        earfcn = arfcn
-        val divisor = if (isNr) 4096 else 256
-        gnbId = (cid / divisor).toInt()
-        sectorId = (cid % divisor).toInt()
-        mcc = this@ServingIdentity.mcc
-        mnc = this@ServingIdentity.mnc
-    }
 }
 
-private data class RegisteredOperator(val plmn: String, val name: String)
 private fun String.validPlmn() = takeIf { length in 5..6 && all { it in '0'..'9' } }
 private fun String.displayPlmn() = "${take(3)}/${drop(3)}"
-
-@Composable
-private fun rememberRegisteredOperator(active: Boolean): RegisteredOperator? {
-    val context = LocalContext.current.applicationContext
-    val lifecycle = LocalLifecycleOwner.current.lifecycle
-    val operator by produceState<RegisteredOperator?>(null, active, context, lifecycle) {
-        if (!active) return@produceState
-        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
-            while (isActive) {
-                value = withContext(Dispatchers.IO) {
-                    runCatching {
-                        val subId = SubscriptionManager.getActiveDataSubscriptionId()
-                            .takeIf(SubscriptionManager::isValidSubscriptionId)
-                            ?: SubscriptionManager.getDefaultDataSubscriptionId()
-                        if (!SubscriptionManager.isValidSubscriptionId(subId)) return@runCatching null
-                        val telephony = context.getSystemService(TelephonyManager::class.java)?.createForSubscriptionId(subId)
-                            ?: return@runCatching null
-                        val plmn = telephony.networkOperator.orEmpty().validPlmn() ?: return@runCatching null
-                        RegisteredOperator(plmn, telephony.networkOperatorName.orEmpty())
-                    }.getOrNull()
-                }
-                delay(2_000)
-            }
-        }
-    }
-    return operator
-}
 
 @Composable
 internal fun RootSignalScreen(
     state: RootSignalState,
     chartFor: (String) -> CellularChartViewModel,
     bottomPadding: Dp,
-    androidCells: CellularViewModel?,
+    androidCells: CellularViewModel,
     isSignalTab: Boolean,
 ) {
     val records = remember(state.records) { state.records.groupBy { it.type } }
     val serving = records["serving"].orEmpty().associateBy { it.data.optString("rat") }
-    val systemProtocol = androidCells?.servingCellProtocol?.observeAsState()?.value
-    val nrMode = androidCells?.nrMode?.observeAsState()?.value
-    val androidLte = androidCells?.lteServingCell?.observeAsState()?.value?.takeIf { systemProtocol == CellularProtocol.LTE }
-    val androidNr = androidCells?.nrServingCell?.observeAsState()?.value
+    val systemProtocol by androidCells.servingCellProtocol.observeAsState(CellularProtocol.NONE)
+    val androidLte = androidCells.lteServingCell.observeAsState().value?.takeIf { systemProtocol == CellularProtocol.LTE }
+    val androidNr = androidCells.nrServingCell.observeAsState().value
         ?.takeIf { systemProtocol == CellularProtocol.NR || systemProtocol == CellularProtocol.LTE }
     val now = SystemClock.elapsedRealtime()
     // The collector republishes both serving snapshots. Use the age of the modem observation when only one RAT is live.
@@ -193,26 +148,11 @@ internal fun RootSignalScreen(
     val servingData = remember(diagServing, lteData, nrData) {
         lteData?.withDiag(diagServing?.data) ?: nrData?.withDiag(diagServing?.data) ?: diagServing?.data
     }
-    val context = LocalContext.current
-    val bandwidthCell = NrBandwidthCell.from(nrData)
-    val measuredBandwidth = diagServing?.takeIf { record ->
-        val modemAge = record.data.optLong("seen_age_ms", -1)
-        isSignalTab && state.status == RootDiagStatus.Running && record.id !in state.cachedMeasureIds &&
-            bandwidthCell != null && record.data.optLong("cid", -1) == bandwidthCell.nci &&
-            record.data.channel("pci") == bandwidthCell.pci && record.data.channel("arfcn") == bandwidthCell.channel &&
-            modemAge >= 0 && now - record.receivedAt + modemAge in 0..20_000L
-    }?.data?.number("bw_mhz")
-    LaunchedEffect(bandwidthCell, measuredBandwidth, diagServing?.id) {
-        if (bandwidthCell != null && measuredBandwidth != null)
-            saveMeasuredNrBandwidth(context, bandwidthCell, measuredBandwidth)
-    }
     val lteRrcSinr = records.latest("lte_rrc_sinr")?.takeIf {
         rat == "LTE" && it.id !in state.cachedMeasureIds && SystemClock.elapsedRealtime() - it.receivedAt <= 5_000 &&
             servingData != null && it.data.channel("pci") == servingData.channel("pci") &&
             it.data.channel("arfcn") == servingData.channel("arfcn")
     }?.data?.neighborMetric("sinr_index", "LTE", singleReading = true)?.value
-    val status = if (state.status == RootDiagStatus.Running) "" else
-        state.failureReason?.let { capabilityReasonText(it) } ?: stringResource(state.status.title)
     val identity = rat?.let { ServingIdentity(it, servingData) }
     val lteSecondaries = if (identity?.rat == "LTE" && state.status == RootDiagStatus.Running &&
         servingCell != null && servingCell.id !in state.cachedMeasureIds) {
@@ -224,32 +164,24 @@ internal fun RootSignalScreen(
         }
         CarrierAggregation.b193Secondaries(samples, identity.pci, identity.arfcn, now)
     } else emptyList()
-    val operator = rememberRegisteredOperator(isSignalTab)
     fun matchesServing(record: DiagRecord) = identity != null && record.data.optString("rat") == identity.rat &&
         record.data.channel("pci") == identity.pci && record.data.channel("arfcn") == identity.arfcn
     val broadcast = records["plmn_broadcast"].orEmpty().firstOrNull(::matchesServing)?.data?.optJSONArray("plmns")
     val plmnIndex = records["plmn_selection"].orEmpty().firstOrNull(::matchesServing)?.data?.optInt("index", -1) ?: -1
     val selectedPlmn = if (plmnIndex > 0) broadcast?.optString(plmnIndex - 1)?.validPlmn() else null
-    val registeredPlmn = operator?.plmn ?: selectedPlmn
+    val androidPlmn by androidCells.registeredPlmn.observeAsState()
+    val registeredPlmn = androidPlmn ?: selectedPlmn?.displayPlmn()
     val cellPlmns = if (broadcast != null) {
         (0 until broadcast.length()).mapNotNull { broadcast.optString(it).validPlmn() }.distinct()
     } else listOfNotNull(identity?.plmn?.validPlmn())
     val fields = identity?.let { servingCellFields(it, servingData, records, registeredPlmn, cellPlmns) }
+    val androidCa by androidCells.carrierAggregation.observeAsState()
 
     LazyColumn(
         modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
         contentPadding = PaddingValues(top = 4.dp, bottom = bottomPadding),
     ) {
-        item("network") {
-            val lteCa = lteSecondaries.takeIf { it.isNotEmpty() }?.let { rows ->
-                CarrierAggregationViewState(rows.map { row ->
-                    CarrierAggregation.chipLabel(CarrierAggregation.Component(CarrierAggregation.LTE,
-                        row.pci, row.earfcn, CellularUtils.downlinkEarfcnToBand(row.earfcn), 0))
-                }, stringResource(R.string.ca_lte_b193, rows.size))
-            }
-            RootNetworkHeader(identity, nrMode, status,
-                operator?.name.orEmpty().ifBlank { registeredPlmn?.displayPlmn().orEmpty() }, lteCa)
-        }
+        item("network") { ServingNetworkCard(androidCells) }
         if (rat != null && fields != null &&
             (rat != "NR" || state.nrCarriers.count { !it.lastObservation() } < 2)) {
             item("metrics:$rat") {
@@ -262,6 +194,19 @@ internal fun RootSignalScreen(
         if (state.nrCarriers.size >= 2) item("nr-carriers") {
             NrCarrierSection(state.nrCarriers, fromDiag = true)
         }
+        if (lteSecondaries.isNotEmpty()) item("lte-carriers") {
+            val labels = lteSecondaries.map { row ->
+                CarrierAggregation.chipLabel(CarrierAggregation.Component(CarrierAggregation.LTE,
+                    row.pci, row.earfcn, CellularUtils.downlinkEarfcnToBand(row.earfcn), 0))
+            }
+            if (!androidCa?.chipLabels.orEmpty().containsAll(labels)) {
+                SignalSectionCard {
+                    NetworkStatusPills(labels)
+                    Text(stringResource(R.string.ca_lte_b193, labels.size),
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
         if (rat == null || fields == null) return@LazyColumn
         item("serving:$rat") { SignalParameterCard(stringResource(R.string.serving_cell_parameters), fields.primary) }
         item("neighbors:$rat") {
@@ -269,7 +214,7 @@ internal fun RootSignalScreen(
                 lteSecondaries.map { it.earfcn to it.pci }.toSet())
         }
         item("trend:$rat") {
-            SignalSectionCard(contentPadding = 0.dp) { CellularChartComponent(viewModel = chartFor(rat)) }
+            CellularChartComponent(viewModel = chartFor(rat))
         }
         item("cell-details:$rat") { SignalParameterCard(stringResource(R.string.diag_cell_details), fields.secondary) }
         item("nas:$rat") { NasConfiguration(rat, records) }
@@ -331,12 +276,6 @@ private fun NrRecordData.withDiag(diag: JSONObject?) = JSONObject(diag?.toString
     if (hasSsRsrp() && number("rsrp") == null) { fill("rsrp", ssRsrp.value); put("rsrp_src", "Android SS-RSRP") }
     if (hasSsRsrq() && number("rsrq") == null) { fill("rsrq", ssRsrq.value); put("rsrq_src", "Android SS-RSRQ") }
     if (hasSsSinr() && number("sinr") == null) { fill("sinr", ssSinr.value); put("sinr_src", "Android SS-SINR") }
-}
-
-@Composable
-private fun WaitingForDiagData() {
-    Text(stringResource(R.string.diag_waiting_data), style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant)
 }
 
 @Composable
@@ -649,18 +588,19 @@ private fun JSONObject?.modulationShare(index: Int): Double? {
 private fun DirectionTable(rows: List<DirectionRow>) {
     val header = DirectionRow(stringResource(R.string.diag_parameter), stringResource(R.string.diag_uplink),
         stringResource(R.string.diag_downlink))
-    Surface(shape = DashboardCardDefaults.smallShape, color = MaterialTheme.colorScheme.surfaceContainer) {
-        Column(Modifier.padding(horizontal = 10.dp)) {
-            (listOf(header) + rows).forEachIndexed { index, row ->
-                if (index > 0) SignalTableDivider()
-                Row(Modifier.fillMaxWidth().defaultMinSize(minHeight = 27.dp).padding(vertical = 3.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    val style = MaterialTheme.typography.bodySmall
-                    Text(row.parameter, Modifier.weight(1.5f), style = style, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    listOf(row.ul, row.dl).forEach { value ->
-                        Text(value.signalDisplayValue(), Modifier.weight(1f), textAlign = TextAlign.End,
-                            style = style.copy(fontFeatureSettings = "tnum"), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    }
+    val interfaceStyle = LocalInterfaceStyle.current
+    Column(Modifier.fillMaxWidth()) {
+        (listOf(header) + rows).forEachIndexed { index, row ->
+            if (index > 0) SignalTableDivider()
+            Row(Modifier.fillMaxWidth().defaultMinSize(minHeight = 27.dp)
+                .padding(vertical = interfaceStyle.parameterRowPadding / 2f),
+                horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                val style = MaterialTheme.typography.bodySmall.copy(letterSpacing = 0.sp)
+                Text(row.parameter, Modifier.weight(1.5f), style = style, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                listOf(row.ul, row.dl).forEach { value ->
+                    Text(value.signalDisplayValue(), Modifier.weight(1f), textAlign = TextAlign.End,
+                        style = style.copy(fontFeatureSettings = "tnum"),
+                        fontFamily = if (interfaceStyle == InterfaceStyle.COMPACT) FontFamily.Monospace else null)
                 }
             }
         }
@@ -678,54 +618,14 @@ private fun SignalSelection(selected: String, options: List<String>, prefix: Str
             style = MaterialTheme.typography.labelMedium,
             color = if (canSelect) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
             maxLines = 1, overflow = TextOverflow.Ellipsis)
-        DropdownMenu(expanded = expanded && canSelect, onDismissRequest = { expanded = false }) {
+        AppMenu(expanded = expanded && canSelect, onDismissRequest = { expanded = false }) {
             options.forEach { option ->
-                DropdownMenuItem(text = { Text("$prefix$option") }, onClick = {
+                AppMenuItem(title = "$prefix$option", onClick = {
                     expanded = false
                     select(option)
                 })
             }
         }
-    }
-}
-
-@Composable
-private fun RootNetworkHeader(
-    identity: ServingIdentity?, nrMode: NrMode?, status: String, operator: String, lteCa: CarrierAggregationViewState?,
-) {
-    val context = LocalContext.current.applicationContext
-    val cellName by produceState("", identity, context) {
-        value = ""
-        if (identity != null && identity.cid > 0) {
-            value = withContext(Dispatchers.IO) {
-                runCatching {
-                    val database = EngineeringParamDbHelper.getInstance(context)
-                    database.matchServingIdentity(identity.toStation())
-                        ?.let { it.cellName.orEmpty().ifBlank { it.siteName.orEmpty() } }.orEmpty()
-                }.getOrDefault("")
-            }
-        }
-    }
-    val network = when (identity?.rat) {
-        "NR" -> when (nrMode) {
-            NrMode.STANDALONE -> "5G · NR SA"
-            NrMode.NON_STANDALONE -> "5G · NR NSA"
-            else -> "5G · NR"
-        }
-        "LTE" -> "4G · LTE"
-        else -> ""
-    }
-    SignalSectionCard {
-        ServingCellHeader(
-            carrier = operator,
-            cellName = cellName,
-            networkDescription = network,
-            voicePill = null,
-            dataPill = null,
-            brandingPill = status,
-            carrierAggregation = lteCa,
-        )
-        if (identity == null) WaitingForDiagData()
     }
 }
 
@@ -774,17 +674,13 @@ private fun servingCellFields(
         DiagField(stringResource(R.string.diag_band), band),
     ) + servingCellIdFields(protocol, identity.cid) + listOf(
         DiagField(if (identity.isNr) "SSB NR-ARFCN" else "EARFCN", identity.arfcn.takeIf { it >= 0 }?.toString() ?: "—"),
-        DiagField(stringResource(R.string.diag_registered_plmn), registeredPlmn?.displayPlmn() ?: "—"),
+        DiagField(stringResource(R.string.diag_registered_plmn), registeredPlmn.signalDisplayValue()),
         DiagField(stringResource(R.string.diag_cell_plmns), cellPlmns.joinToString(" · ") { it.displayPlmn() }.ifBlank { "—" }),
         DiagField("TAC", data.signalValue("tac")),
         DiagField(if (identity.isNr) "NCI" else "ECI", identity.cid.takeIf { it > 0 }?.toString() ?: "—"),
-    ) + listOf(
         DiagField(if (identity.isNr) "SSB (MHz)" else stringResource(R.string.diag_frequency_label),
             frequency),
-    ) + listOfNotNull(
-        if (!identity.isNr || bandwidth != null)
-            DiagField(stringResource(R.string.diag_bandwidth_label), bandwidth.signalValue("bw_mhz"))
-        else null,
+        DiagField(stringResource(R.string.diag_bandwidth_label), bandwidth.signalValue("bw_mhz")),
     )
     val lteMeasurement = if (identity.isNr) null else records["lte_meas"].orEmpty().filter {
         !it.isEstimated() && it.data.optString("src") == "B193" &&
@@ -1075,11 +971,12 @@ internal fun servingCellIdFields(protocol: CellularProtocol, cid: Long?): List<D
 }
 
 @Composable
-internal fun SignalParameterCard(title: String, fields: List<DiagField>, lastRow: (@Composable () -> Unit)? = null) {
+internal fun SignalParameterCard(title: String, fields: List<DiagField>) {
     if (fields.isEmpty()) return
-    SignalSectionCard(contentPadding = 12.dp) {
-        Text(title, style = MaterialTheme.typography.titleSmall, modifier = Modifier.semantics { heading() })
-        SignalParameterTable(fields, lastRow)
+    SignalSectionCard {
+        Text(title, style = MaterialTheme.typography.titleSmall.copy(letterSpacing = 0.sp),
+            modifier = Modifier.semantics { heading() })
+        SignalParameterTable(fields)
     }
 }
 
@@ -1092,39 +989,39 @@ private fun JSONObject.number(key: String) = optDouble(key).takeIf { it.isFinite
 
 @Composable
 private fun SignalParameterTable(fields: List<DiagField>, lastRow: (@Composable () -> Unit)? = null) {
-    Surface(shape = DashboardCardDefaults.smallShape, color = MaterialTheme.colorScheme.surfaceContainer) {
-        Column(Modifier.padding(horizontal = 10.dp)) {
-            fields.forEachIndexed { index, field ->
-                if (index > 0) SignalTableDivider()
-                SignalParameterRow(field.label) {
-                    val value = field.value.signalDisplayValue()
-                    Text(value, textAlign = TextAlign.End,
-                        style = MaterialTheme.typography.bodySmall.copy(fontFeatureSettings = "tnum"),
-                        fontWeight = FontWeight.Medium, maxLines = if ('\n' in value) 2 else 1,
-                        overflow = TextOverflow.Ellipsis,
-                        color = if (value == SIGNAL_UNAVAILABLE) MaterialTheme.colorScheme.onSurfaceVariant
-                        else MaterialTheme.colorScheme.onSurface)
-                }
+    val interfaceStyle = LocalInterfaceStyle.current
+    Column(Modifier.fillMaxWidth()) {
+        fields.forEachIndexed { index, field ->
+            if (index > 0) SignalTableDivider()
+            SignalParameterRow(field.label) {
+                val value = field.value.signalDisplayValue()
+                Text(value, textAlign = TextAlign.End,
+                    style = MaterialTheme.typography.bodySmall.copy(fontFeatureSettings = "tnum", letterSpacing = 0.sp),
+                    fontFamily = if (interfaceStyle == InterfaceStyle.COMPACT) FontFamily.Monospace else null,
+                    fontWeight = FontWeight.Medium,
+                    color = if (value == SIGNAL_UNAVAILABLE) MaterialTheme.colorScheme.onSurfaceVariant
+                    else MaterialTheme.colorScheme.onSurface)
             }
-            if (lastRow != null) {
-                SignalTableDivider()
-                lastRow()
-            }
+        }
+        if (lastRow != null) {
+            SignalTableDivider()
+            lastRow()
         }
     }
 }
 
 @Composable
 internal fun SignalParameterRow(label: String, value: @Composable () -> Unit) {
-    Row(Modifier.fillMaxWidth().defaultMinSize(minHeight = 27.dp),
+    val style = LocalInterfaceStyle.current
+    Row(Modifier.fillMaxWidth().defaultMinSize(minHeight = 27.dp).padding(vertical = style.parameterRowPadding),
         horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text(label, Modifier.weight(1f), style = MaterialTheme.typography.bodySmall,
+        Text(label, Modifier.weight(1f), style = MaterialTheme.typography.bodySmall.copy(letterSpacing = 0.sp),
             color = MaterialTheme.colorScheme.onSurfaceVariant)
         Box(Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) { value() }
     }
 }
 
-private data class NeighborReading(
+internal data class NeighborReading(
     val rat: String,
     val channel: Int,
     val pci: Int,
@@ -1137,7 +1034,7 @@ private data class NeighborReading(
     val beam: Int? = null,
 )
 
-private data class NeighborMetric(
+internal data class NeighborMetric(
     val text: String,
     val value: Double,
     val beamReference: String? = null,
@@ -1147,7 +1044,7 @@ private data class NeighborMetric(
 private fun Double.reading() = NeighborMetric(String.format(Locale.ROOT, "%.1f", this), this)
 
 private data class NeighborKey(val rat: String, val pci: Int, val channel: Int)
-private data class NeighborMatch(val name: String, val distanceMeters: Int)
+internal data class NeighborMatch(val name: String, val distanceMeters: Int)
 private val NeighborReading.matchKey: NeighborKey
     get() = NeighborKey(rat, pci, channel)
 
@@ -1278,33 +1175,43 @@ internal fun NeighborMeasurements(
             .sortedWith(compareByDescending<NeighborReading> { it.rsrp?.value ?: Double.NEGATIVE_INFINITY }
                 .thenBy { it.channel }.thenBy { it.pci })
     }
+    NeighborMeasurementsCard(rat, ordered) { matches[it.matchKey] }
+}
+
+@Composable
+internal fun NeighborMeasurementsCard(
+    rat: String,
+    ordered: List<NeighborReading>,
+    matchFor: (NeighborReading) -> NeighborMatch? = { null },
+) {
+    val style = LocalInterfaceStyle.current
     val palettes = rememberSignalBarColors(if (rat == "NR") CellularProtocol.NR else CellularProtocol.LTE)
     val valueLine = MaterialTheme.typography.labelMedium.lineHeight
     val detailLine = MaterialTheme.typography.labelSmall.lineHeight
-    val rowHeight = with(LocalDensity.current) { valueLine.toDp() } + 15.dp
+    // Keep the fixed row height aligned with its vertical padding, metric gap, and 5 dp signal bar.
+    val rowHeight = with(LocalDensity.current) { valueLine.toDp() } + style.parameterRowPadding + 7.dp
     val detailHeight = with(LocalDensity.current) { detailLine.toDp() } + 2.dp
     val visibleRows = 4
-    SignalSectionCard(contentPadding = 12.dp) {
-        Text(stringResource(R.string.diag_neighbor_count, ordered.size), style = MaterialTheme.typography.titleSmall,
+    SignalSectionCard {
+        Text(stringResource(R.string.diag_neighbor_count, ordered.size),
+            style = MaterialTheme.typography.titleSmall.copy(letterSpacing = 0.sp),
             modifier = Modifier.semantics { heading() })
         if (ordered.isNotEmpty()) {
             val showBeam = rat == "NR"
             fun heightOf(neighbor: NeighborReading) =
-                rowHeight + if (matches[neighbor.matchKey] != null) detailHeight else 0.dp
+                rowHeight + if (matchFor(neighbor) != null) detailHeight else 0.dp
             val tableHeight = ordered.take(visibleRows).fold(0.dp) { height, neighbor -> height + heightOf(neighbor) }
-            Surface(shape = DashboardCardDefaults.smallShape, color = MaterialTheme.colorScheme.surfaceContainer) {
-                Column {
-                    NeighborColumns(rat, showBeam)
-                    SignalTableDivider()
-                    Column(Modifier.fillMaxWidth().height(tableHeight)
-                        .verticalScroll(rememberScrollState(), enabled = ordered.size > visibleRows)) {
-                        ordered.forEachIndexed { index, neighbor ->
-                            Box(Modifier.height(heightOf(neighbor))) {
-                                NeighborMeasurement(neighbor, matches[neighbor.matchKey], palettes, showBeam)
-                                if (index + 1 < ordered.size) {
-                                    HorizontalDivider(Modifier.align(Alignment.BottomCenter),
-                                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f))
-                                }
+            Column {
+                NeighborColumns(rat, showBeam)
+                SignalTableDivider()
+                Column(Modifier.fillMaxWidth().height(tableHeight)
+                    .verticalScroll(rememberScrollState(), enabled = ordered.size > visibleRows)) {
+                    ordered.forEachIndexed { index, neighbor ->
+                        Box(Modifier.height(heightOf(neighbor))) {
+                            NeighborMeasurement(neighbor, matchFor(neighbor), palettes, showBeam)
+                            if (index + 1 < ordered.size) {
+                                HorizontalDivider(Modifier.align(Alignment.BottomCenter),
+                                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f))
                             }
                         }
                     }
@@ -1341,13 +1248,15 @@ private fun mergeNeighborReadings(readings: List<NeighborReading>): NeighborRead
 
 @Composable
 private fun NeighborColumns(rat: String, showBeam: Boolean) {
+    val style = LocalInterfaceStyle.current
     val labels = listOf("PCI", if (rat == "NR") "ARFCN" else "EARFCN", "RSRP\ndBm", "RSRQ\ndB")
-    Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+    val textStyle = MaterialTheme.typography.labelSmall.copy(letterSpacing = 0.sp)
+    Row(Modifier.fillMaxWidth().padding(horizontal = style.cardPadding / 2f, vertical = style.parameterRowPadding / 2f),
         horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
-        if (showBeam) Text("Beam", Modifier.weight(neighborBeamWeight), style = MaterialTheme.typography.labelSmall,
+        if (showBeam) Text("Beam", Modifier.weight(neighborBeamWeight), style = textStyle,
             color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
         for ((index, label) in labels.withIndex()) {
-            Text(label, Modifier.weight(neighborColumnWeights[index]), style = MaterialTheme.typography.labelSmall,
+            Text(label, Modifier.weight(neighborColumnWeights[index]), style = textStyle,
                 color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2)
         }
     }
@@ -1360,28 +1269,36 @@ private const val neighborBeamWeight = 0.85f
 private fun NeighborMeasurement(
     neighbor: NeighborReading, match: NeighborMatch?, palettes: List<SignalBarColors>, showBeam: Boolean,
 ) {
+    val style = LocalInterfaceStyle.current
     val colors = MaterialTheme.colorScheme
-    val valueStyle = MaterialTheme.typography.labelMedium.copy(fontFeatureSettings = "tnum")
-    Column(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+    val valueStyle = MaterialTheme.typography.labelMedium.copy(
+        fontFeatureSettings = "tnum",
+        fontFamily = if (style == InterfaceStyle.COMPACT) FontFamily.Monospace else null,
+        letterSpacing = 0.sp,
+    )
+    val readingSize = remember(valueStyle.fontSize) {
+        TextAutoSize.StepBased(minFontSize = 8.sp, maxFontSize = valueStyle.fontSize, stepSize = 0.5.sp)
+    }
+    Column(Modifier.fillMaxWidth().padding(horizontal = style.cardPadding / 2f, vertical = style.parameterRowPadding / 2f),
         verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             if (showBeam) Text(neighbor.beam?.toString().signalDisplayValue(), Modifier.weight(neighborBeamWeight),
-                style = valueStyle, maxLines = 1)
+                style = valueStyle, maxLines = 1, autoSize = readingSize)
             Text(neighbor.pci.toString(), Modifier.weight(neighborColumnWeights[0]),
-                style = valueStyle, color = colors.primary, maxLines = 1)
+                style = valueStyle, color = colors.primary, maxLines = 1, autoSize = readingSize)
             Text(neighbor.channel.toString(), Modifier.weight(neighborColumnWeights[1]),
-                style = valueStyle, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                style = valueStyle, maxLines = 1, overflow = TextOverflow.Ellipsis, autoSize = readingSize)
             listOf(neighbor.rsrp, neighbor.rsrq).forEachIndexed { index, reading ->
                 Column(Modifier.weight(neighborColumnWeights[index + 2]), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text(reading?.text.signalDisplayValue(), style = valueStyle, maxLines = 1,
-                        overflow = TextOverflow.Ellipsis)
+                        overflow = TextOverflow.Ellipsis, autoSize = readingSize)
                     ColoredSignalBar(reading?.value, palettes[index], Modifier.fillMaxWidth())
                 }
             }
         }
         if (match != null) {
             Text("${match.name} · ${stringResource(R.string.diag_neighbor_distance, match.distanceMeters)}",
-                style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant,
+                style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 0.sp), color = colors.onSurfaceVariant,
                 maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }

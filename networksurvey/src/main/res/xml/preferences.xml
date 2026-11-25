@@ -27,8 +27,8 @@
             app:useSimpleSummaryProvider="true" />
 
         <SwitchPreferenceCompat
-            app:defaultValue="true"
-            app:key="monet_enabled"
+            app:defaultValue="false"
+            app:key="wallpaper_colors_enabled"
             app:summaryOff="关闭后使用应用自带主题色（可自定义配色）"
             app:summaryOn="开启后主题色跟随系统壁纸（Android 12 及以上）"
             app:title="Material You 动态取色" />

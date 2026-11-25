@@ -90,6 +90,7 @@ import timber.log.Timber;
 public class NetworkDetailsFragment extends AServiceDataFragment implements ICellularSurveyRecordListener
 {
     public static final String SUBSCRIPTION_ID_KEY = "subscription_id";
+    static final String UI_SUBSCRIPTION_ID_KEY = "ui_subscription_id";
 
     // The next two values have been added because certain devices don't follow the Interger#MAX_VALUE approach defined
     // in the Android API. The phone is supposed to report Interger#MAX_VALUE to indicate "Unknown/Unset" values, but
@@ -130,13 +131,9 @@ public class NetworkDetailsFragment extends AServiceDataFragment implements ICel
     // main-thread readers see the latest value.
     private volatile TelephonyStateUtils.NrMode currentNrMode = TelephonyStateUtils.NrMode.NONE;
     private volatile NetworkTechnologyInfo currentTechnology;
-    private volatile NrBandwidthReading lastNrBandwidth;
     private final AndroidNrCarriers androidNrCarriers = new AndroidNrCarriers();
     private boolean nrScanActive;
     private volatile boolean nrAirplaneMode;
-
-    private record NrBandwidthCell(String plmn, long nci, int pci, int channel) {}
-    private record NrBandwidthReading(NrBandwidthCell cell, int khz, long measuredAt) {}
 
     private FragmentNetworkDetailsBinding binding;
     private CellularViewModel viewModel;
@@ -160,7 +157,10 @@ public class NetworkDetailsFragment extends AServiceDataFragment implements ICel
     {
         binding = FragmentNetworkDetailsBinding.inflate(inflater);
 
-        viewModel = new ViewModelProvider(requireActivity()).get(getClass().getName() + subscriptionId, CellularViewModel.class);
+        // Single-SIM survey records use a shared default ID to keep exported records slotless.
+        // Scope display state to the actual SIM so its retained PLMN survives navigation, not a SIM swap.
+        final int uiSubscriptionId = requireArguments().getInt(UI_SUBSCRIPTION_ID_KEY, subscriptionId);
+        viewModel = new ViewModelProvider(requireActivity()).get(getClass().getName() + uiSubscriptionId, CellularViewModel.class);
         chartViewModel = new ViewModelProvider(requireActivity()).get(getClass().getName() + "cellular_chart" + subscriptionId, CellularChartViewModel.class);
         sharedViewModel = new ViewModelProvider(requireActivity()).get(SharedViewModel.class);
 
@@ -293,8 +293,8 @@ public class NetworkDetailsFragment extends AServiceDataFragment implements ICel
         currentNrMode = technologyInfo.nrMode();
         currentTechnology = technologyInfo;
         viewModel.setNrMode(currentNrMode);
-        viewModel.setRegisteredPlmn(formatPlmn(technologyInfo.registeredPlmn()));
-        viewModel.setCarrier(technologyInfo.subscriptionCarrier());
+        viewModel.updateRegisteredPlmn(technologyInfo.registeredPlmn(), technologyInfo.registrationLost());
+        if (!technologyInfo.subscriptionCarrier().isEmpty()) viewModel.setCarrier(technologyInfo.subscriptionCarrier());
 
         final TelephonyStateUtils.HeroResult hero = TelephonyStateUtils.deriveHero(
                 technologyInfo.nrMode(), technologyInfo.baseDataRat(), technologyInfo.registrationRows());
@@ -333,17 +333,20 @@ public class NetworkDetailsFragment extends AServiceDataFragment implements ICel
     }
 
     /**
-     * @return The hero technology line for the top card (e.g. "NR · Standalone").
+     * @return The technology line shared by the Android and DIAG operator card.
      */
     private String heroDisplay(TelephonyStateUtils.HeroResult hero)
     {
         return switch (hero.state())
         {
-            case NR_STANDALONE -> NetworkSurveyConstants.NR + TECH_SEPARATOR
-                    + getString(R.string.nr_mode_standalone);
-            case NR_NON_STANDALONE -> NetworkSurveyConstants.LTE + " + " + NetworkSurveyConstants.NR
-                    + TECH_SEPARATOR + NetworkSurveyConstants.NSA;
-            case DATA_RAT -> CalculationUtils.getNetworkType(hero.rat());
+            case NR_STANDALONE -> "5G" + TECH_SEPARATOR + "NR SA";
+            case NR_NON_STANDALONE -> "5G" + TECH_SEPARATOR + "NR NSA";
+            case DATA_RAT -> switch (hero.rat())
+            {
+                case TelephonyManager.NETWORK_TYPE_NR -> "5G" + TECH_SEPARATOR + "NR";
+                case TelephonyManager.NETWORK_TYPE_LTE -> "4G" + TECH_SEPARATOR + "LTE";
+                default -> CalculationUtils.getNetworkType(hero.rat());
+            };
             case NO_SERVICE -> getString(R.string.hero_no_service);
             case UNKNOWN -> getString(R.string.unknown);
         };
@@ -386,7 +389,6 @@ public class NetworkDetailsFragment extends AServiceDataFragment implements ICel
      */
     private void clearCellularUi()
     {
-        lastNrBandwidth = null;
         viewModel.setNrBandwidthDiagnostic(null);
         viewModel.setServingCellProtocol(CellularProtocol.NONE);
         viewModel.setLteServingCell(null);
@@ -463,7 +465,6 @@ public class NetworkDetailsFragment extends AServiceDataFragment implements ICel
             }
         }
         if (servingCellRecord == null || servingCellRecord.cellularProtocol != CellularProtocol.NR) {
-            lastNrBandwidth = null;
             viewModel.setNrBandwidthDiagnostic(null);
         }
         int secondaryNrBandwidth = 0;
@@ -534,7 +535,7 @@ public class NetworkDetailsFragment extends AServiceDataFragment implements ICel
                         final boolean cellMatches = technology != null && CellularBandwidthUtils.matchesPrimaryNrCell(
                                 technology.registeredNci(), nrData.hasNci() ? nrData.getNci().getValue() : -1,
                                 technology.primaryChannel(), nrData.hasNarfcn() ? nrData.getNarfcn().getValue() : -1);
-                        final int bandwidth = nrServingBandwidth(technology, nrData, singleCarrier && cellMatches);
+                        final int bandwidth = nrServingBandwidth(technology, singleCarrier && cellMatches);
                         final int[] reported = technology != null ? technology.cellBandwidthsKhz() : null;
                         viewModel.setNrBandwidthDiagnostic(new CellularViewModel.NrBandwidthDiagnostic(
                                 reported == null ? List.of() : Arrays.stream(reported).boxed().collect(Collectors.toList()),
@@ -726,42 +727,13 @@ public class NetworkDetailsFragment extends AServiceDataFragment implements ICel
         return reportedChannel < 0 || reportedChannel == channel ? technology.cellBandwidthsKhz() : null;
     }
 
-    private int nrServingBandwidth(NetworkTechnologyInfo technology, NrRecordData data, boolean matchedSingleCarrier)
+    private static int nrServingBandwidth(NetworkTechnologyInfo technology, boolean matchedSingleCarrier)
     {
-        final int channel = data.hasNarfcn() ? data.getNarfcn().getValue() : -1;
-        final long nci = data.hasNci() ? data.getNci().getValue() : -1;
-        final int rat = technology == null ? TelephonyManager.NETWORK_TYPE_UNKNOWN
-                : technology.registeredDataRat() != TelephonyManager.NETWORK_TYPE_UNKNOWN
+        if (technology == null || !matchedSingleCarrier) return 0;
+        final int rat = technology.registeredDataRat() != TelephonyManager.NETWORK_TYPE_UNKNOWN
                 ? technology.registeredDataRat() : technology.baseDataRat();
-        if (rat != TelephonyManager.NETWORK_TYPE_NR || !matchedSingleCarrier)
-        {
-            lastNrBandwidth = null;
-            return 0;
-        }
-
-        final int[] bandwidths = technology.cellBandwidthsKhz();
-        final int khz = CellularBandwidthUtils.singleCarrierBandwidthKhz(bandwidths);
-        final int pci = data.hasPci() ? data.getPci().getValue() : -1;
-        final String plmn = technology.registeredPlmn();
-        if (nci < 0 || pci < 0 || channel < 0 || plmn.isEmpty())
-        {
-            lastNrBandwidth = null;
-            return khz;
-        }
-        final NrBandwidthCell cell = new NrBandwidthCell(plmn, nci, pci, channel);
-        final long now = SystemClock.elapsedRealtime();
-        if (khz > 0)
-        {
-            lastNrBandwidth = new NrBandwidthReading(cell, khz, now);
-            return khz;
-        }
-        final NrBandwidthReading previous = lastNrBandwidth;
-        if ((bandwidths == null || bandwidths.length <= 1) && previous != null
-                && previous.cell().equals(cell) && now - previous.measuredAt() <= NR_IDLE_MAX_AGE_MS)
-            return previous.khz();
-
-        lastNrBandwidth = null;
-        return 0;
+        return rat == TelephonyManager.NETWORK_TYPE_NR
+                ? CellularBandwidthUtils.singleCarrierBandwidthKhz(technology.cellBandwidthsKhz()) : 0;
     }
 
     /**

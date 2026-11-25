@@ -28,6 +28,7 @@ ext.abiCodes = ["armeabi-v7a": 1, "arm64-v8a": 2, "x86": 3, "x86_64": 4]
 
 android {
     compileSdk = 37
+    compileSdkMinor = 2
     ndkVersion = "27.3.13750724"
 
     splits {
@@ -222,12 +223,9 @@ dependencies {
     implementation(libs.timber)
     implementation(libs.material)
 
-    // KernelSU 同款 miuix-blur 液态玻璃引擎（悬浮底栏）
-    implementation 'top.yukonga.miuix.kmp:miuix-blur-android:0.9.2'
-    implementation 'top.yukonga.miuix.kmp:miuix-ui-android:0.9.2'
-
-    // KernelSU 同款 materialkolor：Material You 动态取色 + PaletteStyle/ColorSpec 配色风格
-    implementation 'com.materialkolor:material-kolor:5.0.1'
+    implementation(libs.miuix.ui)
+    implementation(libs.miuix.preference)
+    implementation(libs.miuix.blur)
 
     implementation(libs.androidx.localbroadcastmanager)
     implementation(libs.androidx.cardview)

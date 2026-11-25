@@ -1,12 +1,13 @@
 package com.craxiom.networksurvey.ui.cellular
 
 import android.os.SystemClock
-import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -37,9 +38,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -47,6 +50,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -62,7 +66,6 @@ import com.craxiom.networksurvey.model.StationInfo
 import com.craxiom.networksurvey.db.EngineeringParamDbHelper
 import androidx.compose.runtime.produceState
 import com.craxiom.networksurvey.fragments.model.CellularViewModel
-import com.craxiom.networksurvey.fragments.model.CarrierAggregationViewState
 import com.craxiom.networksurvey.fragments.model.NrSecondaryCellViewState
 import com.craxiom.networksurvey.ui.component.statustag.StatusTag
 import com.craxiom.networksurvey.ui.dashboard.DashboardCardDefaults
@@ -73,11 +76,14 @@ import com.craxiom.networksurvey.ui.rootdiag.NeighborMeasurements
 import com.craxiom.networksurvey.ui.rootdiag.SIGNAL_UNAVAILABLE
 import com.craxiom.networksurvey.ui.rootdiag.ServingParameterFields
 import com.craxiom.networksurvey.ui.rootdiag.SignalParameterCard
-import com.craxiom.networksurvey.ui.rootdiag.SignalParameterRow
 import com.craxiom.networksurvey.ui.rootdiag.servingCellIdFields
 import com.craxiom.networksurvey.ui.rootdiag.signalDisplayValue
+import com.craxiom.networksurvey.ui.theme.InterfaceStyle
+import com.craxiom.networksurvey.ui.theme.LocalInterfaceStyle
 import com.craxiom.networksurvey.util.ColorUtils
 import com.craxiom.networksurvey.util.CellularUtils.UplinkReference
+import top.yukonga.miuix.kmp.basic.Text as MiuixText
+import top.yukonga.miuix.kmp.theme.MiuixTheme
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -96,12 +102,6 @@ fun CellularDetailsScreen(
     @Suppress("UNUSED_EXPRESSION")
     ThemePref.currentThemeVersion
 
-    val carrier by viewModel.getCarrier().observeAsState("")
-    val heroText by viewModel.getHeroText().observeAsState("")
-    val voicePill by viewModel.getVoicePillValue().observeAsState(null)
-    val dataPill by viewModel.getDataPillValue().observeAsState(null)
-    val brandingPill by viewModel.getBrandingPillValue().observeAsState(null)
-    val carrierAggregation by viewModel.getCarrierAggregation().observeAsState(null)
     val airplaneMode by viewModel.getAirplaneModeActive().observeAsState(false)
 
     val protocol by viewModel.getServingCellProtocol().observeAsState(CellularProtocol.NONE)
@@ -138,7 +138,6 @@ fun CellularDetailsScreen(
     }
     val nrCarriers = AndroidNrCarriers.displayAt(reportedNrCarriers,
         maxOf(nrCarrierClock, SystemClock.elapsedRealtime()))
-    val nrServing by viewModel.nrServingCell.observeAsState()
     val nrLastSeen by viewModel.getNrLastSeenText().observeAsState("")
 
     val umtsNeighbors by viewModel.getUmtsNeighbors().observeAsState(null)
@@ -146,32 +145,34 @@ fun CellularDetailsScreen(
 
     val isLive = protocol != CellularProtocol.NONE
 
-    val matchedCell by produceState<EngineeringParam?>(null, cellId, protocol, mcc, mnc, pci, channelNumber) {
-        value = null
-        val id = cellId
-        if (id != null && id > 0 && (protocol == CellularProtocol.NR || protocol == CellularProtocol.LTE)) {
+    val matchKey = cellId?.takeIf { it > 0 && (protocol == CellularProtocol.NR || protocol == CellularProtocol.LTE) }
+        ?.let { CellularViewModel.ServingCellKey(protocol, it, mcc, mnc, pci, channelNumber) }
+    val cellMatch by viewModel.servingCellMatch.observeAsState()
+    val matchedCell = cellMatch?.takeIf { it.key() == matchKey }?.parameter()
+    LaunchedEffect(viewModel, matchKey) {
+        if (viewModel.servingCellMatch.value?.key() != matchKey) viewModel.setServingCellMatch(null)
+        if (matchKey != null) {
             val station = StationInfo().apply {
                 isServing = true
-                this.cellId = id
-                networkType = if (protocol == CellularProtocol.NR) "NR" else "LTE"
-                this.pci = pci.substringBefore(' ').trim().toIntOrNull() ?: -1
-                earfcn = channelNumber.toIntOrNull() ?: -1
-                val divisor = if (protocol == CellularProtocol.NR) 4096 else 256
-                gnbId = (id / divisor).toInt()
-                sectorId = (id % divisor).toInt()
-                this.mcc = mcc.toIntOrNull() ?: 0
-                this.mnc = mnc.toIntOrNull() ?: 0
+                this.cellId = matchKey.cellId()
+                networkType = matchKey.protocol().name
+                this.pci = matchKey.pci().substringBefore(' ').trim().toIntOrNull() ?: -1
+                earfcn = matchKey.channel().toIntOrNull() ?: -1
+                val divisor = if (matchKey.protocol() == CellularProtocol.NR) 4096 else 256
+                gnbId = (matchKey.cellId() / divisor).toInt()
+                sectorId = (matchKey.cellId() % divisor).toInt()
+                this.mcc = matchKey.mcc().toIntOrNull() ?: 0
+                this.mnc = matchKey.mnc().toIntOrNull() ?: 0
             }
-            value = withContext(Dispatchers.IO) {
+            val parameter = withContext(Dispatchers.IO) {
                 runCatching {
                     val database = EngineeringParamDbHelper.getInstance(context.applicationContext)
                     database.matchServingIdentity(station)
                 }.getOrNull()
             }
+            viewModel.setServingCellMatch(CellularViewModel.ServingCellMatch(matchKey, parameter))
         }
     }
-
-    val matchedCellName = matchedCell?.let { it.cellName.orEmpty().ifBlank { it.siteName.orEmpty() } }
 
     Column(
         modifier = modifier
@@ -183,25 +184,7 @@ fun CellularDetailsScreen(
             WarningCard(text = "已开启飞行模式，无法获取蜂窝网络信息")
         }
 
-        SignalSectionCard {
-            ServingCellHeader(
-                carrier = carrier,
-                cellName = matchedCellName.orEmpty(),
-                networkDescription = heroText,
-                voicePill = voicePill,
-                dataPill = dataPill,
-                brandingPill = brandingPill,
-                carrierAggregation = carrierAggregation,
-            )
-
-            if (!isLive && !airplaneMode) {
-                Text(
-                    text = stringResource(R.string.waiting_for_cellular_data),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
+        ServingNetworkCard(viewModel)
 
         if (!isLive) return@Column
         if (protocol != CellularProtocol.NR || nrCarriers.count { !it.lastObservation() } < 2) {
@@ -218,22 +201,7 @@ fun CellularDetailsScreen(
             protocol, registeredPlmn, cellPlmns, areaCode, cellId, channelNumber, frequency,
             band, lteBand, pci, bandwidth, ta, cqi, matchedCell, uplink,
         )
-        val nrBandwidthRow: (@Composable () -> Unit)? = if (protocol == CellularProtocol.NR) {
-            val cell = NrBandwidthCell.from(nrServing)?.takeIf {
-                it.nci == cellId && it.channel.toString() == channelNumber
-            }
-            val reported = bandwidth.takeIf { it.isNotBlank() }
-            val saved = if (reported == null) rememberSavedNrBandwidth(cell) else null
-            if (reported != null || (cell != null && saved != null)) {
-                {
-                    SignalParameterRow(stringResource(R.string.diag_bandwidth_label)) {
-                        if (reported != null) Text("$reported MHz", style = MaterialTheme.typography.bodySmall)
-                        else if (cell != null && saved != null) SavedNrBandwidthValue(cell, saved)
-                    }
-                }
-            } else null
-        } else null
-        SignalParameterCard(stringResource(R.string.serving_cell_parameters), fields.primary, nrBandwidthRow)
+        SignalParameterCard(stringResource(R.string.serving_cell_parameters), fields.primary)
 
         // 邻区按制式展示
         if (protocol == CellularProtocol.NR || protocol == CellularProtocol.LTE) {
@@ -252,92 +220,115 @@ fun CellularDetailsScreen(
             })
         }
 
-        SignalSectionCard(contentPadding = 0.dp) { CellularChartComponent(viewModel = chartViewModel) }
+        CellularChartComponent(viewModel = chartViewModel)
         SignalParameterCard(stringResource(R.string.diag_cell_details), fields.secondary)
 
-        // 底部留白：为悬浮底栏腾出空间，避免内容被遮挡
         val navigationInset = WindowInsets.safeDrawing.asPaddingValues().calculateBottomPadding()
-        Spacer(Modifier.height(FloatingNavigationClearance + navigationInset))
+        val bottomClearance = if (ThemePref.isFloatingNavigationEnabled(context)) {
+            FloatingNavigationClearance + navigationInset
+        } else 24.dp
+        Spacer(Modifier.height(bottomClearance))
     }
 }
 
 @Composable
-internal fun SignalSectionCard(contentPadding: Dp = 16.dp, content: @Composable () -> Unit) {
-    Surface(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = DashboardCardDefaults.margin, vertical = 5.dp),
-        shape = DashboardCardDefaults.shape,
-        color = DashboardCardDefaults.cardContainerColor(),
-        border = BorderStroke(1.dp, DashboardCardDefaults.outlineVariant()),
+internal fun SignalSectionCard(contentPadding: Dp? = null, content: @Composable () -> Unit) {
+    val style = LocalInterfaceStyle.current
+    val colors = MaterialTheme.colorScheme
+    val background = when {
+        colors.surfaceContainerLow == Color.Black -> colors.surfaceBright
+        style == InterfaceStyle.MINIMAL -> colors.surface
+        else -> colors.surfaceContainerLow
+    }
+    Card(
+        modifier = Modifier.fillMaxWidth().padding(
+            horizontal = DashboardCardDefaults.margin,
+            vertical = style.sectionSpacing / 2f,
+        ),
+        cornerRadius = style.cardRadius,
+        insideMargin = PaddingValues(contentPadding ?: style.cardPadding),
+        colors = CardDefaults.defaultColors(color = background, contentColor = colors.onSurface),
     ) {
-        Column(Modifier.padding(contentPadding), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(if (style == InterfaceStyle.COMPACT) 4.dp else 8.dp)) {
             content()
         }
     }
 }
 
 @Composable
-internal fun ServingCellHeader(
-    carrier: String,
-    cellName: String,
-    networkDescription: String,
-    voicePill: String?,
-    dataPill: String?,
-    brandingPill: String?,
-    carrierAggregation: CarrierAggregationViewState?,
-) {
-    val colors = MaterialTheme.colorScheme
+internal fun ServingNetworkCard(viewModel: CellularViewModel) {
+    val carrier by viewModel.carrier.observeAsState("")
+    val registeredPlmn by viewModel.registeredPlmn.observeAsState()
+    val heroText by viewModel.heroText.observeAsState("")
+    val carrierAggregation by viewModel.carrierAggregation.observeAsState()
+    val matchedCell = viewModel.servingCellMatch.observeAsState().value?.parameter()
+    val protocol by viewModel.servingCellProtocol.observeAsState(CellularProtocol.NONE)
+    val airplaneMode by viewModel.airplaneModeActive.observeAsState(false)
+    val cellName = matchedCell?.let { it.cellName.orEmpty().ifBlank { it.siteName.orEmpty() } }.orEmpty()
+
+    val operator = carrier.ifBlank { registeredPlmn.orEmpty() }
+    val colors = MiuixTheme.colorScheme
     val carrierIcon = when {
-        carrier.contains("电信") || carrier.contains("Telecom", ignoreCase = true) -> R.drawable.ic_carrier_telecom
-        carrier.contains("移动") || carrier.contains("China Mobile", ignoreCase = true) -> R.drawable.ic_carrier_mobile
-        carrier.contains("联通") || carrier.contains("Unicom", ignoreCase = true) -> R.drawable.ic_carrier_unicom
-        carrier.contains("广电") || carrier.contains("CBN", ignoreCase = true) -> R.drawable.ic_carrier_broadcast
+        operator.contains("电信") || operator.contains("Telecom", ignoreCase = true) -> R.drawable.ic_carrier_telecom
+        operator.contains("移动") || operator.contains("China Mobile", ignoreCase = true) -> R.drawable.ic_carrier_mobile
+        operator.contains("联通") || operator.contains("Unicom", ignoreCase = true) -> R.drawable.ic_carrier_unicom
+        operator.contains("广电") || operator.contains("CBN", ignoreCase = true) -> R.drawable.ic_carrier_broadcast
         else -> null
     }
 
-    Row(
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Surface(
-            shape = RoundedCornerShape(13.dp),
-            color = colors.primaryContainer,
-            contentColor = colors.onPrimaryContainer,
+    SignalSectionCard {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Box(Modifier.size(38.dp), contentAlignment = Alignment.Center) {
+            Box(
+                Modifier.size(46.dp).clip(RoundedCornerShape(15.dp)).background(colors.tertiaryContainer),
+                contentAlignment = Alignment.Center,
+            ) {
                 if (carrierIcon != null) {
-                    Icon(painterResource(carrierIcon), null, Modifier.size(24.dp))
+                    Icon(painterResource(carrierIcon), null, Modifier.size(25.dp), tint = colors.primary)
                 } else {
-                    Icon(Icons.Rounded.SignalCellularAlt, null, Modifier.size(24.dp))
+                    Icon(Icons.Rounded.SignalCellularAlt, null, Modifier.size(25.dp), tint = colors.primary)
+                }
+            }
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                MiuixText(
+                    text = operator.ifBlank { stringResource(R.string.cellular_title) },
+                    modifier = Modifier.semantics { heading() },
+                    style = MiuixTheme.textStyles.title3,
+                    fontWeight = FontWeight.SemiBold,
+                    color = colors.onSurface,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (heroText.isNotBlank()) {
+                    MiuixText(heroText, style = MiuixTheme.textStyles.body2, color = colors.primary)
+                } else if (protocol == CellularProtocol.NONE && !airplaneMode) {
+                    MiuixText(
+                        stringResource(R.string.waiting_for_cellular_data),
+                        style = MiuixTheme.textStyles.body2,
+                        color = colors.onSurfaceVariantSummary,
+                    )
                 }
             }
         }
 
-        Column(Modifier.weight(if (cellName.isBlank()) 1f else 0.85f)) {
-            Text(
-                text = carrier.ifBlank { stringResource(R.string.cellular_title) },
-                style = MaterialTheme.typography.titleSmall,
-                color = colors.onSurface,
-            )
-            if (networkDescription.isNotBlank()) {
-                Text(networkDescription, style = MaterialTheme.typography.bodySmall, color = colors.primary)
+        if (cellName.isNotBlank()) {
+            MiuixText(cellName, style = MiuixTheme.textStyles.body2, color = colors.onSurfaceSecondary)
+        }
+        carrierAggregation?.let {
+            NetworkStatusPills(it.chipLabels.filter(String::isNotBlank).distinct())
+            if (it.summary.isNotBlank()) {
+                MiuixText(it.summary, style = MiuixTheme.textStyles.body2, color = colors.onSurfaceVariantSummary)
             }
         }
-
-        if (cellName.isNotBlank()) {
-            Text(cellName, Modifier.weight(1.4f), style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.SemiBold, color = colors.onSurface, maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                autoSize = TextAutoSize.StepBased(minFontSize = 10.sp, maxFontSize = 15.sp, stepSize = 1.sp))
-        }
-
     }
+}
 
-    val noBranding = stringResource(R.string.branding_none)
-    val pills = (listOfNotNull(
-        voicePill,
-        dataPill?.takeUnless { it == networkDescription.substringBefore(" · ") },
-        brandingPill?.takeUnless { it == noBranding },
-    ) + carrierAggregation?.chipLabels.orEmpty()).filter { it.isNotBlank() }.distinct()
+@Composable
+internal fun NetworkStatusPills(pills: List<String>) {
+    val colors = MaterialTheme.colorScheme
     if (pills.isNotEmpty()) {
         FlowRow(
             horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -358,10 +349,6 @@ internal fun ServingCellHeader(
             }
         }
     }
-
-    carrierAggregation?.let {
-        Text(it.summary, style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
-    }
 }
 
 private data class SignalMetric(
@@ -371,11 +358,9 @@ private data class SignalMetric(
     val maxNormalizedValue: Int,
     val unit: String,
 ) {
-    val valueText: String get() {
-        if (value == null) return SIGNAL_UNAVAILABLE
-        val reading = if (value is Double) String.format(Locale.ROOT, "%.1f", value) else value.toString()
-        return "$reading $unit"
-    }
+    val readingText: String get() =
+        value?.let { if (it is Double) String.format(Locale.ROOT, "%.1f", it) else it.toString() }
+            ?: SIGNAL_UNAVAILABLE
 }
 
 @Composable
@@ -412,52 +397,122 @@ internal fun ServingSignalMetrics(
         },
     )
     val barColors = rememberSignalBarColors(protocol)
+    val style = LocalInterfaceStyle.current
 
-    SignalSectionCard(contentPadding = 12.dp) {
+    SignalSectionCard {
         Text(
             text = stringResource(R.string.serving_signal_strength),
-            style = MaterialTheme.typography.titleSmall,
+            style = MaterialTheme.typography.titleSmall.copy(letterSpacing = 0.sp),
             modifier = Modifier.semantics { heading() },
         )
         BoxWithConstraints(Modifier.fillMaxWidth()) {
-            if (metrics.size > 1 && maxWidth >= 280.dp && LocalDensity.current.fontScale <= 1.15f) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            val columns = style == InterfaceStyle.CLASSIC && metrics.size > 1 &&
+                maxWidth >= 280.dp && LocalDensity.current.fontScale <= 1.15f
+            if (columns) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     metrics.forEachIndexed { index, metric ->
-                        Surface(
+                        SignalMetricReading(
+                            label = metric.label,
+                            reading = metric.readingText,
+                            unit = metric.unit,
+                            available = metric.value != null,
                             modifier = Modifier.weight(1f),
-                            shape = DashboardCardDefaults.smallShape,
-                            color = MaterialTheme.colorScheme.surfaceContainer,
                         ) {
-                            Column(Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                                Text(
-                                    metric.label,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                                Text(
-                                    metric.valueText,
-                                    style = MaterialTheme.typography.titleSmall,
-                                    fontWeight = FontWeight.SemiBold,
-                                    maxLines = 1,
-                                )
-                                val palette = barColors.getOrNull(index)
-                                if (palette != null) ColoredSignalBar(metric.value, palette, Modifier.fillMaxWidth())
-                                else MetricProgress(metric.value?.toInt(), metric.minValue, metric.maxNormalizedValue,
-                                    Modifier.fillMaxWidth())
-                            }
+                            val palette = barColors.getOrNull(index)
+                            if (palette != null) ColoredSignalBar(metric.value, palette, Modifier.fillMaxWidth())
+                            else MetricProgress(metric.value?.toInt(), metric.minValue, metric.maxNormalizedValue,
+                                Modifier.fillMaxWidth())
                         }
                     }
                 }
             } else {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(Modifier.fillMaxWidth()) {
                     metrics.forEachIndexed { index, metric ->
-                        SignalBarRow(metric.label, metric.value, metric.minValue, metric.maxNormalizedValue,
-                            barColors.getOrNull(index)) {
-                            metric.valueText
+                        SignalMetricReading(
+                            label = metric.label,
+                            reading = metric.readingText,
+                            unit = metric.unit,
+                            available = metric.value != null,
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontal = true,
+                        ) {
+                            val palette = barColors.getOrNull(index)
+                            if (palette != null) ColoredSignalBar(metric.value, palette, Modifier.fillMaxWidth())
+                            else MetricProgress(metric.value?.toInt(), metric.minValue, metric.maxNormalizedValue,
+                                Modifier.fillMaxWidth())
                         }
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+internal fun SignalMetricReading(
+    label: String,
+    reading: String,
+    unit: String,
+    available: Boolean,
+    modifier: Modifier = Modifier,
+    horizontal: Boolean = false,
+    bar: @Composable () -> Unit,
+) {
+    val style = LocalInterfaceStyle.current
+    val colors = MaterialTheme.colorScheme
+    val compact = style == InterfaceStyle.COMPACT
+    val readingColor = if (available) colors.onSurface else colors.onSurfaceVariant
+    val readingWithUnit = if (available) "$reading $unit" else reading
+    if (!horizontal) {
+        Column(modifier, verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Text(label, style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 0.sp),
+                color = colors.onSurfaceVariant)
+            Text(
+                readingWithUnit,
+                style = MaterialTheme.typography.bodyLarge.copy(
+                    fontSize = 16.sp,
+                    lineHeight = 20.sp,
+                    fontFeatureSettings = "tnum",
+                    letterSpacing = 0.sp,
+                ),
+                color = readingColor,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                softWrap = false,
+                autoSize = TextAutoSize.StepBased(minFontSize = 11.sp, maxFontSize = 16.sp, stepSize = 1.sp),
+            )
+            bar()
+        }
+    } else {
+        Column(
+            modifier.padding(vertical = style.parameterRowPadding),
+            verticalArrangement = Arrangement.spacedBy(if (compact) 3.dp else 6.dp),
+        ) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically) {
+                Text(label, Modifier.weight(1f),
+                    style = (if (compact) MaterialTheme.typography.bodyMedium else MaterialTheme.typography.bodyLarge)
+                        .copy(letterSpacing = 0.sp),
+                    color = colors.onSurfaceVariant)
+                Text(
+                    readingWithUnit,
+                    Modifier.weight(1.3f),
+                    style = (if (compact) MaterialTheme.typography.bodyMedium else MaterialTheme.typography.bodyLarge)
+                        .copy(
+                            fontSize = if (compact) 12.sp else 14.sp,
+                            lineHeight = if (compact) 16.sp else 20.sp,
+                            fontFeatureSettings = "tnum",
+                            letterSpacing = 0.sp,
+                        ),
+                    fontFamily = if (compact) FontFamily.Monospace else null,
+                    fontWeight = FontWeight.SemiBold,
+                    color = readingColor,
+                    textAlign = TextAlign.End,
+                    maxLines = 1,
+                    softWrap = false,
+                )
+            }
+            bar()
         }
     }
 }
@@ -472,7 +527,7 @@ private fun SignalBarRow(
     valueText: (Number) -> String,
 ) {
     val colors = MaterialTheme.colorScheme
-    val textStyle = MaterialTheme.typography.bodyMedium
+    val textStyle = MaterialTheme.typography.bodyMedium.copy(letterSpacing = 0.sp)
     val bar: @Composable (Modifier) -> Unit = { modifier ->
         if (palette != null) ColoredSignalBar(value, palette, modifier)
         else MetricProgress(value?.toInt(), minValue, maxNormalizedValue, modifier)
@@ -600,8 +655,7 @@ private fun cellIdentityFields(
             val dlFrequencyLabel = if (protocol == CellularProtocol.NR) R.string.cell_downlink_reference_frequency
                 else R.string.cell_downlink_frequency
             add(field(stringResource(dlFrequencyLabel), frequency))
-            if (protocol == CellularProtocol.LTE)
-                add(field(stringResource(R.string.diag_bandwidth_label), bandwidth.takeIf(String::isNotBlank)?.let { "$it MHz" }))
+            add(field(stringResource(R.string.diag_bandwidth_label), bandwidth.takeIf(String::isNotBlank)?.let { "$it MHz" }))
         }
     }
     val detailRows = when (protocol) {
@@ -649,6 +703,7 @@ private fun NrSecondaryCard(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = DashboardCardDefaults.margin, vertical = 8.dp),
+        cornerRadius = LocalInterfaceStyle.current.cardRadius,
         colors = CardDefaults.defaultColors(color = DashboardCardDefaults.cardContainerColor()),
     ) {
         DashboardCardHeader(
@@ -707,22 +762,13 @@ private fun NrSecondaryCard(
     }
 }
 
-/** 邻区卡片：单制式一组，逐行列出邻区（KernelSU 风格分行卡片）。 */
 @Composable
-private fun NeighborSectionCard(title: String, neighbors: List<String>) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = DashboardCardDefaults.margin, vertical = 8.dp),
-        colors = CardDefaults.defaultColors(color = DashboardCardDefaults.cardContainerColor()),
-    ) {
-        DashboardCardHeader(icon = R.drawable.ic_cell_tower, title = title)
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(start = 16.dp, end = 16.dp, bottom = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(0.dp)
-        ) {
+internal fun NeighborSectionCard(title: String, neighbors: List<String>) {
+    val style = LocalInterfaceStyle.current
+    SignalSectionCard {
+        Text(title, style = MaterialTheme.typography.titleSmall.copy(letterSpacing = 0.sp),
+            modifier = Modifier.semantics { heading() })
+        Column(Modifier.fillMaxWidth()) {
             neighbors.forEachIndexed { index, line ->
                 if (index > 0) {
                     androidx.compose.material3.HorizontalDivider(
@@ -733,10 +779,10 @@ private fun NeighborSectionCard(title: String, neighbors: List<String>) {
                 }
                 Text(
                     text = line,
-                    style = MaterialTheme.typography.bodyMedium,
+                    style = MaterialTheme.typography.bodyMedium.copy(letterSpacing = 0.sp),
+                    fontFamily = if (style == InterfaceStyle.COMPACT) FontFamily.Monospace else null,
                     color = MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 11.dp),
-                    maxLines = 1, overflow = TextOverflow.Ellipsis
+                    modifier = Modifier.fillMaxWidth().padding(vertical = style.parameterRowPadding),
                 )
             }
         }
@@ -749,6 +795,7 @@ private fun WarningCard(text: String) {
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = DashboardCardDefaults.margin, vertical = 8.dp),
+        cornerRadius = LocalInterfaceStyle.current.cardRadius,
         colors = CardDefaults.defaultColors(color = MaterialTheme.colorScheme.errorContainer),
     ) {
         Text(
