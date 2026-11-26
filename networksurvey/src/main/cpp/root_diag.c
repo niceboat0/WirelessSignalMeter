@@ -675,8 +675,49 @@ static const char *signaling_root(int nr, int ch) {
     }
 }
 
-static void add_meas_config(struct jb *j, const struct sd_meas_config *m) {
-    if (!(m->removed_objects | m->removed_ids | m->removed_reports | m->objects_present | m->ids_present)) return;
+/* Measurement trigger thresholds as reported ranges (TS 36.133 / 38.133):
+   LTE RSRP 0..97 -> -140..-43 dBm, NR RSRP 0..126 -> -156..-31 dBm; RSRQ and
+   NR SINR in 0.5 dB steps (LTE RSRQ 0..34 from -19.5 dB, NR RSRQ 0..126 from
+   -43 dB, NR SINR 0..126 from -23 dB). 127 in NR means infinity. */
+static double meas_threshold_db(int nr, int quantity, int raw) {
+    switch (quantity) {
+    case SD_Q_RSRP:
+        if (nr) return raw >= 127 ? NA_F : -156.0 + raw;
+        return raw > 97 ? NA_F : -140.0 + raw;
+    case SD_Q_RSRQ:
+        if (nr) return raw >= 127 ? NA_F : -43.0 + 0.5 * raw;
+        return raw > 34 ? NA_F : -19.5 + 0.5 * raw;
+    case SD_Q_SINR:
+        return raw >= 127 ? NA_F : -23.0 + 0.5 * raw;
+    default:
+        return NA_F;
+    }
+}
+
+static const char *meas_quantity_name(int quantity) {
+    switch (quantity) {
+    case SD_Q_RSRP: return "RSRP";
+    case SD_Q_RSRQ: return "RSRQ";
+    case SD_Q_SINR: return "SINR";
+    default: return "";
+    }
+}
+
+/* The measId linking to a report config; the network normally writes the
+   measIdToAddModList after the report list, so this is resolved at emit time. */
+static int meas_link_for_report(const struct sd_meas_config *m, int report_id, int *object_id) {
+    for (int id = 1; id <= SD_MEAS_LIMIT; id++) {
+        if (!(m->ids_present & (UINT64_C(1) << (id - 1)))) continue;
+        if (m->links[id].report_id != report_id) continue;
+        *object_id = m->links[id].object_id;
+        return id;
+    }
+    return 0;
+}
+
+static void add_meas_config(struct jb *j, int nr, const struct sd_meas_config *m) {
+    if (!(m->removed_objects | m->removed_ids | m->removed_reports | m->objects_present | m->ids_present |
+          m->reports_present)) return;
     jb_add(j, ",\"meas_config\":{");
     int first = 1;
     const uint64_t removed[] = { m->removed_objects, m->removed_ids, m->removed_reports };
@@ -721,8 +762,107 @@ static void add_meas_config(struct jb *j, const struct sd_meas_config *m) {
             head = 0;
         }
         jb_add(j, "]");
+        first = 0;
+    }
+    if (m->reports_present) {
+        jb_add(j, "%s\"reports\":[", first ? "" : ",");
+        int head = 1;
+        for (int id = 1; id <= SD_MEAS_LIMIT; id++) {
+            if (!(m->reports_present & (UINT64_C(1) << (id - 1)))) continue;
+            const struct sd_meas_report *r = &m->reports[id];
+            jb_add(j, "%s{\"id\":%d", head ? "" : ",", id);
+            head = 0;
+            if (r->event[0]) jb_add(j, ",\"event\":\"%s\"", r->event);
+            if (r->quantity != SD_Q_NONE)
+                jb_add(j, ",\"quantity\":\"%s\"", meas_quantity_name(r->quantity));
+            if (r->has_threshold) {
+                jb_add(j, ",\"threshold_raw\":%d", r->threshold);
+                double db = meas_threshold_db(nr, r->quantity, r->threshold);
+                if (db != NA_F) {
+                    if (r->quantity == SD_Q_RSRP) jb_f(j, "threshold_dbm", db);
+                    else jb_f(j, "threshold_db", db);
+                }
+            }
+            if (r->has_hysteresis) jb_i(j, "hysteresis_db", r->hysteresis);
+            if (r->has_ttt) jb_i(j, "ttt_ms", r->ttt_ms);
+            if (r->has_offset) jb_i(j, "offset_db", r->offset_db);
+            jb_add(j, "}");
+        }
+        jb_add(j, "]");
     }
     jb_add(j, "}");
+}
+
+/* Fingerprint of one MeasConfig: an unchanged configuration re-sent by a later
+   reconfiguration (handover, periodic RRC) is not repeated as a new event. */
+static uint64_t meas_config_fingerprint(int nr, const struct sd_meas_config *m) {
+    uint64_t h = 1469598103934665603ULL ^ (uint64_t)(nr + 1);
+    for (int id = 1; id <= SD_MEAS_LIMIT; id++) {
+        if (!(m->reports_present & (UINT64_C(1) << (id - 1)))) continue;
+        const struct sd_meas_report *r = &m->reports[id];
+        uint64_t v = (uint64_t)id * 131 + (uint64_t)(r->quantity + 1);
+        for (const char *p = r->event; *p; p++) v = v * 31 + (unsigned char)*p;
+        v = v * 31 + (uint64_t)r->threshold + (r->has_threshold ? 199 : 0);
+        v = v * 31 + (uint64_t)r->hysteresis + (r->has_hysteresis ? 199 : 0);
+        v = v * 31 + (uint64_t)r->ttt_ms + (r->has_ttt ? 199 : 0);
+        v = v * 31 + (uint64_t)(r->offset_db + 40) + (r->has_offset ? 199 : 0);
+        h ^= v;
+        h *= 1099511628211ULL;
+    }
+    return h;
+}
+
+/* Emit one event per report config so the signaling event feed shows what the
+   network asked the UE to measure (A1-A6 / B1-B2 thresholds, hysteresis, TTT
+   and the A3/A6 offset). */
+static void emit_meas_config_events(int nr, const struct sd_meas_config *m) {
+    static uint64_t last_fingerprint;
+    static int have_fingerprint;
+    if (!m->reports_present) return;
+    uint64_t fp = meas_config_fingerprint(nr, m);
+    if (have_fingerprint && fp == last_fingerprint) return;
+    last_fingerprint = fp;
+    have_fingerprint = 1;
+    const struct serving *s = nr ? &g_nr : &g_lte;
+    for (int id = 1; id <= SD_MEAS_LIMIT; id++) {
+        if (!(m->reports_present & (UINT64_C(1) << (id - 1)))) continue;
+        const struct sd_meas_report *r = &m->reports[id];
+        int object_id = 0;
+        int meas_id = meas_link_for_report(m, id, &object_id);
+        const char *event = r->event;
+        const char *short_event = !strncmp(event, "event", 5) ? event + 5 : event;
+        struct jb j;
+        jb_init(&j, "event");
+        jb_add(&j, ",\"rat\":\"%s\",\"event\":\"meas_config\",\"msg\":\"MeasConfig\""
+                    ",\"display_msg\":\"MeasConfig %s\"", nr ? "NR" : "LTE",
+               short_event[0] ? short_event : "?");
+        if (meas_id) jb_i(&j, "meas_id", meas_id);
+        jb_i(&j, "report_id", id);
+        if (object_id) jb_i(&j, "object_id", object_id);
+        if (r->event[0]) jb_add(&j, ",\"meas_event\":\"%s\"", short_event);
+        if (r->quantity != SD_Q_NONE)
+            jb_add(&j, ",\"quantity\":\"%s\"", meas_quantity_name(r->quantity));
+        if (r->has_threshold) {
+            jb_i(&j, "threshold_raw", r->threshold);
+            double db = meas_threshold_db(nr, r->quantity, r->threshold);
+            if (db != NA_F) {
+                if (r->quantity == SD_Q_RSRP) jb_f(&j, "threshold_dbm", db);
+                else jb_f(&j, "threshold_db", db);
+            }
+        }
+        if (r->has_hysteresis) jb_i(&j, "hysteresis_db", r->hysteresis);
+        if (r->has_ttt) jb_i(&j, "ttt_ms", r->ttt_ms);
+        if (r->has_offset) jb_i(&j, "offset_db", r->offset_db);
+        if (s->pci >= 0) jb_i(&j, "pci", s->pci);
+        if (s->arfcn >= 0) jb_i(&j, "arfcn", s->arfcn);
+        if (object_id > 0 && object_id <= SD_MEAS_LIMIT &&
+            (m->objects_present & (UINT64_C(1) << (object_id - 1)))) {
+            const struct sd_meas_object *o = &m->objects[object_id];
+            if (o->rat == 2 && o->earfcn >= 0) jb_i(&j, "object_earfcn", o->earfcn);
+            else if (o->rat == 1 && o->ssb >= 0) jb_i(&j, "object_arfcn", o->ssb);
+        }
+        jb_emit(&j);
+    }
 }
 
 static void add_measurement_report(struct jb *j, int nr, int serving_pci, const uint8_t *b, int n,
@@ -795,7 +935,10 @@ static void emit_rrc_signaling(struct jb *j, int nr, int ch, int pci, const uint
         jb_add(j, "}");
     }
     /* A length-delimited unknown extension after a complete MeasConfig does not erase it. */
-    if (summary.meas_complete) add_meas_config(j, &summary.meas);
+    if (summary.meas_complete) {
+        add_meas_config(j, nr, &summary.meas);
+        emit_meas_config_events(nr, &summary.meas);
+    }
     if (summary.plmn_count && !summary.plmn_invalid) {
         jb_add(j, ",\"broadcast_plmns\":[");
         for (int i = 0; i < summary.plmn_count; i++) {
