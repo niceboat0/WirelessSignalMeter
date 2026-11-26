@@ -67,6 +67,7 @@ import top.yukonga.miuix.kmp.basic.TabRowWithContour
 @Composable
 internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, model: BandLockViewModel) {
     val state by model.state.collectAsStateWithLifecycle()
+    val qmi by model.qmi.collectAsStateWithLifecycle()
     val signal by rootDiag.signal.collectAsStateWithLifecycle()
     LaunchedEffect(state.profile) { rootDiag.updateBandLockProfile(state.profile) }
     val now by produceState(SystemClock.elapsedRealtime()) {
@@ -317,6 +318,57 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
                 }),
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            /* Instant lock (QMI NAS): an independent backend from the NV/EFS
+             * route above. Takes effect without a restart; persistence after
+             * SSR is unverified, so it is a separate section. */
+            HorizontalDivider()
+            Text(stringResource(R.string.lock_qmi_title), style = MaterialTheme.typography.titleSmall)
+            Text(stringResource(R.string.lock_qmi_hint), style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(stringResource(when (qmi.availability) {
+                    LockAvailability.Ready -> R.string.lock_qmi_available
+                    LockAvailability.Unavailable -> R.string.lock_qmi_unavailable
+                    else -> R.string.lock_qmi_unknown
+                }), Modifier.weight(1f), style = MaterialTheme.typography.bodySmall,
+                    color = if (qmi.availability == LockAvailability.Unavailable) MaterialTheme.colorScheme.error
+                    else MaterialTheme.colorScheme.onSurfaceVariant)
+                LockIconButton(R.string.lock_qmi_check, Icons.Rounded.Refresh, !qmi.busy) { model.qmiCheck() }
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton({ model.qmiApplyBands(radio, bands) },
+                    Modifier.weight(1f), enabled = !qmi.busy && bands.isNotBlank()) {
+                    Text(stringResource(R.string.lock_qmi_apply_bands))
+                }
+                OutlinedButton({ model.qmiRestoreBands() }, Modifier.weight(1f), enabled = !qmi.busy) {
+                    Text(stringResource(R.string.lock_qmi_restore_bands))
+                }
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton({ model.qmiLockCell(radio, channel, pci, scs) },
+                    Modifier.weight(1f), enabled = !qmi.busy && channel.isNotBlank() && pci.isNotBlank()) {
+                    Text(stringResource(R.string.lock_qmi_lock_cell))
+                }
+                OutlinedButton({ model.qmiClearCell(radio) }, Modifier.weight(1f), enabled = !qmi.busy) {
+                    Text(stringResource(R.string.lock_qmi_clear_cell))
+                }
+            }
+            qmi.result?.let {
+                Text(stringResource(it), style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error)
+            }
+            if (qmi.log.isNotBlank()) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text(stringResource(R.string.lock_qmi_log), Modifier.weight(1f),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    LockIconButton(R.string.lock_clear_log, Icons.Rounded.DeleteOutline, !qmi.busy, model::qmiClearLog)
+                }
+                SelectionContainer {
+                    Text(qmi.log.takeLast(1200), style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
             } else Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(stringResource(R.string.lock_network_mode), style = MaterialTheme.typography.titleSmall)
                 TabRowWithContour(
