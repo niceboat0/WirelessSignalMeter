@@ -5,8 +5,14 @@ on:
     tags:
       - 'v*'
 
-  # Allows you to run this workflow manually from the Actions tab
+  # Allows you to run this workflow manually from the Actions tab. A manual run
+  # builds the CDR release APK (signed with the production key) and uploads it
+  # as an artifact, but skips the tag-release attach job, since a manual run
+  # has no tag to attach to.
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   test:
@@ -45,28 +51,17 @@ jobs:
           path: networksurvey/build/reports
         if: failure()
 
-  buildRelease:
+  buildCdrRelease:
+    name: Build CDR release APK
     needs: test
     runs-on: ubuntu-latest
-    outputs:
-      messagingVersion: ${{ steps.messaging_version.outputs.version }}
 
     steps:
+      # A tag push checks out the tag itself. Never hardcode a branch here: the
+      # upstream workflow checked out 'develop', which does not exist in this
+      # fork, and the job died at this very step (run 45746024172).
       - name: Checkout the code
         uses: actions/checkout@v6
-        with:
-          ref: develop
-
-      - name: Extract NS Messaging API version
-        id: messaging_version
-        run: |
-          VERSION=$(grep -E '^networkSurveyMessaging[[:space:]]*=' gradle/libs.versions.toml | sed -E 's/.*"([^"]+)".*/\1/' || true)
-          if [ -z "$VERSION" ]; then
-            echo "ERROR: could not parse networkSurveyMessaging version from gradle/libs.versions.toml" >&2
-            exit 1
-          fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "NS Messaging API version: $VERSION"
 
       - name: Set up JDK 21
         uses: actions/setup-java@v5
@@ -75,10 +70,21 @@ jobs:
           distribution: 'temurin'
           cache: 'gradle'
 
-      - name: Save Keystore
+      # Release builds are ALWAYS signed with the production key. There is no
+      # debug-key fallback on purpose: v1.2.0 was published debug-signed and
+      # upgrading to a production-signed build already requires a one-time
+      # uninstall; shipping another debug-signed release would make the break
+      # happen twice. If the secrets are missing the build fails loudly here.
+      - name: Restore release keystore
         env:
           KEYSTORE_FILE: ${{ secrets.KEYSTORE_FILE }}
-        run: echo $KEYSTORE_FILE | base64 -d > my.keystore
+        run: |
+          if [ -z "$KEYSTORE_FILE" ]; then
+            echo "::error::KEYSTORE_FILE secret is not configured. Add the repository secrets KEYSTORE_FILE (base64-encoded keystore), KEYSTORE_PASSWORD, KEY_ALIAS and KEY_PASSWORD under Settings > Secrets and variables > Actions, then re-run this job."
+            exit 1
+          fi
+          echo "$KEYSTORE_FILE" | base64 -d > my.keystore
+          test -s my.keystore || { echo "::error::KEYSTORE_FILE decoded to an empty file; check the base64 encoding."; exit 1; }
 
       - name: Build CDR Release APK
         env:
@@ -87,129 +93,51 @@ jobs:
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
           NS_API_KEY: ${{ secrets.NS_API_KEY }}
           OCID_API_KEY: ${{ secrets.OCID_API_KEY }}
-        run: ./gradlew assembleCdrRelease
-          -Pandroid.injected.signing.store.file=$(pwd)/my.keystore
-          -Pandroid.injected.signing.store.password=$KEYSTORE_PASSWORD
-          -Pandroid.injected.signing.key.alias=$KEY_ALIAS
-          -Pandroid.injected.signing.key.password=$KEY_PASSWORD
-          -PnsApiKey=$NS_API_KEY
-          -PocidApiKey=$OCID_API_KEY
+        run: |
+          if [ -z "$KEYSTORE_PASSWORD" ] || [ -z "$KEY_ALIAS" ] || [ -z "$KEY_PASSWORD" ]; then
+            echo "::error::KEYSTORE_PASSWORD / KEY_ALIAS / KEY_PASSWORD secrets are not all configured. Add them under Settings > Secrets and variables > Actions, then re-run this job."
+            exit 1
+          fi
+          ./gradlew assembleCdrRelease \
+            -Pandroid.injected.signing.store.file="$PWD/my.keystore" \
+            -Pandroid.injected.signing.store.password="$KEYSTORE_PASSWORD" \
+            -Pandroid.injected.signing.key.alias="$KEY_ALIAS" \
+            -Pandroid.injected.signing.key.password="$KEY_PASSWORD" \
+            -PnsApiKey="$NS_API_KEY" \
+            -PocidApiKey="$OCID_API_KEY"
 
       - name: Upload CDR APK
         uses: actions/upload-artifact@v6
         with:
-          name: Network Survey CDR Release APK
+          name: CDR Release APK
           path: networksurvey/build/outputs/apk/cdr/release/*.apk
 
-      - name: Save google-services.json
-        env:
-          GOOGLE_SERVICES: ${{ secrets.GOOGLE_SERVICES }}
-        run: echo "$GOOGLE_SERVICES" > networksurvey/google-services.json
-
-      - name: Build Regular Release APK
-        env:
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-          NS_API_KEY: ${{ secrets.NS_API_KEY }}
-          OCID_API_KEY: ${{ secrets.OCID_API_KEY }}
-        run: ./gradlew assembleRegularRelease
-          -Pandroid.injected.signing.store.file=$(pwd)/my.keystore
-          -Pandroid.injected.signing.store.password=$KEYSTORE_PASSWORD
-          -Pandroid.injected.signing.key.alias=$KEY_ALIAS
-          -Pandroid.injected.signing.key.password=$KEY_PASSWORD
-          -PnsApiKey=$NS_API_KEY
-          -PocidApiKey=$OCID_API_KEY
-
-      - name: Upload Regular APK
-        uses: actions/upload-artifact@v6
-        with:
-          name: Network Survey Regular Release APK
-          path: networksurvey/build/outputs/apk/regular/release/*.apk
-
-      - name: Build Regular Release Bundle
-        env:
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-          NS_API_KEY: ${{ secrets.NS_API_KEY }}
-          OCID_API_KEY: ${{ secrets.OCID_API_KEY }}
-        run: ./gradlew bundleRegularRelease
-          -Pandroid.injected.signing.store.file=$(pwd)/my.keystore
-          -Pandroid.injected.signing.store.password=$KEYSTORE_PASSWORD
-          -Pandroid.injected.signing.key.alias=$KEY_ALIAS
-          -Pandroid.injected.signing.key.password=$KEY_PASSWORD
-          -PnsApiKey=$NS_API_KEY
-          -PocidApiKey=$OCID_API_KEY
-
-      - name: Upload Release Bundle
-        uses: actions/upload-artifact@v6
-        with:
-          name: Network Survey Release Bundle
-          path: networksurvey/build/outputs/bundle/regularRelease/*.aab
-
-  uploadRelease:
-    needs: buildRelease
+  attach:
+    name: Attach APK to the tag release
+    needs: buildCdrRelease
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    # Only a tag push has a release to attach to; manual runs stop after the build.
+    if: startsWith(github.ref, 'refs/tags/')
 
     steps:
-      - name: Download Regular APK
-        uses: actions/download-artifact@v6
-        with:
-          name: Network Survey Regular Release APK
-          path: networksurvey/build/outputs/apk/regular/release/
-
       - name: Download CDR APK
         uses: actions/download-artifact@v6
         with:
-          name: Network Survey CDR Release APK
-          path: networksurvey/build/outputs/apk/cdr/release/
+          name: CDR Release APK
+          path: apk/
 
-      - name: Download Release Bundle
-        uses: actions/download-artifact@v6
-        with:
-          name: Network Survey Release Bundle
-          path: networksurvey/build/outputs/bundle/regularRelease/
-
-      - name: Create a Release in GitHub
-        uses: ncipollo/release-action@v1
-        with:
-          artifacts: "networksurvey/build/outputs/apk/cdr/release/*.apk,networksurvey/build/outputs/apk/regular/release/*.apk"
-          token: ${{ secrets.GH_TOKEN }}
-          tag: ${{ steps.version.outputs.content }}
-          commit: ${{ github.sha }}
-          body: |
-            ## What's Changed
-
-            ---
-
-            ### NS Messaging API
-
-            This release runs on NS Messaging API version ${{ needs.buildRelease.outputs.messagingVersion }}.
-
-            ---
-
-            ### APK Downloads
-
-            Each variant is built as per-architecture APKs for smaller download sizes. **Most users should download the `arm64-v8a` APK** (almost all modern Android phones). If unsure, use the `universal` APK which works on all devices but is larger.
-
-            | Suffix | Architecture | Devices |
-            |--------|-------------|---------|
-            | `arm64-v8a` | 64-bit ARM | Most modern phones/tablets |
-            | `armeabi-v7a` | 32-bit ARM | Older phones |
-            | `x86_64` | 64-bit x86 | Some tablets, Chromebooks, emulators |
-            | `x86` | 32-bit x86 | Older emulators |
-            | `universal` | All | Works everywhere (larger file size) |
-
-            The **regular-release** APK is the same as what can be found on the Google Play Store which contains the tracking library Google Analytics. The **cdr-release** APK is the same as the regular-release APK, but with full CDR support (See README.md for more details) and it also does NOT contain ANY tracking libraries such as Google Analytics.
-          generateReleaseNotes: true
-          draft: true
-
-      - name: Release app to internal track
-        uses: r0adkll/upload-google-play@v1
-        with:
-          serviceAccountJsonPlainText: ${{ secrets.PLAYSTORE_ACCOUNT_KEY }}
-          packageName: com.craxiom.networksurvey
-          releaseFiles: networksurvey/build/outputs/bundle/regularRelease/*.aab
-          track: internal
-          status: completed
+      - name: Attach to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          echo "Attaching APKs to release ${TAG}"
+          # The release is usually created manually ahead of the build; create a
+          # minimal one if it is missing so the upload still lands somewhere
+          # visible instead of failing silently.
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" ||
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --title "$TAG" --notes "CDR release APK built by CI."
+          gh release upload "$TAG" apk/*.apk --repo "$GITHUB_REPOSITORY" --clobber
