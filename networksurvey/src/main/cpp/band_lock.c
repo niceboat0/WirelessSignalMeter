@@ -268,6 +268,51 @@ static int exchange(const uint8_t *payload, int size, int kind, uint32_t tag,
     return fail("No recognized modem acknowledgement. The operation may be partial; refresh before retrying.");
 }
 
+/* EFS2 subsystem probe. STATFS("/") is read-only and its reply echoes the
+ * exact 4-byte opcode, so it tells us whether a subsystem answers without
+ * touching any lock state. Most modems answer on 0x13; some only on 0x3E
+ * (catxeon/qcom-efs-browser probes the same pair on its daemon). 0x13 is
+ * tried first so a normal device keeps the behaviour it already had. */
+static int efs_probe_subsys(uint8_t subsys) {
+    uint8_t frame[160], response[8192];
+    uint8_t saved = lb_efs_subsys;
+    lb_efs_subsys = subsys;
+    int size = lb_efs_statfs(frame, "/");
+    uint32_t tx;
+    int answered = 0;
+    if (!send_frame(frame, size, &tx)) {
+        long long deadline = monotonic_ms() + 1200;
+        while (router >= 0 && monotonic_ms() < deadline) {
+            int length = receive(response, sizeof(response), 250);
+            if (length <= 0) continue;
+            if (lb_find_reply(response, length, lb_read32(frame)) >= 0) {
+                answered = 1;
+                break;
+            }
+        }
+    }
+    if (!answered) lb_efs_subsys = saved;
+    return answered;
+}
+
+/* Runs once per process, before the first lock item is touched. A device that
+ * answers on neither subsystem keeps the default 0x13 so the failure surfaces
+ * on the real command with its usual message. */
+static void ensure_efs_subsys(void) {
+    static int resolved;
+    if (resolved) return;
+    resolved = 1;
+    if (efs_probe_subsys(LB_EFS_SUBSYS_STD)) {
+        printf("EFS subsys=0x%02x (probe)\n", lb_efs_subsys);
+        return;
+    }
+    if (efs_probe_subsys(LB_EFS_SUBSYS_ALT)) {
+        printf("EFS subsys=0x%02x (probe: 0x%02x silent)\n", lb_efs_subsys, LB_EFS_SUBSYS_STD);
+        return;
+    }
+    printf("EFS subsys=0x%02x (probe unanswered; default)\n", lb_efs_subsys);
+}
+
 /* Read up to `bytes` of an item into mask, clamped to the caller's buffer
  * capacity (the probe reads 164-byte cell-lock lists; a caller passing a
  * smaller buffer must fail closed, never overrun the stack). */
@@ -275,7 +320,7 @@ static int read_mask_to(const char *path, int bytes, uint8_t *mask,
         int mask_cap, int timeout_ms) {
     uint8_t payload[160], response[8192];
     if (bytes < 1 || bytes > mask_cap) return 1;
-    lb_u32(payload, 0x0027134b); lb_u32(payload + 4, (uint32_t)bytes);
+    lb_u32(payload, lb_efs_cmd(0x27)); lb_u32(payload + 4, (uint32_t)bytes);
     lb_u32(payload + 8, (uint32_t)strlen(path) + 1);
     payload[12] = 0xff; payload[13] = 0x03;
     int size = lb_copy_path(payload, 14, path);
@@ -308,7 +353,7 @@ static int efs_read(const char *path, uint8_t *out, int cap, int *size) {
     while (router >= 0 && monotonic_ms() < deadline) {
         int length = receive(response, sizeof(response), 300);
         if (length <= 0) continue;
-        int at = lb_find_reply(response, length, 0x0002134b);
+        int at = lb_find_reply(response, length, lb_efs_cmd(0x02));
         if (at < 0 || length != at + 8) continue;
         fd = lb_read32(response + at);
         if (lb_read32(response + at + 4)) return 2;
@@ -327,7 +372,7 @@ static int efs_read(const char *path, uint8_t *out, int cap, int *size) {
         while (router >= 0 && monotonic_ms() < deadline) {
             int length = receive(response, sizeof(response), 300);
             if (length <= 0) continue;
-            int at = lb_find_reply(response, length, 0x0004134b);
+            int at = lb_find_reply(response, length, lb_efs_cmd(0x04));
             if (at < 0 || length < at + 16 || lb_read32(response + at) != fd ||
                 lb_read32(response + at + 4) != (uint32_t)total) continue;
             uint32_t err = lb_read32(response + at + 12);
@@ -357,7 +402,7 @@ static int efs_stat_size(const char *path, int *size, uint32_t *mode) {
     while (router >= 0 && monotonic_ms() < deadline) {
         int length = receive(response, sizeof(response), 300);
         if (length <= 0) continue;
-        int at = lb_find_reply(response, length, 0x000f134b);
+        int at = lb_find_reply(response, length, lb_efs_cmd(0x0f));
         if (at < 0 || length != at + 28) continue;
         if (lb_read32(response + at)) return 2;
         *mode = lb_read32(response + at + 4);
@@ -745,6 +790,9 @@ static int at_command(const char *node, const char *cmd) {
 
 static int execute(int argc, char **argv) {
     const char *cmd = argv[0];
+    /* Every command that touches a lock item speaks EFS2; pick the subsystem
+     * once per process before anything is written. */
+    ensure_efs_subsys();
     if (!strcmp(cmd, "probe") && argc <= 3) {
         uint8_t mask[64];
         if (argc >= 2) printf("DEVICE model %s\n", argv[1]);
