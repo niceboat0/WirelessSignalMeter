@@ -36,6 +36,7 @@ import androidx.lifecycle.repeatOnLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.livedata.observeAsState
 import androidx.compose.ui.Modifier
@@ -204,6 +205,23 @@ internal fun RootSignalScreen(
     } else listOfNotNull(identity?.plmn?.validPlmn())
     val fields = identity?.let { servingCellFields(it, servingData, records, registeredPlmn, cellPlmns) }
     val androidCa by androidCells.carrierAggregation.observeAsState()
+    var servingKeys by remember { mutableStateOf(mapOf<String, Pair<Int, Int>>()) }
+    var servingChanges by remember { mutableStateOf(mapOf<String, Long>()) }
+    val cellChangedAt = if (identity == null || diagServing == null || diagServing.id in state.cachedMeasureIds) 0L else {
+        val key = identity.pci to identity.arfcn
+        val previous = servingKeys[identity.rat]
+        val at = if (previous == null || previous == key) servingChanges[identity.rat] ?: 0L else diagServing.receivedAt
+        SideEffect {
+            if (previous == null) {
+                servingKeys = servingKeys + (identity.rat to key)
+                servingChanges = servingChanges + (identity.rat to 0L)
+            } else if (previous != key) {
+                servingKeys = servingKeys + (identity.rat to key)
+                servingChanges = servingChanges + (identity.rat to diagServing.receivedAt)
+            }
+        }
+        at
+    }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
@@ -213,9 +231,14 @@ internal fun RootSignalScreen(
         if (rat != null && fields != null &&
             (rat != "NR" || state.nrCarriers.count { !it.lastObservation() } < 2)) {
             item("metrics:$rat") {
+                val sinrChains = antennaSinr(servingData)
+                val maxRx = rat == "LTE" && servingData?.optString("sinr_agg") == "max_rx" && sinrChains.isNotEmpty()
                 ServingSignalMetrics(
                     if (rat == "NR") CellularProtocol.NR else CellularProtocol.LTE,
-                    servingData?.number("rsrp"), servingData?.number("rsrq"), servingData?.number("sinr") ?: lteRrcSinr,
+                    servingData?.number("rsrp"), servingData?.number("rsrq"),
+                    if (maxRx) sinrChains.maxOf { it.db } else servingData?.number("sinr") ?: lteRrcSinr,
+                    sinrLabel = if (maxRx) stringResource(R.string.diag_sinr_max_rx) else null,
+                    sinrNote = servingData?.optString("sinr_src")?.takeIf { it.isNotBlank() },
                 )
             }
         }
@@ -248,7 +271,8 @@ internal fun RootSignalScreen(
         item("neighbors:$rat") {
             NeighborMeasurements(rat, servingData, state.records, null, isSignalTab, state.nrCarriers,
                 (lteSecondaries.map { it.earfcn to it.pci } +
-                    lteCaScells.map { it.earfcn to it.pci }).toSet())
+                    lteCaScells.map { it.earfcn to it.pci }).toSet(),
+                state.cachedMeasureIds, cellChangedAt)
         }
         item("trend:$rat") {
             CellularChartComponent(viewModel = chartFor(rat))
@@ -721,8 +745,11 @@ private fun servingCellFields(
         CellularUtils.downlinkEarfcnToFrequencyMhz(identity.arfcn).takeIf { it >= 0 }
             ?.let { String.format(Locale.ROOT, "%.1f MHz", it) }.signalDisplayValue()
     val band = frequencyBand?.let { if (identity.isNr) "n$it" else "B$it" } ?: "—"
-    val bandwidth = sequenceOf(lteCell, lteMib, data, nrCarrier)
-        .firstOrNull { (it?.number("bw_mhz") ?: 0.0) > 0.0 }
+    val bandwidthCandidates = listOf(
+        lteCell?.number("bw_mhz"), lteMib?.number("bw_mhz"), data?.number("bw_mhz"), nrCarrier?.number("bw_mhz"),
+    )
+    val bandwidthText = bandwidthMhzText(bandwidthCandidates)
+    val bandwidthMhz = bandwidthCandidates.firstOrNull { it != null && it in 1.4..400.0 }?.toInt()
     val protocol = if (identity.isNr) CellularProtocol.NR else CellularProtocol.LTE
     val summary = listOf(
         DiagField("PCI", identity.pci.takeIf { it >= 0 }?.toString() ?: "—"),
@@ -735,7 +762,7 @@ private fun servingCellFields(
         DiagField(if (identity.isNr) "NCI" else "ECI", identity.cid.takeIf { it > 0 }?.toString() ?: "—"),
         DiagField(if (identity.isNr) "SSB (MHz)" else stringResource(R.string.diag_frequency_label),
             frequency),
-        DiagField(stringResource(R.string.diag_bandwidth_label), bandwidth.signalValue("bw_mhz")),
+        DiagField(stringResource(R.string.diag_bandwidth_label), bandwidthText.signalDisplayValue()),
     )
     val lteMeasurement = if (identity.isNr) null else records["lte_meas"].orEmpty().filter {
         !it.isEstimated() && it.data.optString("src") == "B193" &&
@@ -756,7 +783,7 @@ private fun servingCellFields(
         else -> null
     }?.takeIf { identity.arfcn > 0 }
     val dlCenter = nrCarrier?.channel("dl_arfcn")?.takeIf { it in 1..3_279_165 }
-    val ssbGscn = if (identity.isNr) nrSsbGscn(identity.arfcn, frequencyBand, bandwidth?.channel("bw_mhz")) else null
+    val ssbGscn = if (identity.isNr) nrSsbGscn(identity.arfcn, frequencyBand, bandwidthMhz) else null
     val dlPointA = dedicatedFrequency?.channel("dl_pointa")?.takeIf { it in 1..3_279_165 }
         ?: nrDlPointA(identity.arfcn, frequencyBand, broadcast, mib?.channel("ssb_subcarrier_offset"), dlCenter)
     val nrDuplex = nrDuplexMode(frequencyBand)
@@ -906,7 +933,11 @@ private fun servingCellFields(
             DiagField("UL CP Type", cyclicPrefix(access?.channel("ul_cp_type"))),
             DiagField("CQI", lteCqi?.toString().signalDisplayValue())) +
         data.fixedSignalFields(listOf("rssi", "ta")) + lteCell.fixedSignalFields(listOf("ul_earfcn")) +
-        lteMeasurement.fixedSignalFields(listOf("rsrp_rx0", "rsrp_rx1", "rsrq_rx0", "rsrq_rx1", "sinr_rx0", "sinr_rx1")) +
+        lteMeasurement.fixedSignalFields(listOf("rsrp_rx0", "rsrp_rx1", "rsrq_rx0", "rsrq_rx1")) +
+        antennaSinr(if (antennaSinr(data).isNotEmpty()) data else lteMeasurement).map { chain ->
+            val (label, value) = antennaSinrText(chain)
+            DiagField(label, value)
+        } +
         (if (lteCell?.has("dl_bw_prb") == true) lteCell else lteMib).fixedSignalFields(listOf("dl_bw_prb")) +
         lteCell.fixedSignalFields(listOf("ul_bw_prb")) + lteMib.fixedSignalFields(listOf("tx_antennas")) +
         transmitPower + commonAccessFields + lteAccessFields + lteMacFields + listOfNotNull(ltePattern?.let {
@@ -1076,32 +1107,9 @@ internal fun SignalParameterRow(label: String, value: @Composable () -> Unit) {
     }
 }
 
-internal data class NeighborReading(
-    val rat: String,
-    val channel: Int,
-    val pci: Int,
-    val rsrp: NeighborMetric?,
-    val rsrq: NeighborMetric?,
-    val sinr: NeighborMetric?,
-    val source: String,
-    val reference: String? = null,
-    val sinrOnly: Boolean = false,
-    val beam: Int? = null,
-)
-
-internal data class NeighborMetric(
-    val text: String,
-    val value: Double,
-    val beamReference: String? = null,
-    val otherReference: String? = null,
-    val source: String? = null,
-)
 private fun Double.reading() = NeighborMetric(String.format(Locale.ROOT, "%.1f", this), this)
 
-private data class NeighborKey(val rat: String, val pci: Int, val channel: Int)
 internal data class NeighborMatch(val name: String, val distanceMeters: Int)
-private val NeighborReading.matchKey: NeighborKey
-    get() = NeighborKey(rat, pci, channel)
 
 private fun directNeighborReadings(rat: String, serving: JSONObject?, records: List<DiagRecord>): List<NeighborReading> = buildList {
     for (record in records.sortedWith(compareByDescending<DiagRecord> { it.receivedAt }.thenByDescending { it.id })) {
@@ -1112,8 +1120,9 @@ private fun directNeighborReadings(rat: String, serving: JSONObject?, records: L
             if (pci !in 0..1007) continue
             val reference = NrMeasurementReference.Ssb.label
             val sinr = data.number("sinr")?.reading()?.copy(beamReference = reference) ?: continue
-            add(NeighborReading(rat, channel, pci, null, null, sinr,
-                "DIAG ${record.source}", reference, sinrOnly = true))
+                    add(NeighborReading(rat, channel, pci, null, null, sinr,
+                "DIAG ${record.source}", reference, sinrOnly = true,
+                receivedAt = record.receivedAt, recordId = record.id))
         }
         if (rat == "NR" && record.type == "nr_meas" && !record.isEstimated() && data.optInt("truncated") != 1) {
             val channel = data.channel("arfcn")?.takeIf { it in 1..3_279_165 } ?: continue
@@ -1125,7 +1134,8 @@ private fun directNeighborReadings(rat: String, serving: JSONObject?, records: L
                 add(NeighborReading(rat, channel, pci,
                     entry.number("rsrp")?.reading(), entry.number("rsrq")?.reading(),
                     entry.number("sinr")?.reading(), "DIAG ${record.source}",
-                    beam = entry.channel("ssb")?.takeIf { it in 0..63 }))
+                    beam = entry.channel("ssb")?.takeIf { it in 0..63 },
+                    receivedAt = record.receivedAt, recordId = record.id))
             }
         }
         if (rat == "LTE" && record.type == "lte_meas") {
@@ -1134,7 +1144,8 @@ private fun directNeighborReadings(rat: String, serving: JSONObject?, records: L
                 val pci = data.optInt("pci", -1)
                 if (pci in 0..503) {
                     add(NeighborReading(rat, channel, pci, data.number("rsrp")?.reading(),
-                        data.number("rsrq")?.reading(), data.number("sinr")?.reading(), "DIAG B193"))
+                        data.number("rsrq")?.reading(), data.number("sinr")?.reading(), "DIAG B193",
+                        receivedAt = record.receivedAt, recordId = record.id))
                 }
                 continue
             }
@@ -1142,7 +1153,8 @@ private fun directNeighborReadings(rat: String, serving: JSONObject?, records: L
                 val pci = entry.optInt("pci", -1)
                 if (pci !in 0..503) continue
                 add(NeighborReading(rat, channel, pci, entry.number("rsrp")?.reading(),
-                    entry.number("rsrq")?.reading(), null, "DIAG ${record.source}"))
+                    entry.number("rsrq")?.reading(), null, "DIAG ${record.source}",
+                    receivedAt = record.receivedAt, recordId = record.id))
             }
         }
     }
@@ -1170,9 +1182,6 @@ internal fun neighborTableDiagnostics(
         .put("newest_age_ms", newestAge ?: -1L)
         .put("stale", newestAge != null && newestAge > DIAG_MEASUREMENT_TIMEOUT_MS)
 }
-
-private fun NeighborReading.isServingNeighbor(serving: JSONObject?) =
-    pci == serving?.channel("pci") && channel == serving.channel("arfcn")
 
 internal fun RootSignalState.mapDiagNeighbors(station: StationInfo): Set<MapNeighborCell>? {
     if (status != RootDiagStatus.Running) return null
@@ -1203,14 +1212,17 @@ internal fun NeighborMeasurements(
     isSignalTab: Boolean,
     nrCarriers: List<NrCarrier> = emptyList(),
     lteSecondaries: Set<Pair<Int, Int>> = emptySet(),
+    cachedIds: Set<Long> = emptySet(),
+    cellChangedAt: Long = 0L,
 ) {
     val androidNr = if (rat == "NR") androidCells?.nrNeighbors?.observeAsState()?.value.orEmpty() else emptyList()
     val androidLte = if (rat == "LTE") androidCells?.lteNeighbors?.observeAsState()?.value.orEmpty() else emptyList()
     val androidSource = stringResource(R.string.diag_neighbor_android_source)
-    val diag = remember(records, serving, rat) {
-        directNeighborReadings(rat, serving, records)
+    val now = SystemClock.elapsedRealtime()
+    val diag = remember(records, serving, rat, cachedIds) {
+        directNeighborReadings(rat, serving, omitCachedRecords(records, cachedIds) { it.id })
     }
-    val neighbors = remember(diag, androidNr, androidLte, rat, androidSource) {
+    val neighbors = remember(diag, androidNr, androidLte, rat, androidSource, now, cellChangedAt) {
         val android = if (rat == "NR") androidNr.filter { it.pci in 0..1007 && it.narfcn in 1..3_279_165 }.flatMap {
             val ssb = NeighborReading("NR", it.narfcn, it.pci,
                 it.ssRsrp.reading(), it.ssRsrq.reading(), it.ssSinr.reading(), androidSource, NrMeasurementReference.Ssb.label)
@@ -1223,28 +1235,30 @@ internal fun NeighborMeasurements(
             NeighborReading("LTE", it.earfcn, it.pci,
                 it.rsrp.reading(), it.rsrq.reading(), it.sinr.reading(), androidSource)
         }
-        (diag + android).groupBy { it.matchKey }.values.map(::mergeNeighborReadings)
+        neighborSnapshot(diag + android, now, cellChangedAt)
     }
-    val keys = remember(neighbors) { neighbors.map { it.matchKey }.toSet() }
+    val nrServing = nrCarriers.filterNot { it.lastObservation() }.mapTo(mutableSetOf()) { it.identity() }
+    val ordered = neighbors.rows.filterNot {
+        it.sinrOnly || it.isServingNeighbor(serving) ||
+            (rat == "LTE" && (it.channel to it.pci) in lteSecondaries) ||
+            (rat == "NR" && NrCarrier.Identity(it.pci, it.channel) in nrServing)
+    }.sortedWith(compareByDescending<NeighborReading> { it.rsrp?.value ?: Double.NEGATIVE_INFINITY }
+        .thenBy { it.channel }.thenBy { it.pci })
+    val keys = remember(ordered) { ordered.map { it.matchKey }.toSet() }
     val matches = rememberNeighborMatches(keys, isSignalTab)
-
-    val ordered = remember(neighbors, serving, nrCarriers, lteSecondaries) {
-        val nrServing = nrCarriers.filterNot { it.lastObservation() }.mapTo(mutableSetOf()) { it.identity() }
-        neighbors.filterNot {
-            it.sinrOnly || it.isServingNeighbor(serving) ||
-                (rat == "LTE" && (it.channel to it.pci) in lteSecondaries) ||
-                (rat == "NR" && NrCarrier.Identity(it.pci, it.channel) in nrServing)
-        }
-            .sortedWith(compareByDescending<NeighborReading> { it.rsrp?.value ?: Double.NEGATIVE_INFINITY }
-                .thenBy { it.channel }.thenBy { it.pci })
+    val status = if (ordered.isNotEmpty()) null else when (neighbors.freshness) {
+        NeighborFreshness.EXPIRED -> stringResource(R.string.diag_neighbor_expired)
+        NeighborFreshness.CELL_CHANGED -> stringResource(R.string.diag_neighbor_cell_changed)
+        NeighborFreshness.CURRENT, NeighborFreshness.EMPTY -> null
     }
-    NeighborMeasurementsCard(rat, ordered) { matches[it.matchKey] }
+    NeighborMeasurementsCard(rat, ordered, status) { matches[it.matchKey] }
 }
 
 @Composable
 internal fun NeighborMeasurementsCard(
     rat: String,
     ordered: List<NeighborReading>,
+    status: String? = null,
     matchFor: (NeighborReading) -> NeighborMatch? = { null },
 ) {
     val style = LocalInterfaceStyle.current
@@ -1256,7 +1270,7 @@ internal fun NeighborMeasurementsCard(
     val detailHeight = with(LocalDensity.current) { detailLine.toDp() } + 2.dp
     val visibleRows = 4
     SignalSectionCard {
-        Text(stringResource(R.string.diag_neighbor_count, ordered.size),
+        Text(status?.takeIf { ordered.isEmpty() } ?: stringResource(R.string.diag_neighbor_count, ordered.size),
             style = MaterialTheme.typography.titleSmall.copy(letterSpacing = 0.sp),
             modifier = Modifier.semantics { heading() })
         if (ordered.isNotEmpty()) {
@@ -1282,31 +1296,6 @@ internal fun NeighborMeasurementsCard(
             }
         }
     }
-}
-
-private fun mergeNeighborReadings(readings: List<NeighborReading>): NeighborReading {
-    val primary = readings.firstOrNull { it.source == "DIAG B179" && it.rsrp != null }
-        ?: readings.firstOrNull { !it.sinrOnly && it.rsrp != null }
-        ?: readings.firstOrNull { !it.sinrOnly } ?: readings.first()
-    val isCsi = primary.reference == NrMeasurementReference.CsiRs.label
-    val compatible = readings.filter { (it.reference == NrMeasurementReference.CsiRs.label) == isCsi }
-    val sources = linkedSetOf(primary.source)
-    fun measured(metric: (NeighborReading) -> NeighborMetric?): NeighborMetric? =
-        metric(primary)?.copy(source = primary.source) ?: compatible.firstOrNull { metric(it) != null }?.let {
-            sources += it.source
-            metric(it)?.copy(source = it.source)
-        }
-
-    val rsrp = measured { it.rsrp }
-    val rsrq = measured { it.rsrq }
-    val sinr = measured { it.sinr?.takeIf { metric -> metric.beamReference == null } }
-        ?: measured { it.sinr }
-        ?: readings.firstOrNull { it.reference != null && it.sinr != null }?.let {
-            sources += it.source
-            it.sinr?.copy(otherReference = it.reference, source = it.source)
-        }
-    sources.remove(sinr?.source)
-    return primary.copy(rsrp = rsrp, rsrq = rsrq, sinr = sinr, source = sources.joinToString(" · "))
 }
 
 @Composable

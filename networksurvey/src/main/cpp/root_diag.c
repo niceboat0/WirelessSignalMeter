@@ -292,6 +292,10 @@ struct serving {
     int64_t t_seen;
     char src[16];
     int64_t t_sinr; char sinr_src[16]; int sinr_prio;
+    /* Same B193 v66 sample as sinr when sinr_agg is max_rx. */
+    int sinr_rx_mask;
+    double sinr_rx[4];
+    char sinr_agg[12];
 };
 static struct serving g_lte = {
     .rat = "LTE", .pci = NA_I, .arfcn = -1, .rsrp = NA_F, .rsrq = NA_F, .rssi = NA_F, .sinr = NA_F,
@@ -489,13 +493,7 @@ static double nr_freq(long n) {
     if (n < 2016667) return 3000.0 + (n - 600000) * 0.015;
     return 24250.08 + (n - 2016667) * 0.06;
 }
-static int nr_band_guess(long n) {
-    static const struct { long lo, hi; int b; } t[] = {
-        {151600,160600,28},{173800,178800,5},{185000,192000,8},{361000,376000,3},{422000,434000,1},
-        {499200,537999,41},{620000,653333,78},{653334,680000,77},{693334,733333,79},{2054166,2104165,258}};
-    for (unsigned i = 0; i < sizeof(t) / sizeof(t[0]); i++) if (n >= t[i].lo && n <= t[i].hi) return t[i].b;
-    return 0;
-}
+#include "nr_band_guess.h"
 static double q7(uint32_t v) {
     if (v == 0) return NA_F;
     int integer = (int)((v >> 7) & 0xff);
@@ -515,7 +513,8 @@ static void serving_update(struct serving *s, int pci, long arfcn, const char *s
         s->rsrp = s->rsrq = s->rssi = s->sinr = NA_F;
         s->t_meas = s->t_sinr = s->t_cell = 0;
         s->sinr_prio = 0;
-        s->src[0] = s->sinr_src[0] = 0;
+        s->sinr_rx_mask = 0;
+        s->src[0] = s->sinr_src[0] = s->sinr_agg[0] = 0;
         s->band = 0;
         s->bw_mhz = s->mcc = s->mnc = -1;
         s->mnc_digits = 0;
@@ -1867,6 +1866,7 @@ static void parse_lte_b17f(const uint8_t *b, int n) {
     snprintf(g_lte.src, sizeof(g_lte.src), "B17F");
 }
 
+#include "lte_b193_sinr.h"
 /* --- 0xB193 LTE ML1 serving cell meas response (subpacket 0x19) --- */
 /* B193 subpacket 0x19 v66 (SM8750). Field replay and qcom-band-menu B193_LAYOUTS:
    subpkt body: earfcn u32 @0, cell count in byte 4 low 3 bits, then cells of 144 bytes from byte 8.
@@ -1904,16 +1904,10 @@ static void parse_lte_b193_v66(const uint8_t *sb, int sbl, long earfcn, unsigned
         double rsrq = -30.0 + (wq & 0x3ff) / 16.0, rsrq_f = -30.0 + ((wq >> 20) & 0xfff) / 16.0;
         double rssi = -110.0 + (ws & 0x7ff) / 16.0;
         if (pci > 503 || rsrp < -144 || rsrp > -40) continue;
-        double sinr = NA_F, rx_sinr[4] = { NA_F, NA_F, NA_F, NA_F };
+        struct lte_b193_sinr sn;
+        lte_b193_v66_sinr(cb, &sn);
+        double sinr = sn.combined;
         int rx_mask = cb[0] & 15;
-        for (int rx = 0; rx < 4; rx++) {
-            if (!(rx_mask & (1 << rx))) continue;
-            unsigned raw = (rd32(cb + 104 + 4 * (rx / 2)) >> (10 * (rx % 2))) & 1023;
-            if (raw == 511 || raw == 601 || raw > 650) continue;
-            double reading = raw * 0.1 - 20.0;
-            rx_sinr[rx] = reading;
-            if (reading > sinr) sinr = reading;
-        }
         if (!is_serving) {
             neighbors++;
             if (sinr != NA_F) neighbor_sinr++;
@@ -1930,11 +1924,11 @@ static void parse_lte_b193_v66(const uint8_t *sb, int sbl, long earfcn, unsigned
             jb_f(&j, "rsrp", a->rsrp / a->n); jb_f(&j, "rsrp_filt", rsrp_f); jb_f(&j, "rsrq", a->rsrq / a->n); jb_f(&j, "rsrq_filt", rsrq_f); jb_f(&j, "rssi", a->rssi / a->n);
             if (a->sinr_count) jb_f(&j, "sinr", a->sinr / a->sinr_count);
             if (is_serving) {
-                /* B193 v66 per-chain fields, from the same sample and active RX mask. */
+                /* RSRP/RSRQ chain layout is known for Rx0/Rx1 only.
+                   SINR is every chain in this packet's RX mask, same sample as sinr. */
                 static const int rp_bit[] = { 202, 236 }, rq_bit[] = { 384, 404 };
                 static const char *const rp_name[] = { "rsrp_rx0", "rsrp_rx1" };
                 static const char *const rq_name[] = { "rsrq_rx0", "rsrq_rx1" };
-                static const char *const snr_name[] = { "sinr_rx0", "sinr_rx1" };
                 for (int rx = 0; rx < 2; rx++) {
                     if (!(rx_mask & (1 << rx))) continue;
                     double rp = lebits(cb, rp_bit[rx], 12) / 16.0 - 180.0;
@@ -1942,7 +1936,13 @@ static void parse_lte_b193_v66(const uint8_t *sb, int sbl, long earfcn, unsigned
                     double rq = raw_rq / 16.0 - 30.0;
                     if (rp >= -160 && rp <= -20) jb_f(&j, rp_name[rx], rp);
                     if (raw_rq && rq <= 5) jb_f(&j, rq_name[rx], rq);
-                    jb_f(&j, snr_name[rx], rx_sinr[rx]);
+                }
+                if (sn.combined > NA_F + 1) jb_f(&j, "sinr_max", sn.combined);
+                for (int rx = 0; rx < 4; rx++) {
+                    if (!(sn.valid_mask & (1 << rx))) continue;
+                    char key[16];
+                    snprintf(key, sizeof(key), "sinr_rx%d", rx);
+                    jb_f(&j, key, sn.rx[rx]);
                 }
             }
             jb_add(&j, ",\"n\":%d,\"subver\":66", a->n);
@@ -1955,7 +1955,10 @@ static void parse_lte_b193_v66(const uint8_t *sb, int sbl, long earfcn, unsigned
             g_lte.t_meas = tm; snprintf(g_lte.src, sizeof(g_lte.src), "B193");
             if (sinr != NA_F) {
                 g_lte.sinr = sinr; g_lte.t_sinr = tm;
+                g_lte.sinr_rx_mask = sn.valid_mask;
+                for (int rx = 0; rx < 4; rx++) g_lte.sinr_rx[rx] = sn.rx[rx];
                 snprintf(g_lte.sinr_src, sizeof(g_lte.sinr_src), "B193");
+                snprintf(g_lte.sinr_agg, sizeof(g_lte.sinr_agg), "max_rx");
             }
         }
     }
@@ -2004,6 +2007,8 @@ static void parse_lte_b193(const uint8_t *b, int n) {
                 serving_update(&g_lte, pci, earfcn, "B193");
                 g_lte.rsrp = rsrp; g_lte.rsrq = rsrq; g_lte.rssi = rssi; g_lte.sinr = snr0;
                 g_lte.t_meas = g_lte.t_sinr = mono_ms();
+                g_lte.sinr_rx_mask = 0;
+                g_lte.sinr_agg[0] = 0;
                 snprintf(g_lte.src, sizeof(g_lte.src), "B193");
                 snprintf(g_lte.sinr_src, sizeof(g_lte.sinr_src), "B193");
             }
@@ -5655,6 +5660,15 @@ static void emit_serving_locked(const struct serving *s) {
     if (s->t_meas && now - (s->t_sinr ? s->t_sinr : s->t_meas) <= 15000) {
         jb_f(&j, "sinr", s->sinr);
         if (s->sinr_src[0] && s->sinr > NA_F + 1) jb_add(&j, ",\"sinr_src\":\"%s\"", s->sinr_src);
+        if (s->sinr > NA_F + 1 && s->sinr_agg[0]) jb_add(&j, ",\"sinr_agg\":\"%s\"", s->sinr_agg);
+        if (s->sinr > NA_F + 1) {
+            for (int rx = 0; rx < 4; rx++) {
+                if (!(s->sinr_rx_mask & (1 << rx))) continue;
+                char key[16];
+                snprintf(key, sizeof(key), "sinr_rx%d", rx);
+                jb_f(&j, key, s->sinr_rx[rx]);
+            }
+        }
     }
     if (s->tac >= 0) jb_add(&j, ",\"tac\":%ld", s->tac);
     if (s->cid) jb_add(&j, ",\"cid\":%llu", s->cid);

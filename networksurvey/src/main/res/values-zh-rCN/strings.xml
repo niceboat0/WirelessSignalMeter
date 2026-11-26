@@ -998,6 +998,9 @@
     <string name="diag_search_messages">按消息名称搜索</string>
     <string name="diag_message_count">显示 %1$d / 共 %2$d 条</string>
     <string name="diag_neighbor_count">邻区 %1$d</string>
+    <string name="diag_neighbor_expired">邻区测量已过期，不能当成没有邻区</string>
+    <string name="diag_neighbor_cell_changed">服务小区已变化，正在等待新的邻区</string>
+    <string name="diag_sinr_max_rx">最大接收路 SINR</string>
     <string name="diag_registered_plmn">注册 PLMN</string>
     <string name="diag_cell_plmns">小区 PLMN</string>
     <string name="diag_filter_nas">NAS</string>
