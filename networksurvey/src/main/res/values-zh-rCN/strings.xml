@@ -862,6 +862,7 @@
     <string name="ca_nr_cellinfo">NR CA（CellInfo 辅载波）· %1$d 个载波</string>
     <string name="ca_endc_cellinfo">EN-DC（CellInfo 辅载波）· %1$d 路</string>
     <string name="ca_lte_b193">LTE 辅载波（B193）· %1$d 个</string>
+    <string name="ca_lte_b184">LTE 辅载波（B184 每 slot 状态）· %1$d/%2$d 已激活</string>
     <string name="network_technology_explanation">这些字段描述手机当前正在使用的技术。\n\n大号文字是当前所在的网络：无线接入技术（RAT），以及 5G 是独立组网（SA，NR 单独使用）还是非独立组网（NSA，NR 叠加在 LTE 锚点上）。\n\n语音（Voice）标签是承载通话的技术；Wi-Fi 通话会被直接识别，而 VoLTE 和 VoNR 是推断出来的，因为 Android 不向应用开放这些信息。\n\n数据（Data）标签是承载数据的无线接入技术（RAT），通常与大号文字一致。\n\n品牌（Branding）标签是运营商在状态栏图标上使用的名称（例如在 4G 网络上显示 5G）。它只是营销标识，并非真实 RAT，运营商未使用时显示“无”。</string>
     <string name="card_title_nr_details">5G NR 辅小区</string>
     <string name="nr_secondary_cell_subtitle">手机在主小区之外同时使用的 5G 载波</string>
