@@ -16,8 +16,11 @@ internal object DiagRecordingPolicy {
         foreground: Boolean,
         serviceMaintained: Boolean,
         paused: Boolean,
+        collectorAlive: Boolean = false,
     ): Mode {
-        if (paused || (!foreground && !serviceMaintained)) return Mode.Idle
+        // Screen lock drops the activity to ON_STOP. A collector process that is
+        // still alive keeps listening; it is restarted only after that process is gone.
+        if (paused || (!foreground && !serviceMaintained && !collectorAlive)) return Mode.Idle
         return if (taskRunning) Mode.TaskRecording else Mode.LiveView
     }
 

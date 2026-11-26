@@ -10,7 +10,6 @@ import com.craxiom.networksurvey.R
 import com.craxiom.networksurvey.util.AppLogger
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
@@ -47,7 +46,12 @@ internal class BandLockViewModel(application: Application) : AndroidViewModel(ap
     private val probeCacheKey = BandLockVerification.cacheKey(
         BuildConfig.VERSION_CODE, Build.FINGERPRINT, Build.SOC_MODEL,
     )
-    @Volatile private var process: Process? = null
+    private var collectorProved = false
+    internal var commandRunner: BandLockCommandRunner = BandLockHelperSession(
+        helper = { File(app.applicationInfo.nativeLibraryDir, "libwireless_band_lock.so") },
+        directory = ::backupDirectory,
+        identityText = { BandLockVerification.encodeOrigin(identity) },
+    )
 
     init {
         restoreProbe()?.let { mutableState.value = it }
@@ -86,12 +90,19 @@ internal class BandLockViewModel(application: Application) : AndroidViewModel(ap
         Build.MANUFACTURER, Build.MODEL, Build.SOC_MODEL, Build.HARDWARE, channel, caps.count { it.second },
     )
 
-    fun refresh() = run(BandLockCommand.probe(Build.MODEL, Build.SOC_MODEL))
+    fun refresh(collectorRunning: Boolean = false) =
+        run(BandLockCommand.probe(Build.MODEL, Build.SOC_MODEL), collectorRunning = collectorRunning)
+
     fun clearLog() { if (!mutableState.value.busy) mutableState.value = mutableState.value.copy(log = "") }
+
+    internal fun restoreForTest(state: BandLockState) {
+        mutableState.value = state
+    }
 
     fun run(
         command: BandLockCommand,
         fromConsole: Boolean = false,
+        collectorRunning: Boolean = false,
         onModemRestartRequested: (() -> Unit)? = null,
     ) {
         val current = mutableState.value
@@ -106,10 +117,16 @@ internal class BandLockViewModel(application: Application) : AndroidViewModel(ap
             }
         }
         val probe = kind == LockWriteKind.Probe
+        collectorProved = collectorRunning
+        val proof = BandLockSessionPolicy.plan(
+            collectorRunning, commandRunner.helperConnected, current.channel,
+            if (probe || confirmCached) LockWriteKind.Probe else kind,
+        )
         mutableState.update {
             it.copy(
                 busy = true, result = null,
-                availability = if (probe || confirmCached) LockAvailability.Checking else it.availability,
+                availability = if ((probe || confirmCached) && proof.announceRootDiagCheck)
+                    LockAvailability.Checking else it.availability,
             )
         }
         viewModelScope.launch {
@@ -118,9 +135,7 @@ internal class BandLockViewModel(application: Application) : AndroidViewModel(ap
                     current.availability, kind,
                     confirm = {
                         val check = BandLockCommand.probe(Build.MODEL, Build.SOC_MODEL)
-                        val checked = withContext(Dispatchers.IO) {
-                            BandLockExecution(execute(check, recordDiagnostics = !fromConsole))
-                        }
+                        val checked = BandLockExecution(execute(check, recordDiagnostics = !fromConsole))
                         updateExecution(check, checked, fromConsole, keepBusy = true)
                         (mutableState.value.availability == LockAvailability.Ready).also { confirmed ->
                             if (!confirmed && !fromConsole) {
@@ -131,11 +146,9 @@ internal class BandLockViewModel(application: Application) : AndroidViewModel(ap
                     execute = {
                         val decision = writeDecision(command, mutableState.value.copy(busy = false))
                         if (decision == WriteDecision.Allowed) {
-                            val execution = withContext(Dispatchers.IO) {
-                                command.executeWithMode(onModemRestartRequested = {
-                                    withContext(Dispatchers.Main) { onModemRestartRequested?.invoke() }
-                                }) { step -> execute(step, recordDiagnostics = !fromConsole) }
-                            }
+                            val execution = command.executeWithMode(onModemRestartRequested = {
+                                withContext(Dispatchers.Main) { onModemRestartRequested?.invoke() }
+                            }) { step -> execute(step, recordDiagnostics = !fromConsole) }
                             updateExecution(command, execution, fromConsole)
                         } else {
                             rejectWrite(kind, decision)
@@ -271,6 +284,7 @@ internal class BandLockViewModel(application: Application) : AndroidViewModel(ap
     }
 
     private fun invalidateSession() {
+        commandRunner.close()
         mutableState.update {
             it.copy(availability = LockAvailability.Unavailable, lteBackup = false, nrBackup = false)
         }
@@ -280,11 +294,15 @@ internal class BandLockViewModel(application: Application) : AndroidViewModel(ap
     private suspend fun runHelper(command: BandLockCommand, recordDiagnostics: Boolean): BandLockOutcome {
         val started = SystemClock.elapsedRealtime()
         val name = command.arguments.first()
+        val plan = BandLockSessionPolicy.plan(
+            collectorProved, commandRunner.helperConnected, mutableState.value.channel,
+            BandLockVerification.writeKind(command),
+        )
         fun diagnostic(message: String) {
             if (recordDiagnostics) AppLogger.i(AppLogger.BAND_LOCK_TAG, "run=$started cmd=$name $message")
         }
         fun helperLine(line: String) {
-            if (line.startsWith("NR_BAND ") || line.startsWith("SSR ")) {
+            if (line.startsWith("NR_BAND ") || line.startsWith("SSR ") || line.startsWith("LOCK_DIAG ")) {
                 diagnostic(line)
                 return
             }
@@ -294,73 +312,10 @@ internal class BandLockViewModel(application: Application) : AndroidViewModel(ap
                 line.startsWith("No recognized modem acknowledgement.")) diagnostic(line)
         }
         diagnostic("start model=${Build.MODEL} soc=${Build.SOC_MODEL} baseband=${Build.getRadioVersion().orEmpty()} " +
-            "args=${command.arguments.drop(1).joinToString(",")}")
-        val helper = File(app.applicationInfo.nativeLibraryDir, "libwireless_band_lock.so")
-        if (!helper.isFile) {
-            diagnostic("helper_missing")
-            throw IOException("The lock helper is unavailable for this ABI.")
-        }
-        val directory = backupDirectory()
-        if (!directory.isDirectory && !directory.mkdirs()) {
-            diagnostic("state_dir_unavailable")
-            throw IOException("Cannot open the private backup directory.")
-        }
-        fun quote(text: String) = "'" + text.replace("'", "'\\''") + "'"
-        val session = File(directory, "session-identity")
-        val sessionIdentity = BandLockVerification.encodeOrigin(identity)
-            ?: throw IOException("The device identity is invalid.")
-        session.writeText(sessionIdentity)
-        val arguments = listOf(helper.absolutePath, "--state-dir", directory.absolutePath) + command.arguments
+            "transport=${plan.transport} discover=${plan.discoverChannel} spawn=${plan.spawnRootShell} " +
+            "collector=$collectorProved args=${command.arguments.drop(1).joinToString(",")}")
         appendLog("${LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm:ss"))} > ${command.arguments.joinToString(" ")}")
-        val running = try {
-            ProcessBuilder("su", "-c", "exec " + arguments.joinToString(" ", transform = ::quote))
-                .redirectErrorStream(true).start()
-        } catch (error: IOException) {
-            diagnostic("helper_launch_failed")
-            session.delete()
-            throw error
-        }
-        process = running
-        try {
-            running.outputStream.close()
-            val output = StringBuilder()
-            val pending = StringBuilder()
-            val input = running.inputStream
-            val bytes = ByteArray(4096)
-            while (running.isAlive || input.available() > 0) {
-                if (SystemClock.elapsedRealtime() - started > 110_000) {
-                    diagnostic("helper_timeout")
-                    running.destroyForcibly()
-                    throw IOException("Command timed out. Changes may be partial; refresh the device status.")
-                }
-                val available = input.available()
-                if (available == 0) { delay(80); continue }
-                val count = input.read(bytes, 0, minOf(bytes.size, available))
-                if (count <= 0) break
-                val chunk = String(bytes, 0, count, Charsets.UTF_8)
-                output.append(chunk)
-                pending.append(chunk)
-                if (output.length > 48_000) throw IOException("Unexpected helper output size.")
-                var end = pending.indexOf("\n")
-                while (end >= 0) {
-                    helperLine(pending.substring(0, end).trimEnd('\r'))
-                    pending.delete(0, end + 1)
-                    end = pending.indexOf("\n")
-                }
-            }
-            if (pending.isNotEmpty()) helperLine(pending.toString())
-            val exit = running.waitFor()
-            diagnostic("exit=$exit elapsed_ms=${SystemClock.elapsedRealtime() - started}")
-            return BandLockOutcome(exit, output.toString())
-        } catch (error: IOException) {
-            diagnostic("helper_io_error")
-            throw error
-        } finally {
-            session.delete()
-            running.destroy()
-            process = null
-            running.inputStream.close()
-        }
+        return commandRunner.run(command, plan, ::helperLine, ::diagnostic)
     }
 
     private fun parseCaps(output: String): List<Pair<String, Boolean>> =
@@ -375,7 +330,7 @@ internal class BandLockViewModel(application: Application) : AndroidViewModel(ap
     }
 
     override fun onCleared() {
-        process?.destroy()
+        commandRunner.close()
         super.onCleared()
     }
 

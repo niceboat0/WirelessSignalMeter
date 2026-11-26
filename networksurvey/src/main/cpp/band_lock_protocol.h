@@ -31,6 +31,20 @@ static uint32_t lb_read32(const uint8_t *p) {
         ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
 }
 
+/* EFS2 lives on DIAG subsystem 0x13 on most Qualcomm modems, but some devices
+ * only answer on the alternate subsystem 0x3E (cross-checked against
+ * catxeon/qcom-efs-browser's efs2.c, which probes both). band_lock probes once
+ * per process and every EFS2 frame below follows lb_efs_subsys, so a device
+ * that only speaks 0x3E works without any other change. The wire opcode is
+ * 0x004B (DIAG_SUBSYS_CMD_F) | subsys << 8 | subcommand << 16. */
+static uint8_t lb_efs_subsys = 0x13;
+#define LB_EFS_SUBSYS_STD 0x13
+#define LB_EFS_SUBSYS_ALT 0x3E
+
+static uint32_t lb_efs_cmd(uint32_t subcommand) {
+    return 0x004bu | ((uint32_t)lb_efs_subsys << 8) | (subcommand << 16);
+}
+
 static int lb_copy_path(uint8_t *out, int at, const char *path) {
     do { out[at++] = (uint8_t)*path; } while (*path++);
     return at;
@@ -135,13 +149,13 @@ static int lb_scs_enc(uint32_t khz, int encoding, uint16_t *out) {
 }
 
 static int lb_mkdir(uint8_t *out, const char *path, uint8_t a, uint8_t b) {
-    lb_u32(out, 0x0009134b);
+    lb_u32(out, lb_efs_cmd(0x09));
     out[4] = a; out[5] = b;
     return lb_copy_path(out, 6, path);
 }
 
 static int lb_put(uint8_t *out, const char *path, const uint8_t *data, int size, int lte_band) {
-    lb_u32(out, 0x0026134b);
+    lb_u32(out, lb_efs_cmd(0x26));
     lb_u32(out + 4, (uint32_t)size);
     int length = 0;
     while (path[length]) length++;
@@ -153,21 +167,21 @@ static int lb_put(uint8_t *out, const char *path, const uint8_t *data, int size,
 }
 
 static int lb_sync(uint8_t *out, const char *path) {
-    lb_u32(out, 0x0030134b);
+    lb_u32(out, lb_efs_cmd(0x30));
     out[4] = 0x1f; out[5] = 0x01;
     return lb_copy_path(out, 6, path);
 }
 
 /* EFS2 OPEN / READ / CLOSE for fixed, read-only cell-lock probes. */
 static int lb_efs_open(uint8_t *out, const char *path) {
-    lb_u32(out, 0x0002134b);
+    lb_u32(out, lb_efs_cmd(0x02));
     lb_u32(out + 4, 0);
     lb_u32(out + 8, 0);
     return lb_copy_path(out, 12, path);
 }
 
 static int lb_efs_read(uint8_t *out, uint32_t fd, uint32_t bytes, uint32_t offset) {
-    lb_u32(out, 0x0004134b);
+    lb_u32(out, lb_efs_cmd(0x04));
     lb_u32(out + 4, fd);
     lb_u32(out + 8, bytes);
     lb_u32(out + 12, offset);
@@ -175,13 +189,21 @@ static int lb_efs_read(uint8_t *out, uint32_t fd, uint32_t bytes, uint32_t offse
 }
 
 static int lb_efs_close(uint8_t *out, uint32_t fd) {
-    lb_u32(out, 0x0003134b);
+    lb_u32(out, lb_efs_cmd(0x03));
     lb_u32(out + 4, fd);
     return 8;
 }
 
 static int lb_efs_stat(uint8_t *out, const char *path) {
-    lb_u32(out, 0x000f134b);
+    lb_u32(out, lb_efs_cmd(0x0f));
+    return lb_copy_path(out, 4, path);
+}
+
+/* EFS2 STATFS (subcommand 19) on the root directory: a read-only round trip
+ * verified on-device (the reply carries the echoed 4-byte opcode). Used to
+ * pick the EFS2 subsystem without touching any lock state. */
+static int lb_efs_statfs(uint8_t *out, const char *path) {
+    lb_u32(out, lb_efs_cmd(0x13));
     return lb_copy_path(out, 4, path);
 }
 
@@ -213,7 +235,7 @@ static int lb_short_abstract_name(uint8_t *sun_path, const char *name) {
 }
 
 static int lb_unlink(uint8_t *out, const char *path) {
-    lb_u32(out, 0x0008134b);
+    lb_u32(out, lb_efs_cmd(0x08));
     return lb_copy_path(out, 4, path);
 }
 

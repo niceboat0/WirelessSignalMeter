@@ -134,6 +134,9 @@ static const struct code_info k_default_codes[] = {
     { 0xB16E, "LTE ML1 PUSCH Power Control" },
     { 0xB16F, "LTE ML1 PUCCH Power Control" },
     { 0xB173, "LTE ML1 PDSCH Stat Indication" },
+    /* 1.10: independent LTE rank / TX-RX antennas and per-slot carrier aggregation */
+    { 0xB126, "LTE ML1 PDSCH Demapper Config" },
+    { 0xB184, "LTE ML1 CA Metrics" },
     { 0xB087, "LTE RLC DL Statistics" },
     { 0xB097, "LTE RLC UL Statistics" },
     { 0xB0A4, "LTE PDCP DL Statistics" },
@@ -407,9 +410,23 @@ static void unknown_layout(uint16_t code, uint32_t ver, const uint8_t *body, int
         for (int i = 0; i < s->nwarned; i++) if (s->warned_vers[i] == ver) return;
         if (s->nwarned < 8) s->warned_vers[s->nwarned++] = ver;
     }
+    /* The first 16 body bytes are enough to settle layout questions offline
+       (count-byte position, header stride, version field) without exporting
+       the whole payload; full frames are already preserved by QMDL capture.
+       Layout failures are deduplicated per (code, ver), so this stays a
+       handful of one-line records per session. */
+    char head[16 * 3 + 1] = {0};
+    int hn = (blen > 16) ? 16 : blen;
+    if (hn < 0 || !body) hn = 0;
+    static const char hex[] = "0123456789abcdef";
+    for (int i = 0; i < hn; i++) {
+        head[i * 3] = hex[body[i] >> 4];
+        head[i * 3 + 1] = hex[body[i] & 0xf];
+        head[i * 3 + 2] = (i + 1 < hn) ? ' ' : '\0';
+    }
     struct jb j; jb_init(&j, "unknown_layout");
-    jb_add(&j, ",\"code\":\"0x%04X\",\"ver\":\"0x%x\",\"len\":%d,\"why\":\"%s\"", code, ver, blen, why);
-    (void)body;
+    jb_add(&j, ",\"code\":\"0x%04X\",\"ver\":\"0x%x\",\"len\":%d,\"why\":\"%s\",\"head\":\"%s\"",
+           code, ver, blen, why, head);
     jb_emit(&j);
 }
 
@@ -657,8 +674,49 @@ static const char *signaling_root(int nr, int ch) {
     }
 }
 
-static void add_meas_config(struct jb *j, const struct sd_meas_config *m) {
-    if (!(m->removed_objects | m->removed_ids | m->removed_reports | m->objects_present | m->ids_present)) return;
+/* Measurement trigger thresholds as reported ranges (TS 36.133 / 38.133):
+   LTE RSRP 0..97 -> -140..-43 dBm, NR RSRP 0..126 -> -156..-31 dBm; RSRQ and
+   NR SINR in 0.5 dB steps (LTE RSRQ 0..34 from -19.5 dB, NR RSRQ 0..126 from
+   -43 dB, NR SINR 0..126 from -23 dB). 127 in NR means infinity. */
+static double meas_threshold_db(int nr, int quantity, int raw) {
+    switch (quantity) {
+    case SD_Q_RSRP:
+        if (nr) return raw >= 127 ? NA_F : -156.0 + raw;
+        return raw > 97 ? NA_F : -140.0 + raw;
+    case SD_Q_RSRQ:
+        if (nr) return raw >= 127 ? NA_F : -43.0 + 0.5 * raw;
+        return raw > 34 ? NA_F : -19.5 + 0.5 * raw;
+    case SD_Q_SINR:
+        return raw >= 127 ? NA_F : -23.0 + 0.5 * raw;
+    default:
+        return NA_F;
+    }
+}
+
+static const char *meas_quantity_name(int quantity) {
+    switch (quantity) {
+    case SD_Q_RSRP: return "RSRP";
+    case SD_Q_RSRQ: return "RSRQ";
+    case SD_Q_SINR: return "SINR";
+    default: return "";
+    }
+}
+
+/* The measId linking to a report config; the network normally writes the
+   measIdToAddModList after the report list, so this is resolved at emit time. */
+static int meas_link_for_report(const struct sd_meas_config *m, int report_id, int *object_id) {
+    for (int id = 1; id <= SD_MEAS_LIMIT; id++) {
+        if (!(m->ids_present & (UINT64_C(1) << (id - 1)))) continue;
+        if (m->links[id].report_id != report_id) continue;
+        *object_id = m->links[id].object_id;
+        return id;
+    }
+    return 0;
+}
+
+static void add_meas_config(struct jb *j, int nr, const struct sd_meas_config *m) {
+    if (!(m->removed_objects | m->removed_ids | m->removed_reports | m->objects_present | m->ids_present |
+          m->reports_present)) return;
     jb_add(j, ",\"meas_config\":{");
     int first = 1;
     const uint64_t removed[] = { m->removed_objects, m->removed_ids, m->removed_reports };
@@ -703,8 +761,107 @@ static void add_meas_config(struct jb *j, const struct sd_meas_config *m) {
             head = 0;
         }
         jb_add(j, "]");
+        first = 0;
+    }
+    if (m->reports_present) {
+        jb_add(j, "%s\"reports\":[", first ? "" : ",");
+        int head = 1;
+        for (int id = 1; id <= SD_MEAS_LIMIT; id++) {
+            if (!(m->reports_present & (UINT64_C(1) << (id - 1)))) continue;
+            const struct sd_meas_report *r = &m->reports[id];
+            jb_add(j, "%s{\"id\":%d", head ? "" : ",", id);
+            head = 0;
+            if (r->event[0]) jb_add(j, ",\"event\":\"%s\"", r->event);
+            if (r->quantity != SD_Q_NONE)
+                jb_add(j, ",\"quantity\":\"%s\"", meas_quantity_name(r->quantity));
+            if (r->has_threshold) {
+                jb_add(j, ",\"threshold_raw\":%d", r->threshold);
+                double db = meas_threshold_db(nr, r->quantity, r->threshold);
+                if (db != NA_F) {
+                    if (r->quantity == SD_Q_RSRP) jb_f(j, "threshold_dbm", db);
+                    else jb_f(j, "threshold_db", db);
+                }
+            }
+            if (r->has_hysteresis) jb_i(j, "hysteresis_db", r->hysteresis);
+            if (r->has_ttt) jb_i(j, "ttt_ms", r->ttt_ms);
+            if (r->has_offset) jb_i(j, "offset_db", r->offset_db);
+            jb_add(j, "}");
+        }
+        jb_add(j, "]");
     }
     jb_add(j, "}");
+}
+
+/* Fingerprint of one MeasConfig: an unchanged configuration re-sent by a later
+   reconfiguration (handover, periodic RRC) is not repeated as a new event. */
+static uint64_t meas_config_fingerprint(int nr, const struct sd_meas_config *m) {
+    uint64_t h = 1469598103934665603ULL ^ (uint64_t)(nr + 1);
+    for (int id = 1; id <= SD_MEAS_LIMIT; id++) {
+        if (!(m->reports_present & (UINT64_C(1) << (id - 1)))) continue;
+        const struct sd_meas_report *r = &m->reports[id];
+        uint64_t v = (uint64_t)id * 131 + (uint64_t)(r->quantity + 1);
+        for (const char *p = r->event; *p; p++) v = v * 31 + (unsigned char)*p;
+        v = v * 31 + (uint64_t)r->threshold + (r->has_threshold ? 199 : 0);
+        v = v * 31 + (uint64_t)r->hysteresis + (r->has_hysteresis ? 199 : 0);
+        v = v * 31 + (uint64_t)r->ttt_ms + (r->has_ttt ? 199 : 0);
+        v = v * 31 + (uint64_t)(r->offset_db + 40) + (r->has_offset ? 199 : 0);
+        h ^= v;
+        h *= 1099511628211ULL;
+    }
+    return h;
+}
+
+/* Emit one event per report config so the signaling event feed shows what the
+   network asked the UE to measure (A1-A6 / B1-B2 thresholds, hysteresis, TTT
+   and the A3/A6 offset). */
+static void emit_meas_config_events(int nr, const struct sd_meas_config *m) {
+    static uint64_t last_fingerprint;
+    static int have_fingerprint;
+    if (!m->reports_present) return;
+    uint64_t fp = meas_config_fingerprint(nr, m);
+    if (have_fingerprint && fp == last_fingerprint) return;
+    last_fingerprint = fp;
+    have_fingerprint = 1;
+    const struct serving *s = nr ? &g_nr : &g_lte;
+    for (int id = 1; id <= SD_MEAS_LIMIT; id++) {
+        if (!(m->reports_present & (UINT64_C(1) << (id - 1)))) continue;
+        const struct sd_meas_report *r = &m->reports[id];
+        int object_id = 0;
+        int meas_id = meas_link_for_report(m, id, &object_id);
+        const char *event = r->event;
+        const char *short_event = !strncmp(event, "event", 5) ? event + 5 : event;
+        struct jb j;
+        jb_init(&j, "event");
+        jb_add(&j, ",\"rat\":\"%s\",\"event\":\"meas_config\",\"msg\":\"MeasConfig\""
+                    ",\"display_msg\":\"MeasConfig %s\"", nr ? "NR" : "LTE",
+               short_event[0] ? short_event : "?");
+        if (meas_id) jb_i(&j, "meas_id", meas_id);
+        jb_i(&j, "report_id", id);
+        if (object_id) jb_i(&j, "object_id", object_id);
+        if (r->event[0]) jb_add(&j, ",\"meas_event\":\"%s\"", short_event);
+        if (r->quantity != SD_Q_NONE)
+            jb_add(&j, ",\"quantity\":\"%s\"", meas_quantity_name(r->quantity));
+        if (r->has_threshold) {
+            jb_i(&j, "threshold_raw", r->threshold);
+            double db = meas_threshold_db(nr, r->quantity, r->threshold);
+            if (db != NA_F) {
+                if (r->quantity == SD_Q_RSRP) jb_f(&j, "threshold_dbm", db);
+                else jb_f(&j, "threshold_db", db);
+            }
+        }
+        if (r->has_hysteresis) jb_i(&j, "hysteresis_db", r->hysteresis);
+        if (r->has_ttt) jb_i(&j, "ttt_ms", r->ttt_ms);
+        if (r->has_offset) jb_i(&j, "offset_db", r->offset_db);
+        if (s->pci >= 0) jb_i(&j, "pci", s->pci);
+        if (s->arfcn >= 0) jb_i(&j, "arfcn", s->arfcn);
+        if (object_id > 0 && object_id <= SD_MEAS_LIMIT &&
+            (m->objects_present & (UINT64_C(1) << (object_id - 1)))) {
+            const struct sd_meas_object *o = &m->objects[object_id];
+            if (o->rat == 2 && o->earfcn >= 0) jb_i(&j, "object_earfcn", o->earfcn);
+            else if (o->rat == 1 && o->ssb >= 0) jb_i(&j, "object_arfcn", o->ssb);
+        }
+        jb_emit(&j);
+    }
 }
 
 static void add_measurement_report(struct jb *j, int nr, int serving_pci, const uint8_t *b, int n,
@@ -777,7 +934,10 @@ static void emit_rrc_signaling(struct jb *j, int nr, int ch, int pci, const uint
         jb_add(j, "}");
     }
     /* A length-delimited unknown extension after a complete MeasConfig does not erase it. */
-    if (summary.meas_complete) add_meas_config(j, &summary.meas);
+    if (summary.meas_complete) {
+        add_meas_config(j, nr, &summary.meas);
+        emit_meas_config_events(nr, &summary.meas);
+    }
     if (summary.plmn_count && !summary.plmn_invalid) {
         jb_add(j, ",\"broadcast_plmns\":[");
         for (int i = 0; i < summary.plmn_count; i++) {
@@ -1594,14 +1754,15 @@ static void parse_nr_rrc(const uint8_t *b, int n) {
 }
 
 /* --- 0xB0C2 LTE RRC serving cell info --- */
-static double lte_bw_mhz(int prbs) {
-    switch (prbs) {
-    case 6: return 1.4;
-    case 15: return 3;
-    case 25: return 5;
-    case 50: return 10;
-    case 75: return 15;
-    case 100: return 20;
+/* Bandwidth RB count (6/15/25/50/75/100) or 0xB184 0-5 code: MHz, else NA. */
+static double lte_bw_mhz(int raw) {
+    switch (raw) {
+    case 6: case 0: return 1.4;
+    case 15: case 1: return 3;
+    case 25: case 2: return 5;
+    case 50: case 3: return 10;
+    case 75: case 4: return 15;
+    case 100: case 5: return 20;
     default: return NA_F;
     }
 }
@@ -1846,6 +2007,8 @@ static void parse_lte_b193(const uint8_t *b, int n) {
                 serving_update(&g_lte, pci, earfcn, "B193");
                 g_lte.rsrp = rsrp; g_lte.rsrq = rsrq; g_lte.rssi = rssi; g_lte.sinr = snr0;
                 g_lte.t_meas = g_lte.t_sinr = mono_ms();
+                g_lte.sinr_rx_mask = 0;
+                g_lte.sinr_agg[0] = 0;
                 snprintf(g_lte.src, sizeof(g_lte.src), "B193");
                 snprintf(g_lte.sinr_src, sizeof(g_lte.sinr_src), "B193");
             }
@@ -2651,6 +2814,300 @@ static void lte_schedule_emit(struct lte_schedule_window *window, enum lte_sched
     }
     jb_add(&j, "]");
     if (!first) jb_emit(&j);
+}
+
+/* --- 0xB126 LTE PDSCH demapper config and 0xB184 LTE CA metrics ---
+   Per-version bit positions are protocol facts cross-checked against the
+   table published by qcom-band-menu (GPL-3.0). The tables, decoders and
+   emitters below were written from those facts; no GPL code was copied.
+   Payload-relative positions are in bits; field positions marked "rec" are
+   relative to the start of one record. */
+
+struct lte_b126_layout {
+    uint8_t ver;
+    int carrier_at, carrier_bits;   /* carrier slot; absent: slot 0 */
+    int count_at, count_bits;       /* record count; absent: 1 */
+    int rec_start, rec_bits;        /* payload bits before the first record / record size */
+    int rnti_at, rnti_bits, tx_at, tx_bits, rx_at, rx_bits;   /* rec */
+    int rank_at, rank_bits, scheme_at, scheme_bits;           /* rec */
+};
+
+static const struct lte_b126_layout k_lte_b126_layouts[] = {
+    {   1, 0, 0, 0, 0, 0, 416, 48, 4, 56, 2, 58, 1, 62, 2, 59, 3 },
+    {   2, 0, 0, 0, 0, 0, 448, 48, 4, 56, 2, 58, 1, 62, 2, 59, 3 },
+    {  22, 0, 0, 0, 0, 0, 416, 48, 4, 56, 2, 58, 1, 62, 2, 59, 3 },
+    {  23, 0, 0, 0, 0, 0, 416, 48, 4, 56, 2, 58, 1, 62, 2, 328, 4 },
+    { 103, 0, 0, 0, 0, 0, 448, 48, 4, 56, 2, 58, 2, 62, 2, 328, 4 },
+    { 122, 0, 0, 0, 0, 0, 480, 48, 4, 54, 2, 56, 2, 60, 2, 326, 4 },
+    { 123, 0, 0, 0, 0, 0, 480, 48, 4, 54, 2, 56, 2, 60, 2, 326, 4 },
+    { 124, 0, 0, 0, 0, 0, 480, 48, 4, 54, 2, 56, 2, 60, 2, 326, 4 },
+    { 144, 8, 4, 12, 8, 64, 448, 23, 4, 27, 2, 29, 2, 50, 2, 60, 4 },
+    { 161, 8, 4, 12, 8, 64, 416, 23, 4, 27, 2, 29, 2, 50, 2, 60, 4 },
+    { 162, 8, 4, 12, 8, 64, 352, 14, 4, 18, 2, 20, 2, 32, 2, 42, 4 },
+    { 163, 8, 4, 12, 8, 64, 384, 14, 4, 18, 2, 20, 2, 32, 2, 42, 4 },
+    { 164, 8, 4, 12, 8, 64, 416, 347, 4, 14, 2, 16, 2, 32, 2, 41, 4 },
+    { 165, 8, 4, 12, 8, 64, 448, 347, 4, 14, 2, 16, 2, 32, 2, 41, 4 },
+};
+
+/* Antenna codes as reported by the demapper: 0 = unknown for TX. */
+static const int k_lte_tx_antennas[4] = { 1, 2, 4, 0 };
+static const int k_lte_rx_antennas[4] = { 1, 2, 3, 4 };
+
+struct lte_b126_sample { int carrier, rnti, tx_code, rx_code, rank, scheme; };
+
+static int lte_b126_decode(const uint8_t *b, int n, struct lte_b126_sample *out, int max,
+                           uint8_t *ver_out) {
+    if (n < 1) return -1;
+    const struct lte_b126_layout *l = NULL;
+    for (size_t i = 0; i < sizeof(k_lte_b126_layouts) / sizeof(k_lte_b126_layouts[0]); i++)
+        if (k_lte_b126_layouts[i].ver == b[0]) { l = &k_lte_b126_layouts[i]; break; }
+    if (!l) return -1;
+    *ver_out = l->ver;
+    if ((l->carrier_bits && l->carrier_at + l->carrier_bits > n * 8) ||
+        (l->count_bits && l->count_at + l->count_bits > n * 8)) return -1;
+    int carrier = l->carrier_bits ? (int)lebits(b, l->carrier_at, l->carrier_bits) : 0;
+    int count = l->count_bits ? (int)lebits(b, l->count_at, l->count_bits) : 1;
+    int size = l->rec_bits / 8, pos = l->rec_start / 8;
+    if (count <= 0 || size <= 0 || pos + size > n) return 0;
+    int done = 0;
+    for (int r = 0; r < count && done < max && pos + size <= n; r++, pos += size) {
+        const uint8_t *rec = b + pos;
+        struct lte_b126_sample *s = &out[done++];
+        s->carrier = carrier;
+        s->rnti = (int)lebits(rec, l->rnti_at, l->rnti_bits);
+        s->tx_code = (int)lebits(rec, l->tx_at, l->tx_bits);
+        s->rx_code = (int)lebits(rec, l->rx_at, l->rx_bits);
+        s->rank = (int)lebits(rec, l->rank_at, l->rank_bits);
+        s->scheme = (int)lebits(rec, l->scheme_at, l->scheme_bits);
+    }
+    return done;
+}
+
+struct lte_b184_layout {
+    uint8_t ver;
+    int count_at, count_bits;               /* payload: SCell count */
+    int sc_start, sc_bits, pcell_at;        /* payload bits */
+    int state_add;                          /* legacy 0/1 enum -> modern 1/2 */
+    int p_earfcn_at, p_earfcn_bits, p_pci_at, p_pci_bits;
+    int p_band_at, p_band_bits, p_bw_at, p_bw_bits;
+    int s_earfcn_at, s_earfcn_bits, s_pci_at, s_pci_bits;
+    int s_band_at, s_band_bits, s_bw_at, s_bw_bits;
+    int s_state_at, s_state_bits, s_slot_at, s_slot_bits;
+};
+
+static const struct lte_b184_layout k_lte_b184_layouts[] = {
+    {  1, 16, 8,  128,  64,  64, 1,
+       0, 32, 32, 16, 48, 8,  0, 0,
+       0, 32, 32, 16, 48, 8,  0, 0, 56, 8,  0, 0 },
+    { 24, 16, 8,  160,  96,  64, 1,
+       0, 32, 32, 16, 48, 8, 56, 8,
+       0, 32, 32, 16, 48, 8, 56, 8, 64, 8,  0, 0 },
+    { 25, 16, 8,  160,  96,  64, 0,
+       0, 32, 32, 16, 48, 8, 56, 8,
+       0, 32, 32, 16, 48, 8, 56, 8, 64, 8,  0, 0 },
+    { 40, 16, 8,  160,  96,  64, 0,
+       0, 32, 32, 16, 48, 8, 56, 8,
+       0, 32, 32, 16, 48, 8, 56, 8, 64, 8, 88, 8 },
+    { 48, 16, 8,  160,  96,  64, 0,
+       0, 32, 32, 16, 48, 8, 56, 8,
+       0, 32, 32, 16, 48, 8, 56, 8, 64, 8, 88, 8 },
+    { 49, 16, 8,  160,  96,  64, 0,
+       0, 32, 32, 16, 48, 8, 56, 8,
+       0, 32, 32, 16, 48, 8, 56, 8, 64, 8, 88, 8 },
+    { 50, 16, 8, 2624, 672,  64, 0,
+       0, 32, 32, 16, 48, 8, 56, 8,
+       0, 32, 32, 16, 48, 8, 56, 8, 64, 8, 88, 8 },
+    { 51, 16, 8, 2624, 672,  64, 0,
+       0, 32, 32, 16, 48, 8, 56, 8,
+       0, 32, 32, 16, 48, 8, 56, 8, 64, 8, 88, 8 },
+};
+
+/* Normalized downlink carrier state: 0 absent, 1 deactivated, 2 activated. */
+struct lte_ca_cell { int slot; long earfcn; int pci, band, bw_raw, state; };
+
+static int lte_b184_decode(const uint8_t *b, int n, struct lte_ca_cell *out, int max,
+                           uint8_t *ver_out) {
+    if (n < 2) return -1;
+    const struct lte_b184_layout *l = NULL;
+    for (size_t i = 0; i < sizeof(k_lte_b184_layouts) / sizeof(k_lte_b184_layouts[0]); i++)
+        if (k_lte_b184_layouts[i].ver == b[0]) { l = &k_lte_b184_layouts[i]; break; }
+    if (!l) return -1;
+    *ver_out = l->ver;
+    int sc_bytes = l->sc_bits / 8;
+    if (l->count_at + l->count_bits > n * 8) return -1;
+    int count = (int)lebits(b, l->count_at, l->count_bits);
+    if (count < 0 || count > 32 || sc_bytes <= 0) return -1;
+    int pc = l->pcell_at / 8;
+    if (pc + 8 > n || max < 1) return -1;
+    const uint8_t *p = b + pc;
+    int done = 0;
+    out[done].slot = 0;
+    out[done].earfcn = l->p_earfcn_bits ? (long)lebits(p, l->p_earfcn_at, l->p_earfcn_bits) : -1;
+    out[done].pci = l->p_pci_bits ? (int)lebits(p, l->p_pci_at, l->p_pci_bits) : -1;
+    out[done].band = l->p_band_bits ? (int)lebits(p, l->p_band_at, l->p_band_bits) : -1;
+    out[done].bw_raw = l->p_bw_bits ? (int)lebits(p, l->p_bw_at, l->p_bw_bits) : -1;
+    out[done].state = 2;                    /* the PCell is active while listed */
+    done++;
+    int start = l->sc_start / 8;
+    if (start + count * sc_bytes > n) return -1;
+    for (int i = 0; i < count && done < max; i++) {
+        const uint8_t *c = b + start + i * sc_bytes;
+        /* Some versions name the SCell's own carrier slot: during a swap a
+           lone SCell can be listed first with slot 2. */
+        int slot = l->s_slot_bits ? (int)lebits(c, l->s_slot_at, l->s_slot_bits) : i + 1;
+        if (slot < 1 || slot >= 8) slot = i + 1;
+        if (slot >= 8) continue;
+        int duplicate = 0;
+        for (int k = 0; k < done; k++) if (out[k].slot == slot) duplicate = 1;
+        if (duplicate) { slot = i + 1; if (slot >= 8) continue; }
+        struct lte_ca_cell *e = &out[done++];
+        e->slot = slot;
+        e->earfcn = l->s_earfcn_bits ? (long)lebits(c, l->s_earfcn_at, l->s_earfcn_bits) : -1;
+        e->pci = l->s_pci_bits ? (int)lebits(c, l->s_pci_at, l->s_pci_bits) : -1;
+        e->band = l->s_band_bits ? (int)lebits(c, l->s_band_at, l->s_band_bits) : -1;
+        e->bw_raw = l->s_bw_bits ? (int)lebits(c, l->s_bw_at, l->s_bw_bits) : -1;
+        int st = l->s_state_bits ? (int)lebits(c, l->s_state_at, l->s_state_bits) + l->state_add : -1;
+        e->state = (st >= 0 && st <= 2) ? st : -1;
+    }
+    return done;
+}
+
+/* 0xB184 bandwidth reuses lte_bw_mhz: an RB count or a 0-5 index. */
+
+/* Rank / antenna window: one second per report, like the scheduling windows. */
+struct lte_rank_acc {
+    unsigned n, rank_sum, rank_hist[4], scheme_hist[16];
+    int tx, rx;
+};
+
+struct lte_rank_window {
+    int64_t start, last;
+    int version, pci, channel;
+    struct lte_rank_acc cc[8];
+};
+
+static struct lte_rank_window g_lte_rank;
+
+static void lte_rank_emit(struct lte_rank_window *w, int64_t now) {
+    struct jb j;
+    jb_init(&j, "lte_rank");
+    jb_add(&j, ",\"rat\":\"LTE\",\"src\":\"B126\",\"ver\":%d,\"dt_ms\":%lld",
+           w->version, (long long)(now - w->start));
+    if (w->pci >= 0 && w->channel >= 0) {
+        jb_i(&j, "pci", w->pci);
+        jb_i(&j, "earfcn", w->channel);
+    }
+    jb_add(&j, ",\"cc\":[");
+    int first = 1;
+    for (int cc = 0; cc < 8; cc++) {
+        const struct lte_rank_acc *a = &w->cc[cc];
+        if (!a->n) continue;
+        jb_add(&j, "%s{\"cc\":%d,\"n\":%u", first ? "" : ",", cc, a->n);
+        first = 0;
+        /* Rank 0 means "not reported"; it is counted in the histogram only. */
+        unsigned reported = a->rank_hist[1] + a->rank_hist[2] + a->rank_hist[3];
+        if (reported) jb_f(&j, "rank_avg", (double)a->rank_sum / reported);
+        jb_add(&j, ",\"rank_hist\":[%u,%u,%u,%u]", a->rank_hist[0], a->rank_hist[1],
+               a->rank_hist[2], a->rank_hist[3]);
+        int mode = 0;
+        for (int i = 1; i < 16; i++) if (a->scheme_hist[i] > a->scheme_hist[mode]) mode = i;
+        if (a->scheme_hist[mode]) jb_i(&j, "scheme", mode);
+        if (a->tx) jb_i(&j, "tx", a->tx);
+        if (a->rx) jb_i(&j, "rx", a->rx);
+        jb_add(&j, "}");
+    }
+    jb_add(&j, "]");
+    if (!first) jb_emit(&j);
+}
+
+static void parse_lte_b126(const uint8_t *b, int n) {
+    struct lte_b126_sample samples[8];
+    uint8_t version = 0;
+    int count = lte_b126_decode(b, n, samples, 8, &version);
+    if (count < 0) { unknown_layout(0xB126, n ? b[0] : 0, b, n, "LTE demapper version"); return; }
+    layout_seen(0xB126, version, b, n);
+    if (!count) return;
+    int64_t now = pkt_now_ms();
+    struct lte_rank_window *w = &g_lte_rank;
+    int reset = !w->start || now < w->last || now - w->last > 6000 ||
+        w->version != version || w->pci != g_lte.pci || w->channel != g_lte.arfcn;
+    if (reset || now - w->start >= 1000) {
+        if (!reset) lte_rank_emit(w, now);
+        memset(w, 0, sizeof(*w));
+        w->start = now;
+        w->version = version;
+        w->pci = g_lte.pci;
+        w->channel = g_lte.arfcn;
+    }
+    w->last = now;
+    for (int i = 0; i < count; i++) {
+        const struct lte_b126_sample *s = &samples[i];
+        if (s->rnti > 1) continue;              /* C-RNTI and SPS C-RNTI only */
+        struct lte_rank_acc *a = &w->cc[s->carrier & 7];
+        a->n++;
+        if (s->rank > 0 && s->rank < 4) {
+            a->rank_sum += (unsigned)s->rank;
+        }
+        a->rank_hist[s->rank & 3]++;
+        if (s->scheme < 16) a->scheme_hist[s->scheme]++;
+        if (s->tx_code < 4 && k_lte_tx_antennas[s->tx_code])
+            a->tx = k_lte_tx_antennas[s->tx_code];
+        if (s->rx_code < 4) a->rx = k_lte_rx_antennas[s->rx_code];
+    }
+}
+
+static unsigned long long g_lte_ca_sig;
+static int g_lte_ca_have_sig;
+static int64_t g_lte_ca_emit_ms;
+
+/* 0xB184 can be sent every slot: emit on any change, otherwise once a second. */
+static void parse_lte_b184(const uint8_t *b, int n) {
+    struct lte_ca_cell cells[33];
+    uint8_t version = 0;
+    int count = lte_b184_decode(b, n, cells, 33, &version);
+    if (count < 0) { unknown_layout(0xB184, n ? b[0] : 0, b, n, "LTE CA metrics version"); return; }
+    layout_seen(0xB184, version, b, n);
+    if (!count) return;
+    unsigned long long sig = 1469598103934665603ULL;
+    for (int i = 0; i < count; i++) {
+        const struct lte_ca_cell *c = &cells[i];
+        unsigned long long v = (unsigned long long)(c->slot & 7) |
+            ((unsigned long long)(c->earfcn < 0 ? 0xffffffffu : (unsigned)c->earfcn) << 3) ^
+            ((unsigned long long)(c->pci + 1) << 35) ^
+            ((unsigned long long)(c->band + 1) << 45) ^
+            ((unsigned long long)(c->bw_raw + 1) << 54) ^
+            ((unsigned long long)(c->state + 1) << 60);
+        sig ^= v;
+        sig *= 1099511628211ULL;
+    }
+    int64_t now = pkt_now_ms();
+    if (g_lte_ca_have_sig && sig == g_lte_ca_sig &&
+        now >= g_lte_ca_emit_ms && now - g_lte_ca_emit_ms < 1000) return;
+    g_lte_ca_sig = sig;
+    g_lte_ca_have_sig = 1;
+    g_lte_ca_emit_ms = now;
+    struct jb j;
+    jb_init(&j, "lte_ca");
+    /* The PCell (always cells[0]) also names the serving cell so consumers can
+       drop a list captured before the last handover. */
+    jb_add(&j, ",\"rat\":\"LTE\",\"src\":\"B184\",\"ver\":%d", version);
+    if (cells[0].pci >= 0) jb_i(&j, "pci", cells[0].pci);
+    if (cells[0].earfcn >= 0) jb_i(&j, "earfcn", cells[0].earfcn);
+    jb_add(&j, ",\"cells\":[");
+    for (int i = 0; i < count; i++) {
+        const struct lte_ca_cell *c = &cells[i];
+        jb_add(&j, "%s{\"slot\":%d,\"role\":\"%s\"", i ? "," : "", c->slot,
+               c->slot ? "scell" : "pcell");
+        if (c->earfcn >= 0) jb_i(&j, "earfcn", c->earfcn);
+        if (c->pci >= 0) jb_i(&j, "pci", c->pci);
+        if (c->band > 0) jb_i(&j, "band", c->band);
+        double bw = lte_bw_mhz(c->bw_raw);
+        if (bw > 0) jb_f(&j, "bw_mhz", bw);
+        if (c->state >= 0) jb_i(&j, "state", c->state);
+        jb_add(&j, "}");
+    }
+    jb_add(&j, "]");
+    jb_emit(&j);
 }
 
 static struct lte_schedule_carrier *lte_schedule_window(enum lte_schedule_kind kind, int version) {
@@ -5081,6 +5538,8 @@ static void handle_record(const uint8_t *rec, int len) {
     case 0xB16D: parse_lte_b16d(body, blen); break;
     case 0xB16E: parse_lte_b16e(body, blen); break;
     case 0xB173: parse_lte_b173(body, blen); break;
+    case 0xB126: parse_lte_b126(body, blen); break;
+    case 0xB184: parse_lte_b184(body, blen); break;
     case 0xB087: case 0xB097: case 0xB0A4: case 0xB0B4:
         parse_lte_layer_stats(code, body, blen); break;
     case 0xB063: case 0xB064: parse_lte_mac_tb(code, body, blen); break;

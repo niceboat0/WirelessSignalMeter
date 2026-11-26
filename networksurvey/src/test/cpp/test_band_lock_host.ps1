@@ -21,16 +21,25 @@ $taskFunctions = @(
     (Select-TaskFunctionBlock 'static int backup_may_exist(' 'static int cell_list(')
 ) -join "`n"
 [IO.File]::WriteAllText((Join-Path $taskBuild 'band_lock_backup_under_test.inc'), $taskFunctions)
-foreach ($taskSuite in @('protocol', 'backup')) {
+$taskSessionFunctions = @(
+    (Select-TaskFunctionBlock 'static void disconnect_router(' '/* Read up to'),
+    (Select-TaskFunctionBlock 'static int reboot_modem(' '/* LTE band lock:'),
+    (Select-TaskFunctionBlock 'static int at_command(' 'static int execute(')
+) -join "`n"
+[IO.File]::WriteAllText((Join-Path $taskBuild 'band_lock_session_under_test.inc'), $taskSessionFunctions)
+foreach ($taskSuite in @('protocol', 'backup', 'session')) {
     $taskDll = Join-Path $taskBuild "band_lock_${taskSuite}_test.dll"
     $taskObject = Join-Path $taskBuild "band_lock_${taskSuite}_test.obj"
-    & $taskClang --target=x86_64-pc-windows-msvc -ffreestanding -fno-stack-protector -fno-builtin -c -I $taskBuild (Join-Path $PSScriptRoot "band_lock_${taskSuite}_test.c") -o $taskObject
+    $taskCompileFlags = @()
+    if ($taskSuite -eq 'session') { $taskCompileFlags += '-O2' }
+    & $taskClang --target=x86_64-pc-windows-msvc @taskCompileFlags -ffreestanding -fno-stack-protector -fno-builtin -c -I $taskBuild (Join-Path $PSScriptRoot "band_lock_${taskSuite}_test.c") -o $taskObject
     if ($LASTEXITCODE) { throw "Native $taskSuite host test compilation failed." }
     & $taskLinker -flavor link /dll /noentry /nodefaultlib "/out:$taskDll" $taskObject
     if ($LASTEXITCODE) { throw "Native $taskSuite host test linking failed." }
 }
 $taskBackupDll = Join-Path $taskBuild 'band_lock_backup_test.dll'
 $taskProtocolDll = Join-Path $taskBuild 'band_lock_protocol_test.dll'
+$taskSessionDll = Join-Path $taskBuild 'band_lock_session_test.dll'
 Add-Type -TypeDefinition @"
 using System.Runtime.InteropServices;
 public static class BandLockHostTests {
@@ -38,6 +47,8 @@ public static class BandLockHostTests {
     public static extern int test_band_lock_backup();
     [DllImport(@"$taskProtocolDll", CallingConvention = CallingConvention.Cdecl)]
     public static extern int test_band_lock_protocol();
+    [DllImport(@"$taskSessionDll", CallingConvention = CallingConvention.Cdecl)]
+    public static extern int test_band_lock_session();
 }
 "@
 $taskProtocolResult = [BandLockHostTests]::test_band_lock_protocol()
@@ -46,3 +57,6 @@ Write-Output 'PASS band lock protocol host tests'
 $taskBackupResult = [BandLockHostTests]::test_band_lock_backup()
 if ($taskBackupResult) { throw "Backup host test failed at line $taskBackupResult." }
 Write-Output 'PASS band lock backup, persistence failure, and restore host tests'
+$taskSessionResult = [BandLockHostTests]::test_band_lock_session()
+if ($taskSessionResult) { throw "Session host test failed at line $taskSessionResult." }
+Write-Output 'PASS band lock session reconnect, write failure, and AT framing host tests'

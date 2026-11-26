@@ -96,6 +96,45 @@ class DiagRecordingPolicyTest {
     }
 
     @Test
+    fun aliveCollectorKeepsListeningAfterTheActivityStopsWithoutAService() {
+        val live = DiagRecordingPolicy.mode(
+            taskRunning = false, foreground = false, serviceMaintained = false,
+            paused = false, collectorAlive = true,
+        )
+        assertEquals(DiagRecordingPolicy.Mode.LiveView, live)
+        assertTrue(DiagRecordingPolicy.shouldListen(live))
+        assertFalse(DiagRecordingPolicy.shouldRecord(live))
+
+        val recording = DiagRecordingPolicy.mode(
+            taskRunning = true, foreground = false, serviceMaintained = false,
+            paused = false, collectorAlive = true,
+        )
+        assertEquals(DiagRecordingPolicy.Mode.TaskRecording, recording)
+        assertTrue(DiagRecordingPolicy.shouldRecord(recording))
+    }
+
+    @Test
+    fun deadCollectorWithoutForegroundOrServiceDoesNotKeepListening() {
+        val mode = DiagRecordingPolicy.mode(
+            taskRunning = true, foreground = false, serviceMaintained = false,
+            paused = false, collectorAlive = false,
+        )
+        assertEquals(DiagRecordingPolicy.Mode.Idle, mode)
+        assertFalse(DiagRecordingPolicy.shouldListen(mode))
+    }
+
+    @Test
+    fun pauseStopsCollectionEvenWhenTheCollectorProcessIsAlive() {
+        val mode = DiagRecordingPolicy.mode(
+            taskRunning = true, foreground = false, serviceMaintained = false,
+            paused = true, collectorAlive = true,
+        )
+        assertEquals(DiagRecordingPolicy.Mode.Idle, mode)
+        assertFalse(DiagRecordingPolicy.shouldListen(mode))
+        assertFalse(DiagRecordingPolicy.shouldRecord(mode))
+    }
+
+    @Test
     fun manualPauseWinsOverAnActiveTaskAndMaintainedBackgroundService() {
         for (foreground in listOf(true, false)) {
             for (taskRunning in listOf(true, false)) {

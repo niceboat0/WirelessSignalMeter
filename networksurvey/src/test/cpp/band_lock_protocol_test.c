@@ -122,6 +122,7 @@ __declspec(dllexport) int test_band_lock_protocol(void) {
     /* LOOSE accepts the echoed command itself (SYNC / CM replies). */
     CHECK(lb_ack(frame, 64, 28, LB_ACK_LOOSE, 0, 0, 0, &status_out) == 0);
     int efs_size = lb_efs_open(data, "/nv/item_files/modem/nr5g/RRC/pci_lock_info");
+    CHECK(lb_efs_subsys == LB_EFS_SUBSYS_STD);
     CHECK(efs_size == 56 && lb_read32(data) == 0x0002134b);
     CHECK(data[0] == 0x4b && data[1] == 0x13 && data[2] == 0x02 && data[3] == 0x00);
     CHECK(lb_read32(data + 4) == 0 && lb_read32(data + 8) == 0);
@@ -135,5 +136,21 @@ __declspec(dllexport) int test_band_lock_protocol(void) {
     CHECK(efs_size == 52 && lb_read32(data) == 0x000f134b);
     CHECK(data[0] == 0x4b && data[1] == 0x13 && data[2] == 0x0f && data[3] == 0x00);
     CHECK(data[4] == '/' && data[efs_size - 1] == 0);
+    /* Alternate EFS2 subsystem (0x3E): identical layouts, different subsys
+     * byte. Some modems only answer there (catxeon/qcom-efs-browser probes
+     * both). Every EFS2 frame follows lb_efs_subsys. */
+    lb_efs_subsys = LB_EFS_SUBSYS_ALT;
+    efs_size = lb_efs_open(data, "/");
+    CHECK(efs_size == 14 && lb_read32(data) == 0x00023e4b);
+    CHECK(data[0] == 0x4b && data[1] == 0x3e && data[2] == 0x02 && data[3] == 0x00);
+    efs_size = lb_efs_statfs(data, "/");
+    CHECK(efs_size == 6 && lb_read32(data) == 0x00133e4b);
+    CHECK(data[0] == 0x4b && data[1] == 0x3e && data[2] == 0x13 && data[3] == 0x00);
+    CHECK(data[4] == '/' && data[5] == 0);
+    lb_put(data, LB_NR_BANDS, mask, 8, 0);
+    CHECK(lb_read32(data) == 0x00263e4b);
+    lb_efs_subsys = LB_EFS_SUBSYS_STD;
+    lb_put(data, LB_NR_BANDS, mask, 8, 0);
+    CHECK(lb_read32(data) == 0x0026134b);
     return 0;
 }
