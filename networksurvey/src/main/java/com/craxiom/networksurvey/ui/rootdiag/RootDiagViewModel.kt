@@ -873,6 +873,7 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
                         if (row.has("pucch_dbm")) keep(row, "${record.type}:pucch")
                     }
                     record.type == "nr_pdsch" -> if (row.has("bler_pct") || row.has("retx_pct")) keep(row, record.type)
+                    record.type == "lte_rank" -> if (row.has("rank_avg") || row.has("tx") || row.has("rx")) keep(row, record.type)
                     row.optInt("tb") > 0 -> keep(row, record.type)
                 }
             }
@@ -1124,6 +1125,7 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
                                     "${value.optInt("pci", -1)}:${value.optInt("arfcn", -1)}"
                                 "layer_throughput" -> "$rat:${value.optString("layer")}:${value.optString("dir")}"
                                 "lte_phr", "lte_bsr" -> "${value.optInt("pci", -1)}:${value.optInt("arfcn", -1)}"
+                                "lte_ca", "lte_rank" -> "${value.optInt("pci", -1)}:${value.optInt("earfcn", -1)}"
                                 else -> ""
                             }
                             storeMeasurement("${record.type}:$channel", record)
@@ -1525,12 +1527,12 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
         )
         val nrBroadcastTypes = mapOf("mib" to "nr_mib_config", "sib1_config" to "nr_sib1_config")
         val schedulingTypes = setOf("nr_dl_sched", "nr_ul_sched", "nr_csf", "lte_csf", "nr_ul_pwr", "nr_pdsch",
-            "lte_dl_sched", "lte_ul_sched", "lte_ul_pwr", "lte_ul_tx", "lte_pucch_power", "lte_pucch_tx")
+            "lte_dl_sched", "lte_ul_sched", "lte_ul_pwr", "lte_ul_tx", "lte_pucch_power", "lte_pucch_tx", "lte_rank")
         val signalTypes = setOf(
             "serving", "nr_cell", "lte_meas", "nr_meas", "nr_mib", "nr_snr", "lte_phr", "lte_bsr", "lte_csf",
             "nr_cfg", "nr_pdsch", "nr_csf", "nr_dl_sched", "nr_ul_sched", "nr_ul_pwr", "layer_throughput",
             "lte_dl_sched", "lte_ul_sched", "lte_ul_pwr", "lte_ul_tx", "lte_pucch_power", "lte_pucch_tx",
-            "ims_media",
+            "lte_rank", "lte_ca", "ims_media",
         )
         val signalingTypes = setOf(
             "rrc", "nas", "nas_pdu", "nas_qos", "nas_mm", "nas_release", "sip", "event", "nr_rach",

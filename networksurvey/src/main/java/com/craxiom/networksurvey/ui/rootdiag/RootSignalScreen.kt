@@ -89,6 +89,9 @@ import org.json.JSONObject
 import java.util.Locale
 import kotlin.math.roundToInt
 
+/* One 0xB184 secondary carrier: identity plus its per-slot activation state. */
+private data class LteCaSecondary(val pci: Int, val earfcn: Int, val band: Int, val activated: Boolean)
+
 private data class ServingIdentity(
     val rat: String,
     val cid: Long,
@@ -164,6 +167,31 @@ internal fun RootSignalScreen(
         }
         CarrierAggregation.b193Secondaries(samples, identity.pci, identity.arfcn, now)
     } else emptyList()
+    /* 0xB184 reports the configured carrier list with per-slot activation state;
+       prefer it over the B193 measurement inference whenever a fresh list exists. */
+    val lteCaScells = identity?.takeIf { it.rat == "LTE" }?.let { id ->
+        records["lte_ca"].orEmpty()
+            .filter { it.id !in state.cachedMeasureIds && now - it.receivedAt in 0..3_000 }
+            .maxByOrNull { it.id }?.data
+            // Skip lists captured before the last handover to another cell.
+            ?.takeIf { list ->
+                list.optInt("pci", -1) in listOf(-1, id.pci) &&
+                    list.optInt("earfcn", -1) in listOf(-1, id.arfcn)
+            }
+            ?.objects("cells").orEmpty()
+            .mapNotNull { cell ->
+                if (cell.optString("role") != "scell") return@mapNotNull null
+                val pci = cell.channel("pci") ?: return@mapNotNull null
+                val earfcn = cell.channel("earfcn") ?: return@mapNotNull null
+                LteCaSecondary(pci, earfcn,
+                    cell.optInt("band", 0).takeIf { it > 0 } ?: CellularUtils.downlinkEarfcnToBand(earfcn),
+                    cell.optInt("state", -1) == 2)
+            }
+    }.orEmpty()
+    val lteCaLabels = lteCaScells.filter { it.activated }.map { row ->
+        CarrierAggregation.chipLabel(CarrierAggregation.Component(CarrierAggregation.LTE,
+            row.pci, row.earfcn, row.band, 0))
+    }
     fun matchesServing(record: DiagRecord) = identity != null && record.data.optString("rat") == identity.rat &&
         record.data.channel("pci") == identity.pci && record.data.channel("arfcn") == identity.arfcn
     val broadcast = records["plmn_broadcast"].orEmpty().firstOrNull(::matchesServing)?.data?.optJSONArray("plmns")
@@ -194,7 +222,15 @@ internal fun RootSignalScreen(
         if (state.nrCarriers.size >= 2) item("nr-carriers") {
             NrCarrierSection(state.nrCarriers, fromDiag = true)
         }
-        if (lteSecondaries.isNotEmpty()) item("lte-carriers") {
+        if (lteCaScells.isNotEmpty()) item("lte-carriers-b184") {
+            if (!androidCa?.chipLabels.orEmpty().containsAll(lteCaLabels)) {
+                SignalSectionCard {
+                    if (lteCaLabels.isNotEmpty()) NetworkStatusPills(lteCaLabels)
+                    Text(stringResource(R.string.ca_lte_b184, lteCaLabels.size, lteCaScells.size),
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        } else if (lteSecondaries.isNotEmpty()) item("lte-carriers") {
             val labels = lteSecondaries.map { row ->
                 CarrierAggregation.chipLabel(CarrierAggregation.Component(CarrierAggregation.LTE,
                     row.pci, row.earfcn, CellularUtils.downlinkEarfcnToBand(row.earfcn), 0))
@@ -211,7 +247,8 @@ internal fun RootSignalScreen(
         item("serving:$rat") { SignalParameterCard(stringResource(R.string.serving_cell_parameters), fields.primary) }
         item("neighbors:$rat") {
             NeighborMeasurements(rat, servingData, state.records, null, isSignalTab, state.nrCarriers,
-                lteSecondaries.map { it.earfcn to it.pci }.toSet())
+                (lteSecondaries.map { it.earfcn to it.pci } +
+                    lteCaScells.map { it.earfcn to it.pci }).toSet())
         }
         item("trend:$rat") {
             CellularChartComponent(viewModel = chartFor(rat))
@@ -512,6 +549,7 @@ private fun PhysicalScheduling(
     val gmTx = samples("ul_tx")
     val pdsch = samples("pdsch")
     val csi = samples("csf")
+    val demapper = samples("rank")
     val layersLabel = stringResource(R.string.diag_mimo_layers)
     val retxLabel = stringResource(R.string.diag_retransmission)
     val carriers = (dl.keys + ul.keys + gmTx.keys + pdsch.keys + csi.keys + 0).sorted()
@@ -521,6 +559,8 @@ private fun PhysicalScheduling(
     val down = dl[cc]?.data
     val ulTx = gmTx[cc]?.data
     val feedback = csi[cc]?.data
+    // 0xB126 demapper reports the true serving-cell rank and the TX/RX chain count.
+    val antenna = demapper[cc]?.data
     val now = SystemClock.elapsedRealtime()
     fun phyRate(sample: DiagRecord?, key: String) = sample
         ?.takeIf { now - it.receivedAt in 0..THROUGHPUT_FRESH_MS }?.data?.number(key) ?: 0.0
@@ -529,14 +569,29 @@ private fun PhysicalScheduling(
         val ms = carrier?.number("dt_ms")?.takeIf { it > 0 } ?: return SIGNAL_UNAVAILABLE
         return String.format(Locale.ROOT, "%.1f", 1000 * blocks / ms)
     }
+    // 0xB126 rank window (mean over one second) with the UL CSF rank as fallback.
+    val rankSample = antenna?.optDouble("rank_avg", Double.NaN)?.takeIf { it.isFinite() }
+    val mimoText = antenna?.let { a ->
+        val tx = a.optInt("tx", 0)
+        val rx = a.optInt("rx", 0)
+        when {
+            tx > 0 && rx > 0 -> "${tx}T${rx}R"
+            tx > 0 -> "${tx}Tx"
+            rx > 0 -> "${rx}Rx"
+            else -> null
+        }
+    }
     val rows = listOf(
         DirectionRow("CQI", dl = if (nr) feedback.signalValue("cqi_avg") else
             (feedback?.channel("cqi") ?: serving?.channel("cqi")?.takeIf { cc == 0 })?.toString().signalDisplayValue()),
-        DirectionRow("Rank", up.signalValue("rank"), feedback.signalValue("rank")),
+        DirectionRow("Rank", up.signalValue("rank"),
+            if (nr) feedback.signalValue("rank") else
+                rankSample?.let { String.format(Locale.ROOT, "%.1f", it) }.signalDisplayValue()),
         DirectionRow("MCS", (if (nr) up else ulTx).signalValue("mcs_avg"), down.signalValue("mcs_avg")),
         DirectionRow("RBs", up.signalValue("rb_avg"), down.signalValue("rb_avg")),
         DirectionRow("Modulation", up.signalValue("mod"), down.signalValue("mod")),
         DirectionRow(layersLabel, up.signalValue("layers_avg"), down.signalValue("layers_avg")),
+        DirectionRow("TX / RX", dl = mimoText.signalDisplayValue()),
         DirectionRow(stringResource(R.string.diag_mimo_tx_mode),
             if (nr) up.signalValue("tx_mode") else SIGNAL_UNAVAILABLE,
             if (nr) SIGNAL_UNAVAILABLE else feedback.signalValue("tx_mode")),
