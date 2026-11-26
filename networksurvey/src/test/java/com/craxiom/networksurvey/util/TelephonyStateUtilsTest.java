@@ -57,6 +57,18 @@ public class TelephonyStateUtilsTest
     }
 
     @Test
+    public void isWwanDeregisteredDistinguishesMissingRowsFromConfirmedLoss()
+    {
+        final RegistrationRow wifi = psWlan(true, TelephonyManager.NETWORK_TYPE_IWLAN);
+        final RegistrationRow unregisteredData = psWwan(false, TelephonyManager.NETWORK_TYPE_UNKNOWN);
+        assertFalse(TelephonyStateUtils.isWwanDeregistered(null));
+        assertFalse(TelephonyStateUtils.isWwanDeregistered(List.of(wifi)));
+        assertTrue(TelephonyStateUtils.isWwanDeregistered(List.of(unregisteredData, wifi)));
+        assertFalse(TelephonyStateUtils.isWwanDeregistered(
+                List.of(unregisteredData, cs(true, TelephonyManager.NETWORK_TYPE_UMTS), wifi)));
+    }
+
+    @Test
     public void voiceBearer_wifiCalling_capturedCase()
     {
         // The captured Pixel/T-Mobile state: voice CS unregistered, Wi-Fi calling active, data on NR.

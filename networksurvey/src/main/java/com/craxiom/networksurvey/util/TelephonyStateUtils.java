@@ -467,4 +467,17 @@ public final class TelephonyStateUtils
         return voice != null && OperatorUtil.isValidPlmn(voice.registeredPlmn()) ? voice.registeredPlmn() : "";
     }
 
+    public static boolean isWwanDeregistered(List<RegistrationRow> rows)
+    {
+        if (rows == null) return false;
+        boolean hasWwanRow = false;
+        for (RegistrationRow row : rows)
+        {
+            if (row.transportType() != AccessNetworkConstants.TRANSPORT_TYPE_WWAN) continue;
+            if (row.registered()) return false;
+            hasWwanRow = true;
+        }
+        return hasWwanRow;
+    }
+
 }

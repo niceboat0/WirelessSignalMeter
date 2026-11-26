@@ -23,25 +23,14 @@ import androidx.compose.material.icons.rounded.LockOpen
 import androidx.compose.material.icons.rounded.MyLocation
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Terminal
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
-import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TooltipBox
 import androidx.compose.material3.TooltipDefaults
 import androidx.compose.material3.PlainTooltip
@@ -61,12 +50,18 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.craxiom.networksurvey.R
+import com.craxiom.networksurvey.ui.common.AppDialog
+import top.yukonga.miuix.kmp.basic.Scaffold
 import com.craxiom.networksurvey.ui.main.appbar.TitleBar
 import com.craxiom.networksurvey.ui.rootdiag.DiagRecord
 import com.craxiom.networksurvey.ui.rootdiag.RootDiagStatus
 import com.craxiom.networksurvey.ui.rootdiag.RootDiagViewModel
 import androidx.compose.ui.res.stringResource
 import kotlinx.coroutines.delay
+import top.yukonga.miuix.kmp.basic.HorizontalDivider
+import top.yukonga.miuix.kmp.basic.IconButton
+import top.yukonga.miuix.kmp.basic.LinearProgressIndicator
+import top.yukonga.miuix.kmp.basic.TabRowWithContour
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -141,17 +136,18 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
     BackHandler(operating) { /* Keep the active operation attached until the helper exits. */ }
 
     Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
         contentWindowInsets = WindowInsets.safeDrawing,
         topBar = {
             Column {
                 TitleBar(stringResource(R.string.tool_band_lock_title), compact = true,
                     onBackClick = onBack.takeUnless { operating })
-                TabRow(selectedTabIndex = if (advanced) 1 else 0) {
-                    Tab(selected = !advanced, onClick = { advanced = false }, enabled = !state.busy,
-                        text = { Text(stringResource(R.string.lock_tab_controls)) })
-                    Tab(selected = advanced, onClick = { advanced = true }, enabled = !state.busy,
-                        text = { Text(stringResource(R.string.lock_tab_advanced)) })
-                }
+                TabRowWithContour(
+                    tabs = listOf(stringResource(R.string.lock_tab_controls), stringResource(R.string.lock_tab_advanced)),
+                    selectedTabIndex = if (advanced) 1 else 0,
+                    onTabSelected = { if (!state.busy) advanced = it == 1 },
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                )
             }
         },
     ) { padding ->
@@ -164,10 +160,10 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     if (advanced) Text(model.device, style = MaterialTheme.typography.titleSmall)
                     Text(stringResource(when {
+                        state.availability == LockAvailability.Checking -> R.string.lock_checking
+                        state.busy -> R.string.lock_working
                         state.availability == LockAvailability.Unchecked -> R.string.lock_unchecked
                         state.availability == LockAvailability.Cached -> R.string.lock_cached_unconfirmed
-                        state.availability == LockAvailability.Checking -> R.string.lock_checking
-                        operating -> R.string.lock_working
                         state.availability == LockAvailability.Ready && state.profile.level == LockSupportLevel.Verified -> R.string.lock_ready
                         state.availability == LockAvailability.Ready -> R.string.lock_probe_only
                         else -> R.string.lock_unavailable
@@ -187,7 +183,9 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
                             color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
-                LockIconButton(R.string.lock_refresh, Icons.Rounded.Refresh, !state.busy, model::refresh)
+                LockIconButton(R.string.lock_refresh, Icons.Rounded.Refresh, !state.busy) {
+                    model.refresh(signal.status == RootDiagStatus.Running)
+                }
             }
             if (advanced && state.availability == LockAvailability.Ready &&
                 (state.channel.isNotEmpty() || state.caps.isNotEmpty())) {
@@ -204,25 +202,19 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
             state.result?.let { Text(stringResource(it), style = MaterialTheme.typography.bodyMedium) }
             HorizontalDivider()
             if (!advanced) Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                    LockRadio.entries.forEachIndexed { index, item ->
-                        SegmentedButton(
-                            radio == item, { radio = item }, SegmentedButtonDefaults.itemShape(index, 2),
-                            enabled = !state.busy,
-                        ) { Text(if (item == LockRadio.Lte) "4G · LTE" else "5G · NR") }
-                    }
-            }
-            TabRow(target.ordinal) {
-                LockTarget.entries.forEach { item ->
-                    Tab(target == item, { target = item }, enabled = !state.busy, text = {
-                        Text(stringResource(when (item) {
-                            LockTarget.Bands -> R.string.lock_bands
-                            LockTarget.Frequency -> R.string.lock_frequency
-                            LockTarget.Cell -> R.string.lock_cell
-                        }))
-                    })
-                }
-            }
+                TabRowWithContour(
+                    tabs = listOf("4G · LTE", "5G · NR"),
+                    selectedTabIndex = radio.ordinal,
+                    onTabSelected = { if (!state.busy) radio = LockRadio.entries[it] },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                TabRowWithContour(
+                    tabs = listOf(R.string.lock_bands, R.string.lock_frequency, R.string.lock_cell)
+                        .map { stringResource(it) },
+                    selectedTabIndex = target.ordinal,
+                    onTabSelected = { if (!state.busy) target = LockTarget.entries[it] },
+                    modifier = Modifier.fillMaxWidth(),
+                )
             if (target != LockTarget.Bands) Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text(stringResource(R.string.lock_current_cell), style = MaterialTheme.typography.labelLarge)
@@ -327,18 +319,12 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
             )
             } else Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(stringResource(R.string.lock_network_mode), style = MaterialTheme.typography.titleSmall)
-                SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                    LockNetworkMode.entries.forEachIndexed { index, mode ->
-                        SegmentedButton(networkMode == mode, { networkMode = mode },
-                            SegmentedButtonDefaults.itemShape(index, 3), enabled = !state.busy) {
-                            Text(when (mode) {
-                                LockNetworkMode.Auto -> stringResource(R.string.lock_mode_auto)
-                                LockNetworkMode.Lte -> "LTE"
-                                LockNetworkMode.Nr -> "NR"
-                            })
-                        }
-                    }
-            }
+                TabRowWithContour(
+                    tabs = listOf(stringResource(R.string.lock_mode_auto), "LTE", "NR"),
+                    selectedTabIndex = networkMode.ordinal,
+                    onTabSelected = { if (!state.busy) networkMode = LockNetworkMode.entries[it] },
+                    modifier = Modifier.fillMaxWidth(),
+                )
             val modeLabel = stringResource(R.string.lock_apply_mode)
             val modeValue = if (networkMode == LockNetworkMode.Auto) stringResource(R.string.lock_mode_auto) else networkMode.argument.uppercase()
             OutlinedButton(
@@ -377,35 +363,35 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
         }
     }
     pending?.let { action ->
-        AlertDialog(
+        AppDialog(
+            show = true,
             onDismissRequest = { pending = null },
-            title = { Text(stringResource(R.string.lock_confirm)) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text(confirmation)
-                    Text(stringResource(when {
-                        action.modeAfterLock != null && action.restartsModem -> R.string.lock_confirm_apply_restart
-                        action.modeAfterLock != null -> R.string.lock_confirm_apply_mode
-                        action.restartsModem -> R.string.lock_confirm_restart
-                        else -> R.string.lock_confirm_mode
-                    }))
-                    if (state.profile.level == LockSupportLevel.ProbeOnly) {
-                        Text(stringResource(R.string.lock_confirm_unverified))
-                    }
+            title = stringResource(R.string.lock_confirm),
+            confirmText = stringResource(R.string.lock_apply),
+            dismissText = stringResource(android.R.string.cancel),
+            confirmEnabled = !state.busy,
+            onConfirm = {
+                pending = null
+                model.run(
+                    action,
+                    collectorRunning = signal.status == RootDiagStatus.Running,
+                    onModemRestartRequested = rootDiag::recoverAfterModemRestart,
+                )
+            },
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(confirmation)
+                Text(stringResource(when {
+                    action.modeAfterLock != null && action.restartsModem -> R.string.lock_confirm_apply_restart
+                    action.modeAfterLock != null -> R.string.lock_confirm_apply_mode
+                    action.restartsModem -> R.string.lock_confirm_restart
+                    else -> R.string.lock_confirm_mode
+                }))
+                if (state.profile.level == LockSupportLevel.ProbeOnly) {
+                    Text(stringResource(R.string.lock_confirm_unverified))
                 }
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    pending = null
-                    model.run(action, onModemRestartRequested = rootDiag::recoverAfterModemRestart)
-                }, enabled = !state.busy) {
-                    Text(stringResource(R.string.lock_apply))
-                }
-            },
-            dismissButton = {
-                TextButton({ pending = null }) { Text(stringResource(android.R.string.cancel)) }
-            },
-        )
+            }
+        }
     }
 }
 

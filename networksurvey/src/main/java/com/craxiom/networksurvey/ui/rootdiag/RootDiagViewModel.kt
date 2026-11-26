@@ -74,6 +74,7 @@ internal data class RootSignalState(
     val nrCarriers: List<NrCarrier> = emptyList(),
     val hasModemPackets: Boolean = false,
     val modemWaitTimedOut: Boolean = false,
+    val lastNeighborMeasurementAt: Map<String, Long> = emptyMap(),
 ) {
     fun hasLiveServingCell(protocol: String?, now: Long): Boolean =
         status == RootDiagStatus.Running && records.any { record ->
@@ -90,6 +91,7 @@ internal data class RootSignalState(
 internal enum class QmdlPhase { Idle, Starting, Recording, Stopping }
 internal enum class QmdlResult { Saved, Limited, Interrupted, Empty, Error }
 internal const val NR_RX_SAMPLE_TIMEOUT = 4_000L
+internal const val DIAG_MEASUREMENT_TIMEOUT_MS = 30_000L
 
 internal data class QmdlState(
     val phase: QmdlPhase = QmdlPhase.Idle,
@@ -119,7 +121,7 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
     private val nrChart = CellularChartViewModel()
     private val lteChart = CellularChartViewModel()
     internal fun chartFor(rat: String) = if (rat == "NR") nrChart else lteChart
-    // NAS/IMS configuration changes infrequently and the collector restarts on foreground entry.
+    // NAS/IMS configuration changes infrequently. Screen lock must not restart a collector that is still alive.
     private val lastConfiguration = linkedMapOf<String, DiagRecord>()
     private val lastMeasurements = mutableMapOf<String, DiagRecord>()
     private val diagnosticRecords = ArrayDeque<JSONObject>()
@@ -325,7 +327,7 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
         val androidLteSinr = AndroidLteSinrReader.snapshot()
         val androidNrBatches = AndroidNrCarriers.diagnostics()
         val rootNrCa = nrCaObservations.toList()
-        val neighborTables = neighborTableDiagnostics(snapshot.records)
+        val neighborTables = neighborTableDiagnostics(snapshot)
         val invalidLines = invalidLineCount
         withContext(Dispatchers.IO) {
             val tasks = SurveyTaskStore.get(app)
@@ -454,6 +456,7 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
     private var nextId = 0L
     private var firstVisibleMessageId = 0L
     private var capture: Job? = null
+    private var collectorProcess: Process? = null
     private var modemRecovery: Job? = null
     private var foreground = false
     private var pausedByUser = false
@@ -558,11 +561,22 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
         applyCollectionPolicy()
     }
 
+    private fun collectorProcessAlive(): Boolean = collectorProcess?.isAlive == true
+
+    /** Test hook: screen lock must not cancel the capture job that owns the live process. */
+    internal fun captureWasCancelled(): Boolean = capture?.isCancelled == true
+
+    internal fun bindLiveCollectorForTest(process: Process, status: RootDiagStatus) {
+        collectorProcess = process
+        signalState.value = signalState.value.copy(status = status)
+    }
+
     private fun currentMode(): DiagRecordingPolicy.Mode = DiagRecordingPolicy.mode(
         taskRunning = activeTask != null,
         foreground = foreground,
         serviceMaintained = RootDiagCollectorService.isMaintained,
         paused = pausedByUser,
+        collectorAlive = collectorProcessAlive(),
     )
 
     private fun applyCollectionPolicy(explicitRetry: Boolean = false) {
@@ -571,7 +585,7 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
         if (qmdlTaskId != eligibleQmdlTask()) requestQmdlStop()
         if (DiagRecordingPolicy.shouldListen(mode)) {
             if (capture?.isCancelled == true) restartAfterStop = true
-            if (capture == null && (explicitRetry || signalState.value.status !in setOf(
+            if (capture == null && !collectorProcessAlive() && (explicitRetry || signalState.value.status !in setOf(
                     RootDiagStatus.Denied, RootDiagStatus.Unavailable, RootDiagStatus.Unsupported,
                 ))) start()
         } else {
@@ -588,11 +602,12 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
     }
 
     private fun start() {
-        if (capture != null) return
+        if (capture != null || collectorProcessAlive()) return
         if (!DiagRecordingPolicy.shouldListen(currentMode())) return
         signalState.value = RootSignalState(
             RootDiagStatus.Checking, lastMeasurements.values.toList() + lastConfiguration.values,
             cachedMeasureIds = lastMeasurements.values.mapTo(mutableSetOf()) { it.id },
+            lastNeighborMeasurementAt = signalState.value.lastNeighborMeasurementAt,
         )
         capture = viewModelScope.launch(start = CoroutineStart.LAZY) {
             try {
@@ -709,6 +724,7 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
         var hasModemPackets = false
         val metrics = mutableMapOf<String, DiagRecord>()
         val cached = lastMeasurements.toMutableMap()
+        val lastNeighborMeasurementAt = signalState.value.lastNeighborMeasurementAt.toMutableMap()
         val nrCarriers = RootNrCarriers()
         val measurementConfigs = mutableMapOf<String, RrcMeasurementConfig>()
         var readyAt: Long? = null
@@ -734,10 +750,10 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
                 when (record.type) {
                     "nr_rach" -> false
                     "nr_ssb_rx" -> now - record.receivedAt > NR_RX_SAMPLE_TIMEOUT
-                    else -> now - record.receivedAt > MEASUREMENT_TIMEOUT
+                    else -> now - record.receivedAt > DIAG_MEASUREMENT_TIMEOUT_MS
                 }
             }
-            if (readyAt?.let { now - it > MEASUREMENT_TIMEOUT } == true) cached.clear()
+            if (readyAt?.let { now - it > DIAG_MEASUREMENT_TIMEOUT_MS } == true) cached.clear()
             lastMeasurements.clear()
             lastMeasurements.putAll(cached)
             lastMeasurements.putAll(metrics)
@@ -771,6 +787,7 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
                 hasModemPackets = hasModemPackets,
                 modemWaitTimedOut = status == RootDiagStatus.Running && !hasModemPackets &&
                     readyAt?.let { now - it >= MODEM_WAIT_TIMEOUT } == true,
+                lastNeighborMeasurementAt = lastNeighborMeasurementAt.toMap(),
             )
             publishOverlay(status, signalState.value.records)
             publishCapability()
@@ -801,6 +818,12 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
         fun storeMeasurement(key: String, record: DiagRecord) {
             cached.remove(key)
             metrics[key] = record
+            val rat = when (record.type) {
+                "lte_meas" -> "LTE"
+                "nr_meas", "nr_neighbor_sinr" -> "NR"
+                else -> return
+            }
+            lastNeighborMeasurementAt[rat] = record.receivedAt
         }
 
         fun removeMeasurements(prefix: String) {
@@ -1323,7 +1346,10 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
                 ProcessBuilder("su", "-c", collectorCommand(helper))
                     .redirectErrorStream(true)
                     .start()
-                    .also { process = it }
+                    .also {
+                        process = it
+                        collectorProcess = it
+                    }
             }
             val stream = running.inputStream
             do {
@@ -1435,6 +1461,7 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
                     }
                 }
             }
+            if (collectorProcess === process) collectorProcess = null
             if (qmdlState.value.phase != QmdlPhase.Idle || qmdlState.value.recovering) {
                 withContext(NonCancellable) {
                     finishQmdl(QmdlResult.Interrupted)
@@ -1481,7 +1508,6 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
 
     private companion object {
         const val MAX_MESSAGES = 4_000
-        const val MEASUREMENT_TIMEOUT = 30_000L
         const val MODEM_WAIT_TIMEOUT = 20_000L
         const val QMDL_ACK_TIMEOUT = 8_000L
         const val MAX_DIAGNOSTIC_MESSAGES = 400

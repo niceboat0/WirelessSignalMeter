@@ -30,17 +30,13 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Slider
+import top.yukonga.miuix.kmp.basic.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -69,6 +65,10 @@ import com.baidu.mapapi.map.TextureMapView
 import com.baidu.mapapi.model.LatLng
 import com.baidu.mapapi.model.LatLngBounds
 import com.craxiom.networksurvey.R
+import com.craxiom.networksurvey.ui.common.AppDialog
+import com.craxiom.networksurvey.ui.common.AppMenu
+import com.craxiom.networksurvey.ui.common.AppMenuItem
+import top.yukonga.miuix.kmp.basic.Scaffold
 import com.craxiom.networksurvey.db.MapPointDbHelper
 import com.craxiom.networksurvey.db.SurveyTaskStore
 import com.craxiom.networksurvey.db.toJson
@@ -286,6 +286,7 @@ internal fun RoadCoverageScreen(onBack: () -> Unit) {
     }
 
     Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
         contentWindowInsets = WindowInsets.safeDrawing,
         topBar = { TitleBar(stringResource(R.string.tool_road_coverage_title), compact = true, onBackClick = onBack) },
     ) { padding ->
@@ -313,18 +314,18 @@ internal fun RoadCoverageScreen(onBack: () -> Unit) {
                     IconButton(onClick = { replayMenu = true }) {
                         Icon(Icons.Rounded.MoreVert, stringResource(R.string.road_options))
                     }
-                    DropdownMenu(expanded = replayMenu, onDismissRequest = { replayMenu = false }) {
-                        DropdownMenuItem(text = { Text(stringResource(R.string.road_reload)) }, enabled = !busy,
+                    AppMenu(expanded = replayMenu, onDismissRequest = { replayMenu = false }) {
+                        AppMenuItem(title = stringResource(R.string.road_reload), enabled = !busy,
                             onClick = { replayMenu = false; loadSaved() })
-                        DropdownMenuItem(text = { Text(stringResource(R.string.road_import)) }, enabled = !busy,
+                        AppMenuItem(title = stringResource(R.string.road_import), enabled = !busy,
                             onClick = {
                                 replayMenu = false
                                 importCsv.launch(arrayOf("text/*", "application/csv", "application/vnd.ms-excel", "application/octet-stream"))
                             })
-                        DropdownMenuItem(text = { Text(stringResource(R.string.road_export)) }, enabled = !busy && track != null,
+                        AppMenuItem(title = stringResource(R.string.road_export), enabled = !busy && track != null,
                             onClick = { replayMenu = false; export.launch("wireless-route-${track?.startTime}.csv") })
-                        if (!imported) DropdownMenuItem(
-                            text = { Text(stringResource(if (tracking) R.string.road_stop_recording else R.string.road_start_recording)) },
+                        if (!imported) AppMenuItem(
+                            title = stringResource(if (tracking) R.string.road_stop_recording else R.string.road_start_recording),
                             enabled = !busy,
                             onClick = {
                                 replayMenu = false
@@ -426,9 +427,15 @@ internal fun RoadCoverageScreen(onBack: () -> Unit) {
             }
         }
     }
-    if (chooseTask) AlertDialog(
-        onDismissRequest = { chooseTask = false }, title = { Text("回放任务（最近 200 项）") },
-        text = { LazyColumn(Modifier.heightIn(max = 400.dp)) {
+    AppDialog(
+        show = chooseTask,
+        onDismissRequest = { chooseTask = false },
+        title = "回放任务（最近 200 项）",
+        confirmText = "关闭",
+        onConfirm = { chooseTask = false },
+        scrollContent = false,
+    ) {
+        LazyColumn(Modifier.heightIn(max = 400.dp)) {
             itemsIndexed(taskHistory) { _, item ->
                 TextButton(onClick = {
                     replayTaskId = item.id
@@ -444,17 +451,20 @@ internal fun RoadCoverageScreen(onBack: () -> Unit) {
                 replayTaskId = null; selectedTrack = tracks.indexOfFirst { it.taskId == null }
                 selectedSample = 0; focusSample = -1; playing = false; chooseTask = false
             }) { Text("旧版无任务打点") } }
-        } },
-        confirmButton = { TextButton(onClick = { chooseTask = false }) { Text("关闭") } },
-    )
+        }
+    }
     if (timeline) RoadEventTimeline(links, selectedEvent, eventLimited, eventError,
         onDismiss = { timeline = false },
         onSelect = { selectEvent(it); timeline = false },
         onExport = { exportEvents.launch("wireless-task-$replayTaskId.jsonl") })
-    if (chooseTrack) AlertDialog(
+    AppDialog(
+        show = chooseTrack,
         onDismissRequest = { chooseTrack = false },
-        title = { Text(stringResource(R.string.road_choose_track)) },
-        text = {
+        title = stringResource(R.string.road_choose_track),
+        confirmText = stringResource(android.R.string.cancel),
+        onConfirm = { chooseTrack = false },
+        scrollContent = false,
+    ) {
             LazyColumn(Modifier.heightIn(max = 360.dp)) {
                 itemsIndexed(tracks) { index, item ->
                     val sim = item.simSlot?.let { stringResource(R.string.road_sim, it + 1) }
@@ -474,13 +484,15 @@ internal fun RoadCoverageScreen(onBack: () -> Unit) {
                     }
                 }
             }
-        },
-        confirmButton = { TextButton(onClick = { chooseTrack = false }) { Text(stringResource(android.R.string.cancel)) } },
-    )
-    if (showWeakSections && track != null) AlertDialog(
+    }
+    if (track != null) AppDialog(
+        show = showWeakSections,
         onDismissRequest = { showWeakSections = false },
-        title = { Text(stringResource(R.string.road_statistics)) },
-        text = {
+        title = stringResource(R.string.road_statistics),
+        confirmText = stringResource(android.R.string.cancel),
+        onConfirm = { showWeakSections = false },
+        scrollContent = false,
+    ) {
             LazyColumn(Modifier.heightIn(max = 360.dp)) {
                 report?.let { result ->
                     item {
@@ -503,9 +515,7 @@ internal fun RoadCoverageScreen(onBack: () -> Unit) {
                     }) { Text("$start – $end · ${formatRoadValue(section.averageRsrp)} dBm") }
                 }
             }
-        },
-        confirmButton = { TextButton(onClick = { showWeakSections = false }) { Text(stringResource(android.R.string.cancel)) } },
-    )
+    }
 }
 
 private data class RoadLine(val points: List<LatLng>, val colors: List<Int>)
@@ -613,9 +623,17 @@ private fun RoadEventTimeline(links: List<RoadEventLink>, selected: String?, lim
     LaunchedEffect(selected, visible) {
         visible.indexOfFirst { it.event.id == selected }.takeIf { it >= 0 }?.let { state.scrollToItem(it) }
     }
-    AlertDialog(onDismissRequest = onDismiss,
-        title = { Text("事件时间线 · ${links.size}") },
-        text = { Column {
+    AppDialog(
+        show = true,
+        onDismissRequest = onDismiss,
+        title = "事件时间线 · ${links.size}",
+        confirmText = "关闭",
+        onConfirm = onDismiss,
+        dismissText = "导出任务",
+        onDismissAction = onExport,
+        scrollContent = false,
+    ) {
+        Column {
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 for ((key, label) in listOf(null to "全部", "android" to "Android", "root_diag" to "DIAG",
                     "speedtest" to "测速", "task" to "任务")) {
@@ -625,7 +643,7 @@ private fun RoadEventTimeline(links: List<RoadEventLink>, selected: String?, lim
             if (limited) Text("仅显示最近 ${SurveyTaskStore.EVENT_LIMIT} 条事件", style = MaterialTheme.typography.labelSmall)
             if (error) Text("事件读取失败", color = MaterialTheme.colorScheme.error)
             if (visible.isEmpty()) Text("暂无事件", Modifier.padding(vertical = 16.dp))
-            LazyColumn(state = state, modifier = Modifier.heightIn(max = 380.dp)) {
+            LazyColumn(state = state, modifier = Modifier.heightIn(max = 380.dp).weight(1f, fill = false)) {
                 itemsIndexed(visible, key = { _, link -> link.event.id }) { _, link ->
                     Column(Modifier.fillMaxWidth()
                         .background(if (link.event.id == selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent)
@@ -648,10 +666,8 @@ private fun RoadEventTimeline(links: List<RoadEventLink>, selected: String?, lim
             }
             if (links.mapNotNull { it.sampleIndex }.distinct().size > 1_000)
                 Text("地图最多显示最近 1000 个事件位置", style = MaterialTheme.typography.labelSmall)
-        } },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
-        dismissButton = { TextButton(onClick = onExport) { Text("导出任务") } },
-    )
+        }
+    }
 }
 
 private fun roadLines(samples: List<RoadSample>, sinr: Boolean): List<RoadLine> = buildList {

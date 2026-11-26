@@ -9,8 +9,10 @@ import androidx.lifecycle.ViewModel;
 import com.craxiom.messaging.LteRecordData;
 import com.craxiom.messaging.NrRecordData;
 import com.craxiom.networksurvey.model.CellularProtocol;
+import com.craxiom.networksurvey.model.EngineeringParam;
 import com.craxiom.networksurvey.model.NrCarrier;
 import com.craxiom.networksurvey.util.CellularUtils.UplinkReference;
+import com.craxiom.networksurvey.util.OperatorUtil;
 import com.craxiom.networksurvey.util.TelephonyStateUtils.NrMode;
 
 import java.util.Objects;
@@ -84,13 +86,15 @@ public class CellularViewModel extends ViewModel
     private final DistinctLiveData<Location> location = new DistinctLiveData<>();
     private final DistinctLiveData<Boolean> providerEnabled = new DistinctLiveData<>(true);
     private final DistinctLiveData<Boolean> airplaneModeActive = new DistinctLiveData<>(false);
+    private boolean airplaneMode;
 
     // Common Cellular fields
     private final DistinctLiveData<CellularProtocol> servingCellProtocol = new DistinctLiveData<>(CellularProtocol.NONE);
     private final DistinctLiveData<NrMode> nrMode = new DistinctLiveData<>(NrMode.NONE);
     private final DistinctLiveData<String> mcc = new DistinctLiveData<>();
     private final DistinctLiveData<String> mnc = new DistinctLiveData<>();
-    private final DistinctLiveData<String> registeredPlmn = new DistinctLiveData<>("");
+    // Null until registration is known. An empty value marks a confirmed loss of registration.
+    private final DistinctLiveData<String> registeredPlmn = new DistinctLiveData<>();
     private final DistinctLiveData<String> cellPlmns = new DistinctLiveData<>("");
     private final DistinctLiveData<String> areaCode = new DistinctLiveData<>();
     private final DistinctLiveData<Long> cellId = new DistinctLiveData<>(); // NR requires a long
@@ -100,6 +104,22 @@ public class CellularViewModel extends ViewModel
     private final DistinctLiveData<UplinkReference> uplinkReference = new DistinctLiveData<>();
     private final DistinctLiveData<String> band = new DistinctLiveData<>(); // For NR band with name
     private final DistinctLiveData<String> lteBand = new DistinctLiveData<>(); // For LTE band with name
+    private final MutableLiveData<ServingCellMatch> servingCellMatch = new MutableLiveData<>();
+
+    public record ServingCellKey(CellularProtocol protocol, long cellId, String mcc, String mnc,
+                                 String pci, String channel) {}
+
+    public record ServingCellMatch(ServingCellKey key, EngineeringParam parameter) {}
+
+    public LiveData<ServingCellMatch> getServingCellMatch()
+    {
+        return servingCellMatch;
+    }
+
+    public void setServingCellMatch(ServingCellMatch match)
+    {
+        servingCellMatch.setValue(match);
+    }
 
     public record NrBandwidthDiagnostic(List<Integer> reportedKhz, int registeredRat, int displayRat,
                                         boolean singleCarrier, boolean cellMatches, int displayedKhz) {}
@@ -306,9 +326,11 @@ public class CellularViewModel extends ViewModel
         return airplaneModeActive;
     }
 
-    public void setAirplaneModeActive(boolean isAirplaneModeActive)
+    public synchronized void setAirplaneModeActive(boolean isAirplaneModeActive)
     {
+        airplaneMode = isAirplaneModeActive;
         airplaneModeActive.postIfChanged(isAirplaneModeActive);
+        if (airplaneMode) registeredPlmn.postIfChanged("");
     }
 
     public LiveData<CellularProtocol> getServingCellProtocol()
@@ -346,9 +368,15 @@ public class CellularViewModel extends ViewModel
         return registeredPlmn;
     }
 
-    public void setRegisteredPlmn(String value)
+    public synchronized void updateRegisteredPlmn(String plmn, boolean registrationLost)
     {
-        registeredPlmn.postIfChanged(value);
+        if (airplaneMode || registrationLost)
+        {
+            registeredPlmn.postIfChanged("");
+        } else if (OperatorUtil.isValidPlmn(plmn))
+        {
+            registeredPlmn.postIfChanged(plmn.substring(0, 3) + "/" + plmn.substring(3));
+        }
     }
 
     public LiveData<String> getCellPlmns()

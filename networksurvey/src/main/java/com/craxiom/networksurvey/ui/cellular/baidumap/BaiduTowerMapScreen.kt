@@ -51,21 +51,20 @@ import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.rememberModalBottomSheetState
+import com.craxiom.networksurvey.ui.common.AppBottomSheet
+import com.craxiom.networksurvey.ui.common.dialogs.NsConfirmationDialog
+import top.yukonga.miuix.kmp.basic.Scaffold
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -655,22 +654,20 @@ fun BaiduTowerMapScreen(
     }
 
     if (confirmClear) {
-        AlertDialog(
-            onDismissRequest = { confirmClear = false },
-            title = { Text("清空打点？") },
-            text = { Text("将删除已保存的 ${pointCount} 个打点。") },
-            dismissButton = { TextButton(onClick = { confirmClear = false }) { Text("取消") } },
-            confirmButton = {
-                TextButton(onClick = {
-                    confirmClear = false
-                    pointActionBusy = true
-                    scope.launch {
-                        val deleted = runCatching { MapTrack.clear(context) }.isSuccess
-                        if (deleted) pointCount = 0
-                        else Toast.makeText(context, "清空失败", Toast.LENGTH_SHORT).show()
-                        pointActionBusy = false
-                    }
-                }) { Text("清空", color = colors.error) }
+        NsConfirmationDialog(
+            title = "清空打点？",
+            message = "将删除已保存的 ${pointCount} 个打点。",
+            confirmText = "清空",
+            destructive = true,
+            onDismiss = { confirmClear = false },
+            onConfirm = {
+                pointActionBusy = true
+                scope.launch {
+                    val deleted = runCatching { MapTrack.clear(context) }.isSuccess
+                    if (deleted) pointCount = 0
+                    else Toast.makeText(context, "清空失败", Toast.LENGTH_SHORT).show()
+                    pointActionBusy = false
+                }
             },
         )
     }
@@ -898,12 +895,11 @@ private fun MapLayerSheet(
     onClear: () -> Unit,
     onExport: () -> Unit,
 ) {
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState()) {
+    AppBottomSheet(show = true, title = "地图图层", onDismissRequest = onDismiss) {
         Column(
-            Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(start = 20.dp, end = 20.dp, bottom = 20.dp),
+            Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Text("地图图层", style = MaterialTheme.typography.titleLarge)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 FilterChip(selected = labels, onClick = onToggleLabels, label = { Text("扇区名称") })
                 FilterChip(selected = points, onClick = onTogglePoints, label = { Text("打点") })
@@ -972,9 +968,8 @@ private fun TowerSearchSheet(
             completedQuery = term
         }
     }
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState()) {
-        Column(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 16.dp)) {
-            Text("搜索工参", style = MaterialTheme.typography.titleLarge)
+    AppBottomSheet(show = true, title = "搜索工参", onDismissRequest = onDismiss) {
+        Column(Modifier.fillMaxWidth()) {
             OutlinedTextField(
                 value = query,
                 onValueChange = { query = it },

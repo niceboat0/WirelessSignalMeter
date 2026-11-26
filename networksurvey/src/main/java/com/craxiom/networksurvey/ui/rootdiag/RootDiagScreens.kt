@@ -27,15 +27,11 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Search
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -61,6 +57,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.craxiom.networksurvey.R
+import com.craxiom.networksurvey.ui.common.AppDialog
+import com.craxiom.networksurvey.ui.common.AppMenu
+import com.craxiom.networksurvey.ui.common.AppMenuItem
+import androidx.compose.ui.state.ToggleableState
+import top.yukonga.miuix.kmp.basic.Checkbox
 import com.craxiom.networksurvey.ui.dashboard.DashboardCardDefaults
 import com.craxiom.networksurvey.ui.main.appbar.AppBarAction
 import com.craxiom.networksurvey.ui.main.appbar.TitleBar
@@ -71,6 +72,7 @@ import java.util.Date
 import java.util.Locale
 import org.json.JSONArray
 import org.json.JSONObject
+import top.yukonga.miuix.kmp.basic.Scaffold
 
 internal data class DiagField(val label: String, val value: String)
 
@@ -378,21 +380,17 @@ internal fun SignalingScreen(viewModel: RootDiagViewModel, onBack: () -> Unit) {
         )
         return
     }
-    if (confirmQmdl) {
-        AlertDialog(
-            onDismissRequest = { confirmQmdl = false },
-            title = { Text(stringResource(R.string.diag_qmdl_start)) },
-            text = { Text(stringResource(R.string.diag_qmdl_description)) },
-            confirmButton = {
-                TextButton(onClick = { confirmQmdl = false; viewModel.startQmdl() }) {
-                    Text(stringResource(R.string.diag_qmdl_start))
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { confirmQmdl = false }) { Text(stringResource(android.R.string.cancel)) }
-            },
-        )
-    }
+    AppDialog(
+        show = confirmQmdl,
+        onDismissRequest = { confirmQmdl = false },
+        title = stringResource(R.string.diag_qmdl_start),
+        confirmText = stringResource(R.string.diag_qmdl_start),
+        dismissText = stringResource(android.R.string.cancel),
+        onConfirm = {
+            confirmQmdl = false
+            viewModel.startQmdl()
+        },
+    ) { Text(stringResource(R.string.diag_qmdl_description)) }
 
     Scaffold(
         topBar = {
@@ -411,21 +409,21 @@ internal fun SignalingScreen(viewModel: RootDiagViewModel, onBack: () -> Unit) {
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding)) {
             Box(Modifier.align(Alignment.End).padding(end = 12.dp)) {
-                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                    AppMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                         val running = status.status in setOf(RootDiagStatus.Checking, RootDiagStatus.Starting, RootDiagStatus.Running)
-                        DropdownMenuItem(
-                            text = { Text(stringResource(R.string.diag_follow_latest)) },
-                            trailingIcon = { androidx.compose.material3.Checkbox(checked = followLatest, onCheckedChange = null) },
+                        AppMenuItem(
+                            title = stringResource(R.string.diag_follow_latest),
+                            trailingIcon = { Checkbox(state = ToggleableState(followLatest), onClick = null) },
                             onClick = { menuOpen = false; followLatest = !followLatest },
                         )
-                        DropdownMenuItem(
-                            text = { Text(stringResource(R.string.diag_clear_short)) },
+                        AppMenuItem(
+                            title = stringResource(R.string.diag_clear_short),
                             enabled = records.isNotEmpty(),
                             onClick = { menuOpen = false; viewModel.clearSignaling() },
                         )
                         HorizontalDivider()
-                        DropdownMenuItem(
-                            text = { Text(stringResource(if (qmdl.phase == QmdlPhase.Idle) R.string.diag_qmdl_start else R.string.diag_qmdl_stop)) },
+                        AppMenuItem(
+                            title = stringResource(if (qmdl.phase == QmdlPhase.Idle) R.string.diag_qmdl_start else R.string.diag_qmdl_stop),
                             enabled = qmdl.phase == QmdlPhase.Recording ||
                                 qmdl.phase == QmdlPhase.Idle && !qmdl.recovering &&
                                     status.status == RootDiagStatus.Running &&
@@ -436,8 +434,8 @@ internal fun SignalingScreen(viewModel: RootDiagViewModel, onBack: () -> Unit) {
                             },
                         )
                         if (qmdl.hasRecording) {
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.diag_qmdl_export)) },
+                            AppMenuItem(
+                                title = stringResource(R.string.diag_qmdl_export),
                                 enabled = qmdl.phase == QmdlPhase.Idle && !qmdl.recovering && exportProgress == null,
                                 onClick = {
                                     menuOpen = false
@@ -445,16 +443,16 @@ internal fun SignalingScreen(viewModel: RootDiagViewModel, onBack: () -> Unit) {
                                 },
                             )
                         }
-                        DropdownMenuItem(
-                            text = { Text(stringResource(if (running) R.string.diag_pause else R.string.diag_retry)) },
+                        AppMenuItem(
+                            title = stringResource(if (running) R.string.diag_pause else R.string.diag_retry),
                             onClick = { menuOpen = false; if (running) viewModel.pause() else viewModel.retry() },
                         )
-                        DropdownMenuItem(
-                            text = { Text(stringResource(if (showPaging) R.string.diag_hide_paging else R.string.diag_show_paging)) },
+                        AppMenuItem(
+                            title = stringResource(if (showPaging) R.string.diag_hide_paging else R.string.diag_show_paging),
                             onClick = { menuOpen = false; showPaging = !showPaging },
                         )
-                        DropdownMenuItem(
-                            text = { Text(stringResource(if (showDiagnostics) R.string.diag_hide_diagnostics else R.string.diag_show_diagnostics)) },
+                        AppMenuItem(
+                            title = stringResource(if (showDiagnostics) R.string.diag_hide_diagnostics else R.string.diag_show_diagnostics),
                             onClick = { menuOpen = false; showDiagnostics = !showDiagnostics },
                         )
                     }

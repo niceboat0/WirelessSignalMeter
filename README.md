@@ -7,7 +7,7 @@
 <p align="center">Android LTE / 5G NR 信号测量、基带信令与基站地图</p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Android-13%2B-1B835C?style=flat-square" alt="Android 13 及以上">
+  <img src="https://img.shields.io/badge/Android-11%2B-1B835C?style=flat-square" alt="Android 11 及以上">
   <img src="https://img.shields.io/badge/ABI-arm64--v8a-3454A5?style=flat-square" alt="支持 arm64-v8a">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-6E5494?style=flat-square" alt="Apache License 2.0"></a>
 </p>
@@ -41,7 +41,7 @@ flowchart LR
 
 ## 快速开始
 
-使用 Android 13 及以上的 `arm64-v8a` 设备。普通信号页读取 Android 小区数据。DIAG 信令和 QMDL 需要 Root 授权以及可用的 Qualcomm DIAG 接口，字段覆盖随设备和基带版本变化。
+当前源码支持 Android 11 及以上的 `arm64-v8a` 设备；已发布旧版的最低系统要求以其安装包为准。普通信号页读取 Android 小区数据。DIAG 信令和 QMDL 需要 Root 授权以及可用的 Qualcomm DIAG 接口，字段覆盖随设备和基带版本变化。
 
 1. **信号测量** · 打开「信号」，按需授予系统权限，查看当前小区、邻区和信号趋势。
 2. **地图匹配** · 在「设置 → 基站工参」导入 CSV 并检查字段映射，然后打开「工具 → 基站地图」。

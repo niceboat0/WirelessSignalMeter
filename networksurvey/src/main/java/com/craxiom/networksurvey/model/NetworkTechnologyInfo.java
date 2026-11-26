@@ -29,6 +29,7 @@ import java.util.List;
  * @param registeredDataRat   Registered packet-switched WWAN RAT from ServiceState.
  * @param registeredNci       NR cell identity from the same ServiceState, or -1 if unavailable.
  * @param registeredPlmn      The registered mobile network's PLMN as 5 or 6 digits.
+ * @param registrationLost   Whether ServiceState confirms loss of cellular registration.
  * @param subscriptionCarrier The SIM's provider name, with registered-operator fallback.
  */
 public record NetworkTechnologyInfo(
@@ -45,6 +46,7 @@ public record NetworkTechnologyInfo(
         int registeredDataRat,
         long registeredNci,
         String registeredPlmn,
+        boolean registrationLost,
         String subscriptionCarrier)
 {
 }

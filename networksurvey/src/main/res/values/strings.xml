@@ -1297,11 +1297,6 @@
     <string name="cell_downlink_reference_frequency">Downlink reference frequency</string>
     <string name="cell_uplink_reference_channel">Uplink reference channel</string>
     <string name="cell_uplink_reference_frequency">Uplink reference frequency</string>
-    <string name="nr_bandwidth_manual_value">%1$d MHz · Entered</string>
-    <string name="nr_bandwidth_history_value">%1$d MHz · Last measured</string>
-    <string name="nr_bandwidth_edit_title">Enter this cell’s bandwidth</string>
-    <string name="nr_bandwidth_mhz">Bandwidth (MHz)</string>
-    <string name="nr_bandwidth_edit_help">Enter a confirmed bandwidth from 5 to 2000 MHz. Clear the field to remove the saved entry.</string>
     <string name="diag_frequency_label">Frequency</string>
     <string name="diag_cell_details">Cell details</string>
     <string name="diag_layers">Layers</string>
@@ -1534,4 +1529,32 @@
     <string name="update_download_failed">Update download failed. Please try again later.</string>
     <string name="update_secure_service_unavailable">The secure update service is unavailable or returned invalid update information. Try again later.</string>
 
+    <string name="settings_general_group">General</string>
+    <string name="settings_about_group">About</string>
+    <string name="tools_field_tests">Field tests</string>
+    <string name="tools_diagnostics">Diagnostics and controls</string>
+    <string name="github_update_current_version">Current version %1$s</string>
+    <string name="github_update_check">Check for updates</string>
+    <string name="github_update_checking">Checking GitHub releases…</string>
+    <string name="github_update_up_to_date">The app is up to date</string>
+    <string name="github_update_no_release">No stable version has been published on GitHub yet</string>
+    <string name="github_update_available">New version %1$s</string>
+    <string name="github_update_download">Download APK</string>
+    <string name="github_update_view_release">View releases</string>
+    <string name="github_update_failed">Unable to check for updates</string>
+    <string name="github_update_retry">Retry</string>
+    <string name="github_update_network_error">Cannot connect to GitHub. Check your connection and try again.</string>
+    <string name="github_update_rate_limited">GitHub is rate limiting requests. Try again later.</string>
+    <string name="github_update_server_error">GitHub is temporarily unavailable. Try again later.</string>
+    <string name="github_update_invalid_response">The release information is invalid. Try again later.</string>
+    <string name="github_feedback">Report an issue</string>
+    <string name="external_link_unavailable">Unable to open this link</string>
+    <string name="interface_style">Interface style</string>
+    <string name="interface_style_classic">MIUI large cards</string>
+    <string name="interface_style_minimal">Simple list</string>
+    <string name="interface_style_compact">Compact readings</string>
+    <string name="floating_navigation">Floating navigation bar</string>
+    <string name="liquid_glass">Liquid glass</string>
+    <string name="liquid_glass_needs_floating">Available with floating navigation</string>
+    <string name="liquid_glass_unsupported">Liquid glass is unavailable on this device</string>
 </resources>

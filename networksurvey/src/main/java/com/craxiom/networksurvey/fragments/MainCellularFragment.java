@@ -1,17 +1,21 @@
 package com.craxiom.networksurvey.fragments;
 
+import android.Manifest;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.pm.PackageManager;
 import android.os.Bundle;
 import android.telephony.SubscriptionInfo;
+import android.telephony.SubscriptionManager;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+import androidx.core.content.ContextCompat;
 import androidx.fragment.app.Fragment;
 import androidx.lifecycle.LiveData;
 import androidx.lifecycle.MutableLiveData;
@@ -90,7 +94,7 @@ public class MainCellularFragment extends AServiceDataFragment
     /** Active Android subscription id for the selected SIM, or INVALID if unknown. */
     public int getCurrentSubscriptionId() {
         if (activeSubscriptionInfoList == null || activeSubscriptionInfoList.isEmpty()) {
-            return android.telephony.SubscriptionManager.INVALID_SUBSCRIPTION_ID;
+            return SubscriptionManager.INVALID_SUBSCRIPTION_ID;
         }
         int index = currentSimIndex;
         if (index < 0 || index >= activeSubscriptionInfoList.size()) index = 0;
@@ -136,6 +140,21 @@ public class MainCellularFragment extends AServiceDataFragment
         Context context = getContext();
         if (context != null)
         {
+            if (ContextCompat.checkSelfPermission(context, Manifest.permission.READ_PHONE_STATE)
+                    == PackageManager.PERMISSION_GRANTED)
+            {
+                final SubscriptionManager subscriptions = context.getSystemService(SubscriptionManager.class);
+                if (subscriptions != null)
+                {
+                    try
+                    {
+                        setActiveSubscriptions(subscriptions.getActiveSubscriptionInfoList());
+                    } catch (SecurityException ignored)
+                    {
+                        // The service refreshes the list after binding.
+                    }
+                }
+            }
             LocalBroadcastManager.getInstance(context).registerReceiver(simBroadcastReceiver,
                     new IntentFilter(SimChangeReceiver.SIM_CHANGED_INTENT));
         }
@@ -191,13 +210,7 @@ public class MainCellularFragment extends AServiceDataFragment
 
     private void updateSubscriptions(NetworkSurveyService service)
     {
-        activeSubscriptionInfoList = service.getActiveSubscriptionInfoList();
-
-        // 确保索引不越界
-        if (currentSimIndex >= activeSubscriptionInfoList.size()) {
-            currentSimIndex = 0;
-        }
-
+        setActiveSubscriptions(service.getActiveSubscriptionInfoList());
         showNetworkDetailsFragment();
 
         // 通知 Compose 层当前 SIM 状态
@@ -206,27 +219,31 @@ public class MainCellularFragment extends AServiceDataFragment
         }
     }
 
+    private void setActiveSubscriptions(List<SubscriptionInfo> subscriptions)
+    {
+        activeSubscriptionInfoList = subscriptions == null ? List.of() : subscriptions;
+        if (currentSimIndex >= activeSubscriptionInfoList.size()) currentSimIndex = 0;
+    }
+
     /** 根据当前 SIM 索引创建/替换 NetworkDetailsFragment */
     private void showNetworkDetailsFragment()
     {
         if (getView() == null) return;
 
-        int subscriptionId;
-        if (activeSubscriptionInfoList == null || activeSubscriptionInfoList.isEmpty()) {
-            subscriptionId = CellularController.DEFAULT_SUBSCRIPTION_ID;
-        } else if (activeSubscriptionInfoList.size() == 1) {
-            subscriptionId = CellularController.DEFAULT_SUBSCRIPTION_ID;
-        } else {
-            subscriptionId = activeSubscriptionInfoList.get(currentSimIndex).getSubscriptionId();
-        }
+        final int uiSubscriptionId = getCurrentSubscriptionId();
+        final int subscriptionId = getSimCount() > 1
+                ? uiSubscriptionId : CellularController.DEFAULT_SUBSCRIPTION_ID;
 
         Fragment current = getChildFragmentManager().findFragmentById(R.id.cellular_detail_container);
         if (current instanceof NetworkDetailsFragment && current.getArguments() != null &&
-                current.getArguments().getInt(NetworkDetailsFragment.SUBSCRIPTION_ID_KEY) == subscriptionId) return;
+                current.getArguments().getInt(NetworkDetailsFragment.SUBSCRIPTION_ID_KEY) == subscriptionId &&
+                current.getArguments().getInt(NetworkDetailsFragment.UI_SUBSCRIPTION_ID_KEY,
+                        SubscriptionManager.INVALID_SUBSCRIPTION_ID) == uiSubscriptionId) return;
 
         NetworkDetailsFragment fragment = new NetworkDetailsFragment();
         Bundle args = new Bundle();
         args.putInt(NetworkDetailsFragment.SUBSCRIPTION_ID_KEY, subscriptionId);
+        args.putInt(NetworkDetailsFragment.UI_SUBSCRIPTION_ID_KEY, uiSubscriptionId);
         fragment.setArguments(args);
 
         getChildFragmentManager().beginTransaction()

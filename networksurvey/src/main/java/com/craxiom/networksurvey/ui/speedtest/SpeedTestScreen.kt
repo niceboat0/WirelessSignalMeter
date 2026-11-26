@@ -12,6 +12,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material3.*
+import top.yukonga.miuix.kmp.basic.Scaffold
+import top.yukonga.miuix.kmp.basic.Switch
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
@@ -35,6 +37,7 @@ import com.craxiom.networksurvey.db.SpeedTestDbHelper
 import com.craxiom.networksurvey.db.SurveyTaskStore
 import com.craxiom.networksurvey.model.SurveyEvent
 import com.craxiom.networksurvey.model.SpeedTestRecord
+import com.craxiom.networksurvey.ui.common.AppBottomSheet
 import com.craxiom.networksurvey.ui.dashboard.DashboardCardDefaults
 import com.craxiom.networksurvey.ui.dashboard.DashboardCardHeader
 import com.craxiom.networksurvey.ui.main.appbar.TitleBar
@@ -453,39 +456,47 @@ fun SpeedTestScreen(onBack: () -> Unit, modifier: Modifier = Modifier) {
     }
     }
 
-    if (showNodes) {
-        ModalBottomSheet(onDismissRequest = { showNodes = false }, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
-            Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 12.dp)) {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text("预设测速节点", Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
-                    IconButton(onClick = ::refreshNodes, enabled = !nodeLoading) { Icon(Icons.Rounded.Refresh, "刷新节点") }
-                }
-                if (nodeLoading) LinearProgressIndicator(Modifier.fillMaxWidth())
-                if (nodeError.isNotEmpty()) Text(nodeError, Modifier.padding(vertical = 8.dp), color = colors.onSurfaceVariant)
-                LazyColumn(Modifier.heightIn(max = 420.dp)) {
-                    items(nodes) { node ->
-                        TextButton(onClick = { edit(SpeedServer(SpeedProtocol.HTTP, node.url)); protocol = SpeedProtocol.HTTP; showNodes = false },
-                            modifier = Modifier.fillMaxWidth()) { Text(node.name) }
-                    }
+    AppBottomSheet(
+        show = showNodes,
+        title = "预设测速节点",
+        onDismissRequest = { showNodes = false },
+        endAction = {
+            IconButton(onClick = ::refreshNodes, enabled = !nodeLoading) { Icon(Icons.Rounded.Refresh, "刷新节点") }
+        },
+    ) {
+        Column(Modifier.fillMaxWidth()) {
+            if (nodeLoading) LinearProgressIndicator(Modifier.fillMaxWidth())
+            if (nodeError.isNotEmpty()) Text(nodeError, Modifier.padding(vertical = 8.dp), color = colors.onSurfaceVariant)
+            LazyColumn(Modifier.heightIn(max = 420.dp)) {
+                items(nodes) { node ->
+                    TextButton(
+                        onClick = {
+                            edit(SpeedServer(SpeedProtocol.HTTP, node.url))
+                            protocol = SpeedProtocol.HTTP
+                            showNodes = false
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text(node.name) }
                 }
             }
         }
     }
-    if (showSaved) {
-        ModalBottomSheet(onDismissRequest = { showSaved = false }, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
-            Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 16.dp)) {
-                Text("已保存的服务器", style = MaterialTheme.typography.titleLarge)
-                if (saved.isEmpty()) Text("暂无保存的服务器", Modifier.padding(vertical = 16.dp))
-                LazyColumn(Modifier.heightIn(max = 420.dp)) {
-                    items(saved) { profile ->
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            TextButton(
-                                onClick = { edit(profile); protocol = profile.protocol; showSaved = false },
-                                modifier = Modifier.weight(1f),
-                            ) { Text("${profile.protocol.label} · ${profile.address.substringBefore('?')}", maxLines = 2) }
-                            IconButton(onClick = { scope.launch { saved = withContext(Dispatchers.IO) { profiles.remove(profile) } } }) {
-                                Icon(Icons.Rounded.Delete, "删除保存的服务器")
-                            }
+    AppBottomSheet(show = showSaved, title = "已保存的服务器", onDismissRequest = { showSaved = false }) {
+        Column(Modifier.fillMaxWidth()) {
+            if (saved.isEmpty()) Text("暂无保存的服务器", Modifier.padding(vertical = 16.dp))
+            LazyColumn(Modifier.heightIn(max = 420.dp)) {
+                items(saved) { profile ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        TextButton(
+                            onClick = {
+                                edit(profile)
+                                protocol = profile.protocol
+                                showSaved = false
+                            },
+                            modifier = Modifier.weight(1f),
+                        ) { Text("${profile.protocol.label} · ${profile.address.substringBefore('?')}", maxLines = 2) }
+                        IconButton(onClick = { scope.launch { saved = withContext(Dispatchers.IO) { profiles.remove(profile) } } }) {
+                            Icon(Icons.Rounded.Delete, "删除保存的服务器")
                         }
                     }
                 }
@@ -493,9 +504,12 @@ fun SpeedTestScreen(onBack: () -> Unit, modifier: Modifier = Modifier) {
         }
     }
     browser?.let { target ->
-        ModalBottomSheet(onDismissRequest = { browser = null }, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
-            Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 14.dp)) {
-                Text(if (target.upload) "选择上传目录" else "选择测速文件", style = MaterialTheme.typography.titleLarge)
+        AppBottomSheet(
+            show = true,
+            title = if (target.upload) "选择上传目录" else "选择测速文件",
+            onDismissRequest = { browser = null },
+        ) {
+            Column(Modifier.fillMaxWidth()) {
                 Text(target.path, style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
                 if (browsing) LinearProgressIndicator(Modifier.fillMaxWidth().padding(vertical = 8.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

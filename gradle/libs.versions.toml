@@ -16,7 +16,7 @@
 [versions]
 # Build tooling / plugins
 agp = "9.2.1"
-kotlin = "2.4.10"
+kotlin = "2.4.21"
 # KSP2 versions independently of Kotlin. 2.3.10+ is required for Kotlin 2.4.x
 # (older KSP cannot handle Kotlin 2.4's default module names containing ':').
 ksp = "2.3.10"
@@ -27,7 +27,8 @@ hilt = "2.60.1"
 room = "2.8.4"
 navigation = "2.9.8"
 networkSurveyMessaging = "2.6.0"
-composeBom = "2026.08.00"
+composeBom = "2026.11.01"
+miuix = "0.9.5-rc01"
 
 # Single-library versions
 androidxAppcompat = "1.8.0"
@@ -63,6 +64,10 @@ barista = "4.3.0"
 truth = "1.4.5"
 
 [libraries]
+miuix-ui = { module = "top.yukonga.miuix.kmp:miuix-ui-android", version.ref = "miuix" }
+miuix-preference = { module = "top.yukonga.miuix.kmp:miuix-preference-android", version.ref = "miuix" }
+miuix-blur = { module = "top.yukonga.miuix.kmp:miuix-blur-android", version.ref = "miuix" }
+
 # AndroidX core
 androidx-appcompat = { module = "androidx.appcompat:appcompat", version.ref = "androidxAppcompat" }
 androidx-localbroadcastmanager = { module = "androidx.localbroadcastmanager:localbroadcastmanager", version.ref = "localbroadcastmanager" }

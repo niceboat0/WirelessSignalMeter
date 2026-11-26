@@ -1,41 +1,55 @@
 package com.craxiom.networksurvey.ui.acknowledgments
 
+import android.content.ActivityNotFoundException
+import android.content.Context
 import android.content.Intent
-import androidx.compose.foundation.clickable
+import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
-import top.yukonga.miuix.kmp.basic.Card
-import top.yukonga.miuix.kmp.basic.CardDefaults
-import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material.icons.automirrored.rounded.OpenInNew
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.core.net.toUri
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.craxiom.networksurvey.R
 import com.craxiom.networksurvey.model.LibraryAcknowledgment
-import androidx.core.net.toUri
+import com.craxiom.networksurvey.ui.main.appbar.TitleBar
+import com.craxiom.networksurvey.ui.theme.LocalInterfaceStyle
+import top.yukonga.miuix.kmp.basic.BasicComponent
+import top.yukonga.miuix.kmp.basic.Card
+import top.yukonga.miuix.kmp.basic.CardDefaults
 
 /**
  * Main Acknowledgments screen that displays all open source library acknowledgments.
@@ -53,80 +67,74 @@ fun AcknowledgmentsScreen(
     )
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun AcknowledgmentsContent(
     uiState: AcknowledgmentsUiState,
     onNavigateUp: () -> Unit
 ) {
+    val style = LocalInterfaceStyle.current
     Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
+        contentWindowInsets = WindowInsets.safeDrawing,
         topBar = {
-            TopAppBar(
-                title = { Text(text = stringResource(R.string.acknowledgments_title)) },
-                navigationIcon = {
-                    IconButton(onClick = onNavigateUp) {
-                        Icon(
-                            imageVector = Icons.Default.ArrowBack,
-                            contentDescription = stringResource(R.string.navigate_back)
-                        )
-                    }
-                }
+            TitleBar(
+                title = stringResource(R.string.acknowledgments_title),
+                compact = true,
+                onBackClick = onNavigateUp,
             )
         }
     ) { paddingValues ->
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(paddingValues),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+        Box(
+            modifier = Modifier.fillMaxSize().padding(paddingValues).consumeWindowInsets(paddingValues),
+            contentAlignment = Alignment.TopCenter,
         ) {
-            item {
-                LicenseIntroduction()
-            }
+            LazyColumn(
+                modifier = Modifier.widthIn(max = 600.dp).fillMaxSize(),
+                contentPadding = PaddingValues(
+                    start = style.cardPadding, end = style.cardPadding,
+                    top = style.parameterRowPadding, bottom = 24.dp,
+                ),
+                verticalArrangement = Arrangement.spacedBy(style.sectionSpacing),
+            ) {
+                item("introduction") {
+                    LicenseIntroduction()
+                }
 
-            // Special Acknowledgments
-            if (uiState.specialAcknowledgments.isNotEmpty()) {
-                item {
-                    CategoryHeader(stringResource(R.string.acknowledgments_special_title))
+                if (uiState.specialAcknowledgments.isNotEmpty()) {
+                    item("special-heading") {
+                        CategoryHeader(stringResource(R.string.acknowledgments_special_title))
+                    }
+                    items(uiState.specialAcknowledgments, key = { "special:${it.name}:${it.sourceUrl}" }) { library ->
+                        LibraryCard(library)
+                    }
                 }
-                items(uiState.specialAcknowledgments) { library ->
-                    LibraryCard(library = library, isSpecial = true)
-                }
-            }
 
-            // Core Libraries
-            if (uiState.coreLibraries.isNotEmpty()) {
-                item {
-                    CategoryHeader(stringResource(R.string.acknowledgments_core_title))
+                if (uiState.coreLibraries.isNotEmpty()) {
+                    item("core-heading") {
+                        CategoryHeader(stringResource(R.string.acknowledgments_core_title))
+                    }
+                    items(uiState.coreLibraries, key = { "core:${it.name}:${it.sourceUrl}" }) { library ->
+                        LibraryCard(library)
+                    }
                 }
-                items(uiState.coreLibraries) { library ->
-                    LibraryCard(library = library)
-                }
-            }
 
-            // UI Libraries
-            if (uiState.uiLibraries.isNotEmpty()) {
-                item {
-                    CategoryHeader(stringResource(R.string.acknowledgments_ui_title))
+                if (uiState.uiLibraries.isNotEmpty()) {
+                    item("ui-heading") {
+                        CategoryHeader(stringResource(R.string.acknowledgments_ui_title))
+                    }
+                    items(uiState.uiLibraries, key = { "ui:${it.name}:${it.sourceUrl}" }) { library ->
+                        LibraryCard(library)
+                    }
                 }
-                items(uiState.uiLibraries) { library ->
-                    LibraryCard(library = library)
-                }
-            }
 
-            // Utility Libraries
-            if (uiState.utilityLibraries.isNotEmpty()) {
-                item {
-                    CategoryHeader(stringResource(R.string.acknowledgments_utility_title))
+                if (uiState.utilityLibraries.isNotEmpty()) {
+                    item("utility-heading") {
+                        CategoryHeader(stringResource(R.string.acknowledgments_utility_title))
+                    }
+                    items(uiState.utilityLibraries, key = { "utility:${it.name}:${it.sourceUrl}" }) { library ->
+                        LibraryCard(library)
+                    }
                 }
-                items(uiState.utilityLibraries) { library ->
-                    LibraryCard(library = library)
-                }
-            }
-
-            // Bottom spacer
-            item {
-                Spacer(modifier = Modifier.height(16.dp))
             }
         }
     }
@@ -134,20 +142,22 @@ private fun AcknowledgmentsContent(
 
 @Composable
 private fun LicenseIntroduction() {
+    val style = LocalInterfaceStyle.current
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+            .padding(horizontal = 4.dp, vertical = style.parameterRowPadding),
+        verticalArrangement = Arrangement.spacedBy(style.parameterRowPadding),
     ) {
         Text(
             text = stringResource(R.string.acknowledgments_license_title),
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Bold,
+            style = MaterialTheme.typography.titleSmall.copy(letterSpacing = 0.sp),
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.semantics { heading() },
         )
         Text(
             text = stringResource(R.string.acknowledgments_upstream_notice),
-            style = MaterialTheme.typography.bodyMedium,
+            style = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp, lineHeight = 20.sp, letterSpacing = 0.sp),
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
@@ -155,102 +165,92 @@ private fun LicenseIntroduction() {
 
 @Composable
 private fun CategoryHeader(title: String) {
+    val style = LocalInterfaceStyle.current
     Text(
         text = title,
-        style = MaterialTheme.typography.titleMedium,
-        fontWeight = FontWeight.Bold,
-        color = MaterialTheme.colorScheme.primary,
-        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+        style = MaterialTheme.typography.titleSmall.copy(letterSpacing = 0.sp),
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(start = 4.dp, top = style.parameterRowPadding, bottom = 2.dp)
+            .semantics { heading() },
     )
 }
 
 @Composable
-private fun LibraryCard(
-    library: LibraryAcknowledgment,
-    isSpecial: Boolean = false
-) {
+private fun LibraryCard(library: LibraryAcknowledgment) {
     val context = LocalContext.current
+    val colors = MaterialTheme.colorScheme
+    val style = LocalInterfaceStyle.current
 
     Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp)
-            .clickable {
-                // Open the source URL in browser
-                val intent = Intent(Intent.ACTION_VIEW, library.sourceUrl.toUri())
-                context.startActivity(intent)
-            },
-        colors = if (isSpecial) {
-            CardDefaults.defaultColors(
-                color = MaterialTheme.colorScheme.secondaryContainer
-            )
-        } else {
-            CardDefaults.defaultColors()
-        }
+        modifier = Modifier.fillMaxWidth(),
+        cornerRadius = style.cardRadius,
+        colors = CardDefaults.defaultColors(color = colors.surfaceContainerLow, contentColor = colors.onSurface),
     ) {
-        Column(
-            modifier = Modifier.padding(16.dp)
+        BasicComponent(
+            modifier = Modifier.heightIn(min = 48.dp),
+            insideMargin = PaddingValues(horizontal = style.cardPadding, vertical = style.parameterRowPadding + 4.dp),
+            onClick = { openAcknowledgmentLink(context, library.sourceUrl) },
+            role = Role.Button,
+            endActions = {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Rounded.OpenInNew,
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp),
+                    tint = colors.onSurfaceVariant,
+                )
+            },
         ) {
-            // Library name and author
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = library.name,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        color = if (isSpecial) {
-                            MaterialTheme.colorScheme.onSecondaryContainer
-                        } else {
-                            MaterialTheme.colorScheme.onSurface
-                        }
-                    )
-                    Text(
-                        text = library.author,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = if (isSpecial) {
-                            MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.8f)
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        }
-                    )
-                }
-            }
-
-            // Description
-            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = library.name,
+                style = MaterialTheme.typography.titleSmall.copy(fontSize = 16.sp, lineHeight = 22.sp, letterSpacing = 0.sp),
+                fontWeight = FontWeight.SemiBold,
+                color = colors.onSurface,
+            )
+            Text(
+                text = library.author,
+                style = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp, lineHeight = 20.sp, letterSpacing = 0.sp),
+                color = colors.onSurfaceVariant,
+            )
             Text(
                 text = library.description,
-                style = MaterialTheme.typography.bodyMedium,
-                color = if (isSpecial) {
-                    MaterialTheme.colorScheme.onSecondaryContainer
-                } else {
-                    MaterialTheme.colorScheme.onSurface
-                },
+                modifier = Modifier.padding(top = 4.dp),
+                style = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp, lineHeight = 20.sp, letterSpacing = 0.sp),
+                color = colors.onSurfaceVariant,
             )
-
-            // License
-            Spacer(modifier = Modifier.height(8.dp))
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable {
-                        // Open license URL in browser
-                        val intent = Intent(Intent.ACTION_VIEW, library.licenseUrl.toUri())
-                        context.startActivity(intent)
-                    },
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = library.licenseName,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.primary,
-                    fontWeight = FontWeight.Medium
-                )
-            }
         }
+
+        HorizontalDivider(
+            modifier = Modifier.padding(horizontal = style.cardPadding),
+            color = colors.outlineVariant.copy(alpha = 0.4f),
+        )
+        TextButton(
+            onClick = { openAcknowledgmentLink(context, library.licenseUrl) },
+            modifier = Modifier.fillMaxWidth().padding(horizontal = style.cardPadding).heightIn(min = 48.dp),
+            contentPadding = PaddingValues(vertical = style.parameterRowPadding),
+        ) {
+            Text(
+                text = library.licenseName,
+                modifier = Modifier.weight(1f).padding(end = 8.dp),
+                style = MaterialTheme.typography.labelLarge.copy(letterSpacing = 0.sp),
+                textAlign = TextAlign.Start,
+            )
+            Icon(
+                imageVector = Icons.AutoMirrored.Rounded.OpenInNew,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+            )
+        }
+    }
+}
+
+private fun openAcknowledgmentLink(context: Context, url: String) {
+    try {
+        context.startActivity(
+            Intent(Intent.ACTION_VIEW, url.toUri()).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+        )
+    } catch (_: ActivityNotFoundException) {
+        Toast.makeText(context, R.string.external_link_unavailable, Toast.LENGTH_SHORT).show()
+    } catch (_: SecurityException) {
+        Toast.makeText(context, R.string.external_link_unavailable, Toast.LENGTH_SHORT).show()
     }
 }

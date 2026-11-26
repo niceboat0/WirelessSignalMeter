@@ -178,8 +178,6 @@ fun MainCompose(
             NavHost(
                 mainNavController,
                 startDestination = NavRoutes.MainRoute.name,
-                // 页面切换动画：KernelSU PagerNavigationSpring 同款 spring 参数，
-                // 全宽滑动（it -> it）配合淡入淡出，进入地图等子页面也有平滑过渡
                 enterTransition = {
                     slideInHorizontally(
                         animationSpec = PagerNavigationSpringSpec,
