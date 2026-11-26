@@ -11,9 +11,8 @@ on:
   # has no tag to attach to.
   workflow_dispatch:
 
-# "gh release upload" needs write access to the repository contents.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   test:
@@ -99,12 +98,12 @@ jobs:
             echo "::error::KEYSTORE_PASSWORD / KEY_ALIAS / KEY_PASSWORD secrets are not all configured. Add them under Settings > Secrets and variables > Actions, then re-run this job."
             exit 1
           fi
-          ./gradlew assembleCdrRelease
-            -Pandroid.injected.signing.store.file=$(pwd)/my.keystore
-            -Pandroid.injected.signing.store.password="$KEYSTORE_PASSWORD"
-            -Pandroid.injected.signing.key.alias="$KEY_ALIAS"
-            -Pandroid.injected.signing.key.password="$KEY_PASSWORD"
-            -PnsApiKey="$NS_API_KEY"
+          ./gradlew assembleCdrRelease \
+            -Pandroid.injected.signing.store.file="$PWD/my.keystore" \
+            -Pandroid.injected.signing.store.password="$KEYSTORE_PASSWORD" \
+            -Pandroid.injected.signing.key.alias="$KEY_ALIAS" \
+            -Pandroid.injected.signing.key.password="$KEY_PASSWORD" \
+            -PnsApiKey="$NS_API_KEY" \
             -PocidApiKey="$OCID_API_KEY"
 
       - name: Upload CDR APK
@@ -117,6 +116,8 @@ jobs:
     name: Attach APK to the tag release
     needs: buildCdrRelease
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     # Only a tag push has a release to attach to; manual runs stop after the build.
     if: startsWith(github.ref, 'refs/tags/')
 
