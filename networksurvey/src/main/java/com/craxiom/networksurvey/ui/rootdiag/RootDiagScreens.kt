@@ -152,8 +152,13 @@ private val fieldLabels = mapOf(
     "meas_event" to "Measurement event", "quantity" to "Quantity",
     "threshold_raw" to "Threshold (raw)", "threshold_dbm" to "Threshold", "threshold_db" to "Threshold",
     "hysteresis_db" to "Hysteresis", "ttt_ms" to "Time to trigger (ms)", "offset_db" to "Offset",
+    "meas_event" to "Measurement event", "quantity" to "Quantity",
+    "threshold_raw" to "Threshold (raw)", "threshold_dbm" to "Threshold", "threshold_db" to "Threshold",
+    "hysteresis_db" to "Hysteresis", "ttt_ms" to "Time to trigger (ms)", "offset_db" to "Offset",
     "meas_id" to "Measurement ID", "report_id" to "Report config ID", "object_id" to "Measurement object ID",
     "object_earfcn" to "Object EARFCN", "object_arfcn" to "Object ARFCN",
+    "report" to "Trigger", "best_pci" to "Best neighbor PCI", "best_delta_db" to "Best neighbor lead (dB)",
+    "triggered_by" to "Triggered by", "target_pci" to "Target PCI",
 )
 
 private fun valueOf(key: String, value: Any): String = when {
@@ -291,6 +296,18 @@ private fun DiagRecord.signalingInfo(protocol: String): String = buildList {
         data.optInt("hysteresis_db", -1).takeIf { it >= 0 }?.let { parts.add("Hyst $it dB") }
         data.optInt("ttt_ms", -1).takeIf { it >= 0 }?.let { parts.add("TTT $it ms") }
         data.optInt("offset_db", Int.MIN_VALUE).takeIf { it != Int.MIN_VALUE }?.let { parts.add("Off $it dB") }
+        if (parts.isNotEmpty()) add(parts.joinToString("  ·  "))
+        return@buildList
+    }
+    /* A measurement report tied to a MeasConfig trigger: MR #id · A3 · best PCI · lead · offset. */
+    if (type == "event" && data.optString("event") == "mr_trigger") {
+        fun number(key: String) = data.optDouble(key, Double.NaN).takeIf { it.isFinite() }
+            ?.let { String.format(Locale.ROOT, if (it % 1.0 == 0.0) "%.0f" else "%.1f", it) }
+        val parts = mutableListOf<String>()
+        data.optString("report").takeIf { it.isNotBlank() }?.let(parts::add)
+        data.optInt("best_pci", -1).takeIf { it >= 0 }?.let { parts.add("best PCI $it") }
+        number("best_delta_db")?.let { parts.add(if (it.startsWith("-")) "Δ $it dB" else "Δ +$it dB") }
+        data.optInt("offset_db", Int.MIN_VALUE).takeIf { it != Int.MIN_VALUE }?.let { parts.add("off $it dB") }
         if (parts.isNotEmpty()) add(parts.joinToString("  ·  "))
         return@buildList
     }
