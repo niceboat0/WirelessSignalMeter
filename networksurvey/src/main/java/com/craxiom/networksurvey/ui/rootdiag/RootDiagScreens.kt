@@ -154,6 +154,10 @@ private val fieldLabels = mapOf(
     "hysteresis_db" to "Hysteresis", "ttt_ms" to "Time to trigger (ms)", "offset_db" to "Offset",
     "meas_id" to "Measurement ID", "report_id" to "Report config ID", "object_id" to "Measurement object ID",
     "object_earfcn" to "Object EARFCN", "object_arfcn" to "Object ARFCN",
+    "sib_mask" to "SIBs", "q_hyst_db" to "q-Hyst", "priority" to "Reselection priority",
+    "t_reselect_s" to "t-Reselection (s)", "s_intra_search_db" to "s-IntraSearch",
+    "thresh_serving_low_db" to "threshServingLow", "thresh_x_high_db" to "threshX-High",
+    "thresh_x_low_db" to "threshX-Low",
 )
 
 private fun valueOf(key: String, value: Any): String = when {
@@ -291,6 +295,22 @@ private fun DiagRecord.signalingInfo(protocol: String): String = buildList {
         data.optInt("hysteresis_db", -1).takeIf { it >= 0 }?.let { parts.add("Hyst $it dB") }
         data.optInt("ttt_ms", -1).takeIf { it >= 0 }?.let { parts.add("TTT $it ms") }
         data.optInt("offset_db", Int.MIN_VALUE).takeIf { it != Int.MIN_VALUE }?.let { parts.add("Off $it dB") }
+        if (parts.isNotEmpty()) add(parts.joinToString("  ·  "))
+        return@buildList
+    }
+    /* Broadcast reselection parameters: SIB 3/5 · qHyst 4 dB · prio 7 · ... */
+    if (type == "event" && data.optString("event") == "reselection") {
+        val parts = mutableListOf<String>()
+        val mask = data.optInt("sib_mask", 0)
+        val sibs = (1..8).filter { mask and (1 shl it) != 0 }
+        if (sibs.isNotEmpty()) parts.add("SIB " + sibs.joinToString("/"))
+        data.optInt("q_hyst_db", -1).takeIf { it >= 0 }?.let { parts.add("qHyst $it dB") }
+        data.optInt("priority", -1).takeIf { it >= 0 }?.let { parts.add("prio $it") }
+        data.optInt("t_reselect_s", -1).takeIf { it >= 0 }?.let { parts.add("tRes $it s") }
+        data.optInt("s_intra_search_db", -1).takeIf { it >= 0 }?.let { parts.add("sIntra $it dB") }
+        data.optInt("thresh_serving_low_db", -1).takeIf { it >= 0 }?.let { parts.add("thSrv $it dB") }
+        data.optInt("thresh_x_high_db", -1).takeIf { it >= 0 }?.let { parts.add("thX-H $it dB") }
+        data.optInt("thresh_x_low_db", -1).takeIf { it >= 0 }?.let { parts.add("thX-L $it dB") }
         if (parts.isNotEmpty()) add(parts.joinToString("  ·  "))
         return@buildList
     }
