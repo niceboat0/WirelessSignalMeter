@@ -22,13 +22,24 @@ enum sd_access_field {
 };
 enum sd_nr_frequency_field { SD_NR_PCI, SD_NR_SSB, SD_NR_DL_A, SD_NR_UL_A, SD_NR_FREQ_FIELDS };
 enum { SD_MEAS_LIMIT = 64, SD_PLMN_LIMIT = 12 };
-enum sd_meas_list { SD_MEAS_NONE, SD_REMOVE_OBJECT, SD_ADD_OBJECT, SD_REMOVE_REPORT, SD_REMOVE_ID, SD_ADD_ID };
+enum sd_meas_list { SD_MEAS_NONE, SD_REMOVE_OBJECT, SD_ADD_OBJECT, SD_REMOVE_REPORT, SD_ADD_REPORT, SD_REMOVE_ID, SD_ADD_ID };
+enum sd_meas_quantity { SD_Q_NONE, SD_Q_RSRP, SD_Q_RSRQ, SD_Q_SINR };
 struct sd_meas_object { int rat, ssb, csi, earfcn; };
 struct sd_meas_link { int object_id, report_id; };
+/* One reportConfigToAddModList entry: the event and its trigger parameters. */
+struct sd_meas_report {
+    char event[20];          /* eventA1..eventB2, eventC1/C2, periodical, "" */
+    int quantity;            /* SD_Q_* */
+    int threshold, has_threshold;
+    int hysteresis, has_hysteresis;
+    int ttt_ms, has_ttt;
+    int offset_db, has_offset;   /* a3-Offset / a6-Offset */
+};
 struct sd_meas_config {
-    uint64_t removed_objects, removed_ids, removed_reports, objects_present, ids_present;
+    uint64_t removed_objects, removed_ids, removed_reports, objects_present, ids_present, reports_present;
     struct sd_meas_object objects[SD_MEAS_LIMIT + 1];
     struct sd_meas_link links[SD_MEAS_LIMIT + 1];
+    struct sd_meas_report reports[SD_MEAS_LIMIT + 1];
 };
 struct sd_summary {
     const char *message;
@@ -99,16 +110,33 @@ struct sd {
     enum sd_meas_list meas_list;
     struct sd_meas_object meas_object;
     struct sd_meas_link meas_link;
+    struct sd_meas_report meas_report;
+    int meas_report_id;
 };
 
 static enum sd_meas_list sd_meas_list(const char *label) {
     if (!strcmp(label, "measObjectToRemoveList") || !strcmp(label, "measObjectToRemoveListExt-r13")) return SD_REMOVE_OBJECT;
     if (!strcmp(label, "measObjectToAddModList") || !strcmp(label, "measObjectToAddModListExt-r13")) return SD_ADD_OBJECT;
     if (!strcmp(label, "reportConfigToRemoveList")) return SD_REMOVE_REPORT;
+    if (!strcmp(label, "reportConfigToAddModList")) return SD_ADD_REPORT;
     if (!strcmp(label, "measIdToRemoveList") || !strcmp(label, "measIdToRemoveListExt-r12")) return SD_REMOVE_ID;
     if (!strcmp(label, "measIdToAddModList") || !strcmp(label, "measIdToAddModListExt-r12")) return SD_ADD_ID;
     return SD_MEAS_NONE;
 }
+
+/* ENUMERATED member names ("dB2", "ms320", "dB-30") -> integer; -1 when the
+   name does not carry the expected prefix. timeToTrigger/hysteresis/offset
+   values are definitionally the numbers in these names. */
+static int sd_enum_num(const char *nm, const char *prefix) {
+    size_t pl = strlen(prefix);
+    if (strncmp(nm, prefix, pl)) return -1;
+    const char *p = nm + pl;
+    int sign = 1, v = 0, digits = 0;
+    if (*p == '-') { sign = -1; p++; }
+    for (; *p >= '0' && *p <= '9'; p++) { v = v * 10 + (*p - '0'); digits++; }
+    return digits ? sign * v : -1;
+}
+
 
 static void sd_meas_integer(struct sd *d, const char *label, int depth, long long value) {
     struct sd_meas_config *m = &d->summary->meas;
@@ -119,6 +147,19 @@ static void sd_meas_integer(struct sd *d, const char *label, int depth, long lon
         else if (o->rat == 1 && !strcmp(label, "carrierFreq-r15")) o->ssb = (int)value;
         else if (o->rat == 2 && (!strcmp(label, "carrierFreq") ||
             !strcmp(label, "carrierFreq-v9e0") || !strcmp(label, "carrierFreq-r13"))) o->earfcn = (int)value;
+        return;
+    }
+    /* reportConfigToAddModList: the config id, then the threshold area value
+       (RSRP/RSRQ/SINR range; 0 is a valid threshold, unlike list ids). */
+    if (d->meas_list == SD_ADD_REPORT) {
+        struct sd_meas_report *rp = &d->meas_report;
+        if (!strcmp(label, "reportConfigId") || !strcmp(label, "reportConfigId-r13")) {
+            if (depth <= d->meas_parent_depth + 3 && value >= 1 && value <= SD_MEAS_LIMIT)
+                d->meas_report_id = (int)value;
+        } else if (!strncmp(label, "threshold-", 10) && value >= 0 && value <= 255) {
+            rp->threshold = (int)value;
+            rp->has_threshold = 1;
+        }
         return;
     }
     if (depth > d->meas_parent_depth + 2 || value < 1 || value > SD_MEAS_LIMIT) return;
@@ -459,6 +500,21 @@ static void sd_val_impl(struct sd *d, struct sd_br *r, uint32_t ni, int depth, c
             long idx = (long)sd_get(r, sd_bits_for(n->nroot));
             if (idx >= n->nroot) { r->err = 1; return; }
             const struct rs_mem *m = &k_rs_mem[n->m0 + idx];
+            /* The chosen branch names the event, the measured quantity or the
+               trigger class; record it while inside a reportConfig item. */
+            if (!r->err && d->meas_list == SD_ADD_REPORT) {
+                const char *branch = sd_s(m->name);
+                struct sd_meas_report *rp = &d->meas_report;
+                if (!strcmp(label, "eventId"))
+                    snprintf(rp->event, sizeof(rp->event), "%s", branch);
+                else if (!strncmp(branch, "threshold-", 10))
+                    rp->quantity = !strcmp(branch + 10, "RSRP") ? SD_Q_RSRP :
+                        !strcmp(branch + 10, "RSRQ") ? SD_Q_RSRQ :
+                        !strcmp(branch + 10, "SINR") ? SD_Q_SINR : SD_Q_NONE;
+                else if ((!strcmp(label, "triggerType") || !strcmp(label, "reportType")) &&
+                         !strncmp(branch, "periodical", 10))
+                    snprintf(rp->event, sizeof(rp->event), "%s", "periodical");
+            }
             if (d->summary && !d->summary->message && depth <= 3 &&
                 (!strcmp(label, "c1") || !strcmp(label, "c2") || !strcmp(label, "c3")))
                 d->summary->message = sd_s(m->name);
@@ -487,15 +543,17 @@ static void sd_val_impl(struct sd *d, struct sd_br *r, uint32_t ni, int depth, c
                 d->meas_object_depth = -1;
                 d->meas_object = (struct sd_meas_object){0, -1, -1, -1};
                 d->meas_link = (struct sd_meas_link){0};
+                if (list == SD_ADD_REPORT) { memset(&d->meas_report, 0, sizeof(d->meas_report)); d->meas_report_id = 0; }
             }
             sd_val(d, r, n->sub, depth + 1, il, hide);
-            if (list == SD_ADD_OBJECT || list == SD_ADD_ID) {
-                int id = d->meas_item;
+            if (list == SD_ADD_OBJECT || list == SD_ADD_ID || list == SD_ADD_REPORT) {
+                int id = list == SD_ADD_REPORT ? d->meas_report_id : d->meas_item;
                 if (id && !r->err) {
                     struct sd_meas_config *m = &d->summary->meas;
                     uint64_t bit = UINT64_C(1) << (id - 1);
                     if (list == SD_ADD_OBJECT) { m->objects[id] = d->meas_object; m->objects_present |= bit; }
-                    else { m->links[id] = d->meas_link; m->ids_present |= bit; }
+                    else if (list == SD_ADD_ID) { m->links[id] = d->meas_link; m->ids_present |= bit; }
+                    else { m->reports[id] = d->meas_report; m->reports_present |= bit; }
                 }
             }
             if (list != SD_MEAS_NONE) d->meas_list = SD_MEAS_NONE;
@@ -584,6 +642,23 @@ static void sd_val_impl(struct sd *d, struct sd_br *r, uint32_t ni, int depth, c
         int e = (n->flags & 1) ? (int)sd_get(r, 1) : 0;
         long idx = e ? n->nroot + sd_nsnn(r) : (long)sd_get(r, sd_bits_for(n->nroot));
         const char *nm = idx < n->nroot + n->next ? sd_s(k_rs_mem[n->m0 + idx].name) : "?";
+        /* Trigger parameters are ENUMERATED names: "dB2", "ms320", "dB-30". */
+        if (!r->err && d->meas_list == SD_ADD_REPORT) {
+            struct sd_meas_report *rp = &d->meas_report;
+            if (!strcmp(label, "hysteresis")) {
+                int v = sd_enum_num(nm, "dB");
+                if (v >= 0) { rp->hysteresis = v; rp->has_hysteresis = 1; }
+            } else if (!strcmp(label, "timeToTrigger")) {
+                int v = sd_enum_num(nm, "ms");
+                if (v >= 0) { rp->ttt_ms = v; rp->has_ttt = 1; }
+            } else if (!strcmp(label, "a3-Offset") || !strcmp(label, "a6-Offset")) {
+                int v = sd_enum_num(nm, "dB");
+                if (v != -1) { rp->offset_db = v; rp->has_offset = 1; }
+            } else if (!strcmp(label, "triggerQuantity")) {
+                rp->quantity = !strcmp(nm, "rsrp") ? SD_Q_RSRP :
+                    !strcmp(nm, "rsrq") ? SD_Q_RSRQ : SD_Q_NONE;
+            }
+        }
         int nr_access = d->nr && d->in_sib1_ul && d->summary && d->summary->message &&
             !strcmp(d->summary->message, "systemInformationBlockType1");
         if (!hide && !r->err && d->in_lte_tdd) {

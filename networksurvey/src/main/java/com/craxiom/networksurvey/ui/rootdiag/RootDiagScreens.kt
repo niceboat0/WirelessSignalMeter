@@ -149,6 +149,11 @@ private val fieldLabels = mapOf(
     "received_elapsed_ms" to "Received monotonic time (ms)", "clock_id" to "Clock domain",
     "sinr_rx2" to "SINR Rx2", "sinr_rx3" to "SINR Rx3",
     "retx_pct" to "Retransmission", "crc_fail" to "CRC failures",
+    "meas_event" to "Measurement event", "quantity" to "Quantity",
+    "threshold_raw" to "Threshold (raw)", "threshold_dbm" to "Threshold", "threshold_db" to "Threshold",
+    "hysteresis_db" to "Hysteresis", "ttt_ms" to "Time to trigger (ms)", "offset_db" to "Offset",
+    "meas_id" to "Measurement ID", "report_id" to "Report config ID", "object_id" to "Measurement object ID",
+    "object_earfcn" to "Object EARFCN", "object_arfcn" to "Object ARFCN",
 )
 
 private fun valueOf(key: String, value: Any): String = when {
@@ -270,6 +275,25 @@ private fun DiagRecord.signalingHeading(protocol: String): String =
 
 private fun DiagRecord.signalingInfo(protocol: String): String = buildList {
     val rat = data.optString("rat")
+    /* MeasConfig events carry the trigger parameters rather than a message. */
+    if (type == "event" && data.optString("event") == "meas_config") {
+        fun number(key: String) = data.optDouble(key, Double.NaN).takeIf { it.isFinite() }
+            ?.let { String.format(Locale.ROOT, if (it % 1.0 == 0.0) "%.0f" else "%.1f", it) }
+        val parts = mutableListOf<String>()
+        data.optString("meas_event").takeIf { it.isNotBlank() }?.let(parts::add)
+        val quantity = data.optString("quantity")
+        val threshold = when {
+            data.has("threshold_dbm") -> number("threshold_dbm")?.let { "$it dBm" }
+            data.has("threshold_db") -> number("threshold_db")?.let { "$it dB" }
+            else -> null
+        }
+        if (threshold != null) parts.add(listOf(quantity, threshold).filter(String::isNotBlank).joinToString(" "))
+        data.optInt("hysteresis_db", -1).takeIf { it >= 0 }?.let { parts.add("Hyst $it dB") }
+        data.optInt("ttt_ms", -1).takeIf { it >= 0 }?.let { parts.add("TTT $it ms") }
+        data.optInt("offset_db", Int.MIN_VALUE).takeIf { it != Int.MIN_VALUE }?.let { parts.add("Off $it dB") }
+        if (parts.isNotEmpty()) add(parts.joinToString("  ·  "))
+        return@buildList
+    }
     if (type == "cell_change") {
         fun cell(prefix: String): String = buildList {
             data.optInt("${prefix}_pci", -1).takeIf { it >= 0 }?.let { add("PCI $it") }
