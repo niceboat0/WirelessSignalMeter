@@ -132,7 +132,16 @@ foreach ($fault in 8,9) {
         throw "Malformed B9A7 fixed-capacity row accepted: $fault"
     }
 }
-Write-Output 'PASS B9A7 variant: all four versions, zero/smaller active counts, full row validation, oversized and truncated counts rejected'
+foreach ($active in 1,2) {
+    $padded = [NrConfigTest]::Ca(0x30002, $active, (9 - $active) * 24, 0) | ConvertFrom-Json
+    if ($padded.cc.Count -ne $active -or $padded.cc[0].cc -ne 0 -or $padded.cc[0].band -ne 78) {
+        throw "B9A7 zero-padded 240B table failed for active count $active"
+    }
+}
+if ([NrConfigTest]::Ca(0x30002, 1, 8 * 24, 10)) {
+    throw 'B9A7 non-zero trailing slot beyond active count was not rejected'
+}
+Write-Output 'PASS B9A7 variant: all four versions, zero/smaller active counts, zero-padded 240B tables, full row validation, oversized and truncated counts rejected'
 
 foreach ($version in 0x20002,0x30000,0x30001) {
     foreach ($count in 0,1,2) {

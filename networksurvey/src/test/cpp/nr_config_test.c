@@ -86,6 +86,7 @@ __declspec(dllexport) const char *nr_ca_feed(int version, int count, int length_
         case 7: b[count_at] = 0; break;
         case 8: b[count_at] = 1; secondary[0] = 0; break;
         case 9: b[count_at] = 1; put_le(secondary + 8, 0, 4); break;
+        case 10: b[24 + 8 * 24] = 1; break; /* non-zero trailing slot beyond count */
     }
     output[0] = 0;
     parse_nr_b9a7(b, 24 + count * 24 + length_delta);
