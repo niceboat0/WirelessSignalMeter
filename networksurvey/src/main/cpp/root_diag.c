@@ -1123,6 +1123,12 @@ static void emit_rrc_signaling(struct jb *j, int nr, int ch, int pci, const uint
             jb_i(j, "pcell_sinr_index", summary.lte_pcell_sinr_plus_one - 1);
         if (summary.suspended) jb_add(j, ",\"rrc_suspended\":true");
     }
+    /* Presence of a sync/mobility IE is a handover command. A Complete does not set this. */
+    if (summary.mobility_flags & 1) jb_add(j, ",\"reconfiguration_with_sync\":true");
+    if (summary.mobility_flags & 2) jb_add(j, ",\"mobility_control_info\":true");
+    if (summary.mobility_flags) jb_add(j, ",\"mobility_command\":true");
+    if (summary.target_pci_plus_one) jb_i(j, "target_pci", summary.target_pci_plus_one - 1);
+    if (summary.reest_handover_failure) jb_add(j, ",\"reestablishment_cause\":\"handoverFailure\"");
     emit_signaling(j, &out, incomplete, summary.message, summary.nas);
 }
 
@@ -4707,12 +4713,32 @@ static void parse_ims_sip(const uint8_t *b, int n) {
     else if ((vl = sip_hdr(t, tn, "Contact", "m", &v)) > 0) {
         for (int k = 0; k + 8 < vl; k++) if (!strncasecmp(v + k, "expires=", 8)) { expires = atoi(v + k + 8); break; }
     }
+    int max_forwards = -1;
+    char content_type[64] = "";
+    if ((vl = sip_hdr(t, tn, "Max-Forwards", NULL, &v)) > 0) {
+        int mf = atoi(v);
+        if (mf >= 0 && mf <= 255) max_forwards = mf;
+    }
+    if ((vl = sip_hdr(t, tn, "Content-Type", "c", &v)) > 0) {
+        int m = 0;
+        for (int i = 0; i < vl && m < (int)sizeof(content_type) - 1; i++) {
+            unsigned char ch = (unsigned char)v[i];
+            if (ch == ';' || ch == ' ' || ch == '\t') break;
+            if (isalnum(ch) || ch == '/' || ch == '-' || ch == '+' || ch == '.') content_type[m++] = (char)ch;
+            else { m = 0; break; }
+        }
+        content_type[m] = 0;
+        if (!strchr(content_type, '/')) content_type[0] = 0;
+    }
     if (has_sdp || strstr(t, "application/sdp")) sdp_codec(t, tn, codec, sizeof(codec), &video);
     struct jb j; jb_init(&j, "sip");
     jb_add(&j, ",\"src\":\"0x156E\",\"dir\":\"%s\",\"call_id\":\"%08x\",\"len\":%d,\"msg_type\":%d", dir ? "UL" : "DL", h, tn, mtype);
     if (code) jb_add(&j, ",\"status\":%d,\"reason\":\"%s\"", code, reason); else jb_add(&j, ",\"method\":\"%s\"", method);
     if (status && !code) jb_add(&j, ",\"hdr_status\":%d", status);
     if (cseqm[0]) jb_add(&j, ",\"cseq\":\"%s\"", cseqm);
+    if (cseqn >= 0) jb_add(&j, ",\"cseq_num\":%ld", cseqn);
+    if (max_forwards >= 0) jb_i(&j, "max_forwards", max_forwards);
+    if (content_type[0]) jb_add(&j, ",\"content_type\":\"%s\"", content_type);
     if (has_sdp) jb_add(&j, ",\"sdp\":1");
     if (codec[0]) jb_add(&j, ",\"codec\":\"%s\"", codec);
     if (video) jb_add(&j, ",\"video\":1");

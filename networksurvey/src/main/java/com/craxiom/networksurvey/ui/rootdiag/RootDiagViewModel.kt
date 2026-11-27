@@ -151,6 +151,7 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
     private val imsProviders = linkedMapOf<String, ImsProviderStatus>()
     private var lastImsEvidence: ImsEvidence? = null
     private var taskStore: SurveyTaskStore? = null
+    private val processLedger = ProcessEventLedger()
     private var activeTask: SurveyTask? = null
     private var bandLockProfile = BandLockProfile(LockSupportLevel.Unsupported, "unknown", reason = "unchecked")
     private val capabilityState = MutableStateFlow(currentCapability())
@@ -739,6 +740,7 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
 
     private suspend fun captureRecords() {
         val helper = File(app.applicationInfo.nativeLibraryDir, "libwireless_root_diag.so")
+        processLedger.reset()
         val run = JSONObject().put("type", "collector_run").put("id", nextCollectorRun++)
             .put("started_ms", System.currentTimeMillis()).put("clock_id", SurveyTaskStore.CLOCK_ID)
         if (collectorRuns.size == MAX_COLLECTOR_RUNS) collectorRuns.removeFirst()
@@ -936,10 +938,8 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
                 .put("collector_run", run.optLong("id"))
             if (task != null && runTaskIds.add(task.id)) run.put("task_ids", JSONArray(runTaskIds.toList()))
             val messageRat = value.optString("rat")
-            if (type == "rrc") {
-                value.put("message_id", nextId)
-                recentRrc[messageRat] = value
-            }
+            if (type in processObservationTypes && !value.has("message_id")) value.put("message_id", nextId)
+            if (type == "rrc") recentRrc[messageRat] = value
             if (type == "event") {
                 val parent = recentRrc[messageRat]?.takeIf {
                     it.optString("msg") == value.optString("msg") &&
@@ -1377,6 +1377,39 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
                     if (record.type in signalingTypes) {
                         queueSignaling(pending, record)
                     }
+                    if (record.type in processObservationTypes) {
+                        for (event in processLedger.accept(value, record.id, now)) {
+                            val json = event.toJson()
+                                .put("task_id", value.opt("task_id"))
+                                .put("received_time_ms", value.optLong("received_time_ms"))
+                                .put("received_elapsed_ms", now)
+                                .put("clock_id", SurveyTaskStore.CLOCK_ID)
+                                .put("collector_run", value.opt("collector_run"))
+                                .put("timeline_event", true)
+                                .put("t", value.optLong("t"))
+                            queueSignaling(pending, DiagRecord(nextId++, now, json))
+                            if (task != null) {
+                                val linked = "family=${event.family} · phase=${event.phase} · evidence=${event.evidence}" +
+                                    " · non_claim=${event.nonClaim} · message_ids=${event.messageIds.joinToString(",")}"
+                                try {
+                                    withContext(Dispatchers.IO) {
+                                        tasks?.append(SurveyEvent(
+                                            java.util.UUID.randomUUID().toString(), task.id,
+                                            value.optLong("received_time_ms").takeIf { it > 0 }
+                                                ?: System.currentTimeMillis(),
+                                            now, SurveyTaskStore.CLOCK_ID, "root_diag", "process_event",
+                                            event.titleZh, linked,
+                                            rat = event.rat.takeIf { it == "NR" || it == "LTE" },
+                                            sourceTimeMs = value.optLong("t").takeIf { it > 0 },
+                                            timeBasis = "received",
+                                        ))
+                                    }
+                                } catch (error: android.database.SQLException) {
+                                    timber.log.Timber.w(error, "Could not save process event")
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1624,6 +1657,7 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
             "lte_dl_sched", "lte_ul_sched", "lte_ul_pwr", "lte_ul_tx", "lte_pucch_power", "lte_pucch_tx",
             "lte_rank", "lte_ca", "ims_media",
         )
+        val processObservationTypes = setOf("rrc", "nas", "sip", "nr_rach", "cell_change")
         val signalingTypes = setOf(
             "rrc", "nas", "nas_pdu", "nas_qos", "nas_mm", "nas_release", "sip", "event", "nr_rach",
             "ims_call", "ims_reg", "ims_session", "ims_reg_log", "ims_state", "cell_change",
