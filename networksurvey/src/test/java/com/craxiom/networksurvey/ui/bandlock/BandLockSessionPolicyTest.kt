@@ -328,7 +328,11 @@ class BandLockCollectorReuseTest {
         }
         qmi.responses.addLast(QmiLockOutcome(0, "QMI bands lte=0x0000000000000005\nVERDICT ok\n", "ok", reachable = true))
         qmi.responses.addLast(QmiLockOutcome(0, "VERDICT ok\n", "ok", reachable = true))
+        qmi.responses.addLast(QmiLockOutcome(0, "VERDICT ok\n", "ok", reachable = true))
         qmi.responses.addLast(QmiLockOutcome(9, "QMI bands-restore fail=hw_capability\n", "fail", reachable = false))
+        qmi.responses.addLast(QmiLockOutcome(0, "QMI bands lte=0x0000000000000005\nVERDICT ok\n", "ok", reachable = true))
+        qmi.responses.addLast(QmiLockOutcome(0, "VERDICT ok\n", "ok", reachable = true))
+        qmi.responses.addLast(QmiLockOutcome(0, "VERDICT ok\n", "ok", reachable = true))
         model.commandRunner = runner
         model.qmiRunner = qmi
         model.restoreForTest(BandLockState(
@@ -356,7 +360,6 @@ class BandLockCollectorReuseTest {
 
         // Switching to DIAG must immediately run DIAG instead of sticking on QMI.
         val qmiCallsBeforeDiag = qmi.calls.toList()
-        qmi.responses.addLast(QmiLockOutcome(0, "QMI mode ok\nVERDICT ok\n", "ok", reachable = true))
         model.runPreferred(
             BandLockCommand.restore(LockRadio.Nr, LockTarget.Bands),
             preferDiag = true,
@@ -364,12 +367,10 @@ class BandLockCollectorReuseTest {
             onModemRestartRequested = {},
         )
         model.state.first { !it.busy }
-        assertEquals(listOf("nr-band-restore"), runner.calls.map { it.second.first() })
+        assertEquals(listOf("nr-band-restore", "mode"), runner.calls.map { it.second.first() })
         assertEquals(qmiCallsBeforeDiag, qmi.calls)
 
         // Switching back to QMI must immediately run QMI again.
-        qmi.responses.addLast(QmiLockOutcome(0, "QMI bands lte=0x0000000000000005\nVERDICT ok\n", "ok", reachable = true))
-        qmi.responses.addLast(QmiLockOutcome(0, "VERDICT ok\n", "ok", reachable = true))
         model.runPreferred(
             BandLockCommand.apply(LockRadio.Nr, LockTarget.Bands, "1", "", "", 30),
             preferDiag = false,
@@ -377,7 +378,7 @@ class BandLockCollectorReuseTest {
             onModemRestartRequested = {},
         )
         model.qmi.first { !it.busy }
-        assertEquals(listOf("bands-get", "bands-set", "bands-restore", "mode", "bands-get", "bands-set"),
+        assertEquals(listOf("bands-get", "bands-set", "mode", "bands-restore", "bands-get", "bands-set", "mode"),
             qmi.calls.map { it.first() })
     }
 }
