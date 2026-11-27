@@ -1985,6 +1985,7 @@ static void parse_lte_b193(const uint8_t *b, int n) {
             unknown_layout(0xB193, (uint32_t)sv, b, n, "subpkt version");
             continue;
         }
+        int emitted = 0, power_count = 0, quality_count = 0;
         for (int c = 0; c < ncells && c < 8; c++) {
             if (cell0 + (c + 1) * csz > sbl) break;
             const uint8_t *cb = sb + cell0 + c * csz;
@@ -1992,11 +1993,23 @@ static void parse_lte_b193(const uint8_t *b, int n) {
             int pci = v0 & 0x1ff, scell_idx = (v0 >> 9) & 7, is_scell = (v0 >> 12) & 1;
             if (pci > 503) continue;
             const uint8_t *rb = cb + 16;
+            /* The v48/v50 bit offsets are carried over from the v36 replay and
+               are not settled against a QMDL frame. The 2026-11-27 Redmi K30
+               export reported rsrp=+10 dBm together with rsrq=-30 and
+               rssi=-110, the last two being exactly the formula floors, i.e.
+               those bit fields read as zero. That reading is not usable, and
+               without a window check it overwrites the serving cell and the UI
+               shows RSRP=+10. Apply the physical window the v66 path already
+               has, so an unsettled offset cannot publish a value. */
             double rsrp = -180.0 + lebits(rb, 108, 12) * 0.0625 + 40.0;
+            if (rsrp < -144.0 || rsrp > -40.0) continue;
             double rsrq = -30.0 + lebits(rb, 224, 10) * 0.0625;
             double rssi = -110.0 + lebits(rb, 320, 11) * 0.0625;
             double snr0 = lebits(cb + snr_off, 0, 9) * 0.1 - 20.0;
             double snr1 = lebits(cb + snr_off, 9, 9) * 0.1 - 20.0;
+            emitted++;
+            if (rsrp >= -140.0) power_count++;
+            if (rsrq > -30.0 && rsrq <= 5.0) quality_count++;
             struct jb j; jb_init(&j, "lte_meas");
             jb_add(&j, ",\"src\":\"B193\",\"pci\":%d,\"earfcn\":%ld,\"cc\":%d,\"is_scell\":%d", pci, earfcn, scell_idx, is_scell);
             jb_f(&j, "rsrp", rsrp); jb_f(&j, "rsrq", rsrq); jb_f(&j, "rssi", rssi);
@@ -2013,6 +2026,10 @@ static void parse_lte_b193(const uint8_t *b, int n) {
                 snprintf(g_lte.sinr_src, sizeof(g_lte.sinr_src), "B193");
             }
         }
+        /* The v66 path reports here through its own counters; v48/v50 used to
+           report nothing, so the diagnostics pane showed received=929 with
+           decoded_blocks=0 and gave no hint that anything was parsed. */
+        neighbor_decoded(0xB193, emitted, power_count, quality_count, 0, 0);
     }
 }
 
