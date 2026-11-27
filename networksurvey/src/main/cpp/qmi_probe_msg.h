@@ -26,6 +26,8 @@ enum {
     QMI_NAS_LTE_LOCK_GET = 0x00D7,
     QMI_NAS_NR_LOCK_SET = 0x010E,
     QMI_NAS_NR_LOCK_GET = 0x010F,
+    QMI_DMS_SERVICE = 0x02,
+    QMI_DMS_GET_BANDS = 0x0045,
 };
 
 /* TLV ids are per NAS message, not global. */
@@ -35,7 +37,14 @@ enum {
     QP_TLV_SSP_LTE_BANDS = 0x15,       /* u64 LTE band mask */
     QP_TLV_SSP_DURATION = 0x17,        /* u8, 1 = permanent */
     QP_TLV_SSP_USAGE = 0x21,           /* u32 usage setting, 1 = voice centric */
-    QP_TLV_SSP_NR_BANDS = 0x2B,        /* 64-byte NR band mask */
+    QP_TLV_SSP_EXT_LTE_GET = 0x23,     /* 32-byte extended LTE band mask on GET */
+    QP_TLV_SSP_EXT_LTE_SET = 0x24,     /* 32-byte extended LTE band mask on SET */
+    QP_TLV_SSP_NR_BANDS = 0x2B,        /* SET: 64B combined NR mask; GET: 4B NR mode */
+    QP_TLV_SSP_NR_SA_GET = 0x2C,       /* 64-byte NR-SA band mask on GET */
+    QP_TLV_SSP_NR_NSA_GET = 0x2D,      /* 64-byte NR-NSA band mask on GET */
+    QP_TLV_SSP_NR_MODE = 0x2E,         /* u32 NR mode on SET: 0 both, 1 nsa, 2 sa */
+    QP_TLV_SSP_NR_SA_SET = 0x2F,       /* 64-byte NR-SA band mask on SET */
+    QP_TLV_SSP_NR_NSA_SET = 0x30,      /* 64-byte NR-NSA band mask on SET */
     /* 0x00D8 (LTE cell lock set). */
     QP_TLV_LTE_LIST = 0x01,            /* count:u8 + count*[pci:u16, earfcn:u32] */
     QP_TLV_LTE_APPLY = 0x10,           /* apply:u8 = 1 (also the 0x00D7 GET list id) */
@@ -78,6 +87,66 @@ static size_t qp_nas_get_rf_band_info(uint8_t *out, uint32_t txn) {
     return qp_finish(out, qp_req_hdr(out, txn, QMI_NAS_GET_RF_BAND_INFO));
 }
 
+/* DMS hardware band capability: the modem's own supported-band report. */
+static size_t qp_dms_get_bands(uint8_t *out, uint32_t txn) {
+    return qp_finish(out, qp_req_hdr(out, txn, QMI_DMS_GET_BANDS));
+}
+
+/* DMS GET_BANDS TLV ids. 0x01 legacy (GSM/WCDMA) u64, 0x10 LTE u64,
+ * 0x12 LTE band list, 0x13 NR band list (count:u16 then band:u16 each). */
+enum {
+    QP_DMS_TLV_LEGACY = 0x01,
+    QP_DMS_TLV_LTE = 0x10,
+    QP_DMS_TLV_LTE_LIST = 0x12,
+    QP_DMS_TLV_NR_LIST = 0x13,
+};
+
+/* Bit band-1 of a list mask, matching the NV/EFS route's band numbering. */
+static void qp_mask_from_band_list(const uint8_t *value, uint16_t len, uint8_t *mask, int bytes) {
+    if (len < 2) return;
+    int count = (int)qp_read16(value);
+    for (int i = 0; i < count && 2 + 2 * i + 1 < len; i++) {
+        int band = (int)qp_read16(value + 2 + 2 * i);
+        if (band >= 1 && band <= bytes * 8) mask[(band - 1) / 8] |= (uint8_t)(1 << ((band - 1) % 8));
+    }
+}
+
+/* Format a bit band-1 mask as comma-separated band numbers ("1,3,41") or
+ * "none" when empty. Truncates with "..." if cap is tight; always NUL-ended. */
+static size_t qp_format_band_list(const uint8_t *mask, int bytes, char *out, size_t cap) {
+    if (!cap) return 0;
+    size_t at = 0;
+    for (int i = 0; i < bytes; i++) {
+        uint8_t v = mask[i];
+        if (!v) continue;
+        for (int b = 0; b < 8; b++) {
+            if (!(v & (1u << b))) continue;
+            int band = i * 8 + b + 1;
+            char digits[12];
+            int nd = 0;
+            for (int x = band; x > 0; x /= 10) digits[nd++] = (char)('0' + (x % 10));
+            size_t need = (size_t)(at > 0 ? 1 : 0) + (size_t)nd;
+            if (at + need + 1 > cap) {
+                /* Overwrite the tail with "..." when the full list does not fit. */
+                size_t keep = cap > 4 ? cap - 4 : 0;
+                if (at < keep) keep = at;
+                const char *dots = "...";
+                for (size_t k = 0; k < 3 && keep + 1 < cap; k++) out[keep++] = dots[k];
+                out[keep] = '\0';
+                return keep;
+            }
+            if (at > 0) out[at++] = ',';
+            while (nd > 0) out[at++] = digits[--nd];
+        }
+    }
+    if (at == 0) {
+        const char *none = "none";
+        while (none[at] && at + 1 < cap) { out[at] = none[at]; at++; }
+    }
+    out[at] = '\0';
+    return at;
+}
+
 /* ---- lock commands ---------------------------------------------------- */
 
 static void qp_put32(uint8_t *p, uint32_t v) {
@@ -100,10 +169,10 @@ static size_t qp_tlv(uint8_t *out, size_t at, uint8_t tag, const uint8_t *value,
 }
 
 /* System selection preference: LTE band mask (8 bytes, little endian),
- * optional 64-byte NR mask. Always carries duration so the modem keeps the
- * preference (a lone optional TLV can be read as a query). */
-static size_t qp_nas_ssp_set(uint8_t *out, uint32_t txn,
-        const uint8_t lte_mask[8], const uint8_t *nr_mask, int mode_pref) {
+ * optional 64-byte NR mask written under nr_tag (0x2B combined, 0x2F SA,
+ * 0x30 NSA). Always carries duration so the modem keeps the preference. */
+static size_t qp_nas_ssp_set_nr_tag(uint8_t *out, uint32_t txn,
+        const uint8_t lte_mask[8], const uint8_t *nr_mask, uint8_t nr_tag, int mode_pref) {
     size_t at = qp_req_hdr(out, txn, QMI_NAS_SET_SSP);
     uint8_t one = 1;
     at = qp_tlv(out, at, QP_TLV_SSP_DURATION, &one, 1);
@@ -113,8 +182,13 @@ static size_t qp_nas_ssp_set(uint8_t *out, uint32_t txn,
         at = qp_tlv(out, at, QP_TLV_SSP_MODE, mode, 2);
     }
     if (lte_mask) at = qp_tlv(out, at, QP_TLV_SSP_LTE_BANDS, lte_mask, 8);
-    if (nr_mask) at = qp_tlv(out, at, QP_TLV_SSP_NR_BANDS, nr_mask, 64);
+    if (nr_mask) at = qp_tlv(out, at, nr_tag, nr_mask, 64);
     return qp_finish(out, at);
+}
+
+static size_t qp_nas_ssp_set(uint8_t *out, uint32_t txn,
+        const uint8_t lte_mask[8], const uint8_t *nr_mask, int mode_pref) {
+    return qp_nas_ssp_set_nr_tag(out, txn, lte_mask, nr_mask, QP_TLV_SSP_NR_BANDS, mode_pref);
 }
 
 static size_t qp_nas_ssp_get(uint8_t *out, uint32_t txn) {
