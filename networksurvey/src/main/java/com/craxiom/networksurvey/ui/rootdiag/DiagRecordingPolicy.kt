@@ -34,10 +34,28 @@ internal object DiagRecordingPolicy {
 
     fun shouldHoldService(mode: Mode): Boolean = shouldListen(mode)
 
-    fun overlayStatus(mode: Mode): String = when (mode) {
-        Mode.TaskRecording -> "task"
-        Mode.LiveView -> "listening"
-        Mode.Idle -> "standby"
+    fun overlayStatus(mode: Mode, recording: Boolean = false): String = when {
+        mode == Mode.TaskRecording && recording -> "recording"
+        mode == Mode.TaskRecording -> "task"
+        mode == Mode.LiveView -> "listening"
+        else -> "standby"
+    }
+}
+
+/** One recording per task. QMDL is the default; DLF is the same log items without HDLC. */
+internal enum class DiagLogFormat {
+    Qmdl, Dlf;
+
+    val extension: String get() = if (this == Qmdl) "qmdl" else "dlf"
+    val command: Char get() = if (this == Qmdl) 'Q' else 'D'
+    val activeName: String get() = "active.$extension"
+
+    companion object {
+        fun fromFileName(name: String): DiagLogFormat? = when {
+            name.endsWith(".dlf") -> Dlf
+            name.endsWith(".qmdl") -> Qmdl
+            else -> null
+        }
     }
 }
 
@@ -51,36 +69,46 @@ internal class DiagRecordingSession(
     private val rename: (File, File) -> Boolean = File::renameTo,
 ) {
     private var openTaskId: String? = null
+    private var format: DiagLogFormat = DiagLogFormat.Qmdl
+    private val taskMarker = File(root, TASK_MARKER)
 
-    val activeFile get() = File(root, ACTIVE_NAME)
+    val directory: File get() = root
+    val activeFile get() = File(root, format.activeName)
 
     fun isOpen(): Boolean = openTaskId != null
 
     fun openTaskId(): String? = openTaskId
 
-    fun recordings(): List<File> = root.listFiles()
-        ?.filter { it.isFile && it.name.endsWith(".qmdl") && it.name != ACTIVE_NAME }
-        ?.sortedBy { it.name }
-        ?: emptyList()
+    fun recordings(): List<File> = committedFiles()
 
-    fun latestRecording(): File? =
-        activeFile.takeIf { it.isFile && it.length() > 0L }
-            ?: recordings().filter { it.length() > 0L }.maxByOrNull { it.lastModified() }
+    /** Every non-empty segment, including a leftover active file. Active is not preferred. */
+    fun exportableRecordings(): List<File> {
+        val active = DiagLogFormat.entries.map { File(root, it.activeName) }
+            .filter { it.isFile && it.length() > 0L }
+        return (committedFiles() + active).sortedBy { it.name }
+    }
+
+    fun latestRecording(): File? = exportableRecordings().maxByOrNull { it.lastModified() }
 
     /** Live view or created-but-not-started tasks must leave the directory empty of new session files. */
     fun ensureLiveOnly() {
         if (openTaskId != null) return
-        if (activeFile.exists() && activeFile.length() == 0L) activeFile.delete()
+        for (item in DiagLogFormat.entries) {
+            val file = File(root, item.activeName)
+            if (file.exists() && file.length() == 0L) file.delete()
+        }
     }
 
-    fun start(taskId: String): File {
+    fun start(taskId: String, logFormat: DiagLogFormat = DiagLogFormat.Qmdl): File {
         val id = taskId.trim()
         require(id.isNotEmpty()) { "task id required" }
-        check(openTaskId == null) { "Previous QMDL session is still open" }
-        if (!root.isDirectory && !root.mkdirs()) throw IOException("Unable to create QMDL directory")
+        check(openTaskId == null) { "Previous recording session is still open" }
+        if (!root.isDirectory && !root.mkdirs()) throw IOException("Unable to create recording directory")
+        format = logFormat
+        recoverLeftoverActive()
         val file = activeFile
-        archiveActive("orphan")
         if (!file.createNewFile()) throw IOException("Unable to create $file")
+        taskMarker.writeText(id)
         openTaskId = id
         return file
     }
@@ -88,30 +116,47 @@ internal class DiagRecordingSession(
     fun finish(): File? {
         val id = openTaskId ?: return null
         openTaskId = null
-        return archiveActive(id)
+        val archived = archiveFile(activeFile, id, format)
+        if (taskMarker.exists() && !taskMarker.delete()) throw IOException("Unable to clear recording task marker")
+        return archived
     }
 
     fun cannotWrite(): Boolean = openTaskId == null || !activeFile.isFile
 
-    private fun archiveActive(id: String): File? {
-        val file = activeFile
+    /** Name a leftover active file with the task id recorded when it was opened. */
+    fun recoverLeftoverActive() {
+        if (openTaskId != null) return
+        val remembered = rememberedTaskId() ?: "orphan"
+        for (item in DiagLogFormat.entries) archiveFile(File(root, item.activeName), remembered, item)
+        if (taskMarker.exists()) taskMarker.delete()
+    }
+
+    private fun committedFiles(): List<File> = root.listFiles()
+        ?.filter { it.isFile && DiagLogFormat.fromFileName(it.name) != null && !it.name.startsWith("active.") }
+        ?.sortedBy { it.name }
+        ?: emptyList()
+
+    private fun rememberedTaskId(): String? =
+        taskMarker.takeIf { it.isFile }?.readText()?.lineSequence()?.firstOrNull()?.trim()?.takeIf { it.isNotEmpty() }
+
+    private fun archiveFile(file: File, id: String, itemFormat: DiagLogFormat): File? {
         if (!file.exists()) return null
-        if (!file.isFile) throw IOException("Invalid active QMDL path")
+        if (!file.isFile) throw IOException("Invalid active recording path")
         if (file.length() == 0L) {
-            if (!file.delete()) throw IOException("Unable to remove empty QMDL file")
+            if (!file.delete()) throw IOException("Unable to remove empty recording file")
             return null
         }
-        val dest = uniqueCommitted(id)
-        if (!rename(file, dest)) throw IOException("Unable to archive QMDL file")
+        val dest = uniqueCommitted(id, itemFormat)
+        if (!rename(file, dest)) throw IOException("Unable to archive recording file")
         return dest
     }
 
-    private fun uniqueCommitted(taskId: String): File {
+    private fun uniqueCommitted(taskId: String, itemFormat: DiagLogFormat): File {
         val safe = taskId.replace(Regex("[^A-Za-z0-9._-]"), "_")
-        var dest = File(root, "$safe.qmdl")
+        var dest = File(root, "$safe.${itemFormat.extension}")
         var index = 2
         while (dest.exists()) {
-            dest = File(root, "$safe-$index.qmdl")
+            dest = File(root, "$safe-$index.${itemFormat.extension}")
             index++
         }
         return dest
@@ -119,5 +164,6 @@ internal class DiagRecordingSession(
 
     companion object {
         const val ACTIVE_NAME = "active.qmdl"
+        private const val TASK_MARKER = "active.task"
     }
 }

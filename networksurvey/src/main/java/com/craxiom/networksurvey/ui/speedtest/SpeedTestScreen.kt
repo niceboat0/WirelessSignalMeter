@@ -225,7 +225,7 @@ fun SpeedTestScreen(onBack: () -> Unit, modifier: Modifier = Modifier) {
             }
             try {
                 // Capture once: task switches during a request must not steal its eventual result.
-                taskId = withContext(Dispatchers.IO) { SurveyTaskStore.get(context).ensure().id }
+                taskId = withContext(Dispatchers.IO) { SurveyTaskStore.get(context).observationTask()?.id }
                 event("speed_start", "测速开始", "${server.protocol.name} · 默认网络路由 · $count 次")
                 for (index in 1..count) {
                     status = if (count == 1) "正在测速" else "正在进行第 $index / $count 次测速"
