@@ -131,7 +131,8 @@ static int qmi_exchange(int fd, uint8_t *buf, int len, int *reply_len) {
 
 static int is_lock_command(const char *cmd) {
     static const char *const names[] = {
-        "bands-set", "bands-get", "celllte-set", "celllte-get", "celllte-clear",
+        "bands-set", "bands-get", "bands-hw", "bands-restore",
+        "celllte-set", "celllte-get", "celllte-clear",
         "cellnr-set", "cellnr-get", "cellnr-clear", "mode",
     };
     for (size_t i = 0; i < sizeof names / sizeof names[0]; i++)
@@ -191,16 +192,32 @@ static int mode_pref_text(const char *text) {
     return -1;
 }
 
+/* Open one QRTR service endpoint. Returns 0 or a small error code. */
+static int open_service(uint32_t service, int *fd, struct sockaddr_qrtr *server) {
+    int s = socket(AF_QIPCRTR, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    if (s < 0) return -1;
+    int e = qrtr_lookup(service, 1, server);
+    if (e) e = qrtr_lookup(service, 0, server);
+    if (e) { close(s); return -2; }
+    if (connect(s, (struct sockaddr *)server, sizeof *server) < 0) { close(s); return -3; }
+    *fd = s;
+    return 0;
+}
+
 static int run_lock_command(int argc, char **argv) {
     const char *cmd = argv[1];
-    int sd = socket(AF_QIPCRTR, SOCK_DGRAM | SOCK_CLOEXEC, 0);
-    if (sd < 0) { printf("QMI %s fail=%s\n", cmd, strerror(errno)); return 2; }
-    struct sockaddr_qrtr server;
-    int e = qrtr_lookup(QMI_NAS_SERVICE, 1, &server);
-    if (e) e = qrtr_lookup(QMI_NAS_SERVICE, 0, &server);
-    if (e) { printf("QMI %s fail=lookup:%s\n", cmd, strerror(e)); close(sd); return 3; }
-    if (connect(sd, (struct sockaddr *)&server, sizeof server) < 0) {
-        printf("QMI %s fail=connect:%s\n", cmd, strerror(errno)); close(sd); return 4;
+    const int need_dms = !strcmp(cmd, "bands-hw") || !strcmp(cmd, "bands-restore");
+    const int need_nas = strcmp(cmd, "bands-hw") != 0;
+    int sd = -1, dms = -1;
+    struct sockaddr_qrtr server, dms_server;
+    if (need_dms && open_service(QMI_DMS_SERVICE, &dms, &dms_server)) {
+        printf("QMI %s fail=dms_lookup\n", cmd);
+        return 3;
+    }
+    if (need_nas && open_service(QMI_NAS_SERVICE, &sd, &server)) {
+        printf("QMI %s fail=lookup\n", cmd);
+        if (dms >= 0) close(dms);
+        return 3;
     }
 
     uint8_t buf[QMI_MAX];
@@ -208,7 +225,60 @@ static int run_lock_command(int argc, char **argv) {
     uint8_t lte_mask[8] = {0}, nr_mask[64] = {0};
     int use_nr = 0;
 
-    if (!strcmp(cmd, "bands-set")) {
+    /* Hardware capability (DMS): the modem's own supported bands. Needed for
+       bands-hw and for bands-restore, whose masks must stay inside it: an
+       all-ones restore is rejected by the modem (qmi_error=3 INTERNAL). */
+    if (need_dms) {
+        uint8_t req[16], dms_reply[2048];
+        int dms_len = 0;
+        int qn = (int)qp_dms_get_bands(req, 1);
+        int transport = nas_exchange(dms, req, qn, &dms_len);
+        if (transport) {
+            printf("QMI %s fail=hw_capability transport\n", cmd);
+            if (sd >= 0) close(sd);
+            close(dms);
+            return 9;
+        }
+        uint16_t qerr = 0;
+        if (qp_read_result(dms_reply, (size_t)dms_len, &qerr) != QP_SUCCESS) {
+            printf("QMI %s fail=hw_capability qmi_error=%u\n", cmd, (unsigned)qerr);
+            if (sd >= 0) close(sd);
+            close(dms);
+            return 9;
+        }
+        const uint8_t *v = NULL;
+        uint16_t len = 0;
+        if (qp_find_tlv(dms_reply, (size_t)dms_len, QP_DMS_TLV_LTE, &v, &len) && len >= 8) {
+            for (int i = 0; i < 8; i++) lte_mask[i] = v[i];
+        } else if (qp_find_tlv(dms_reply, (size_t)dms_len, QP_DMS_TLV_LTE_LIST, &v, &len)) {
+            qp_mask_from_band_list(v, len, lte_mask, 8);
+        }
+        if (qp_find_tlv(dms_reply, (size_t)dms_len, QP_DMS_TLV_NR_LIST, &v, &len)) {
+            qp_mask_from_band_list(v, len, nr_mask, 64);
+            for (int i = 0; i < 64; i++) if (nr_mask[i]) use_nr = 1;
+        }
+        if (!strcmp(cmd, "bands-hw")) {
+            printf("QMI hw lte=0x%016llx\n", (unsigned long long)mask64(lte_mask));
+            printf("QMI hw nr=");
+            for (int i = 63; i >= 0; i--) printf("%02x", nr_mask[i]);
+            printf("\n");
+            printf("VERDICT ok\n");
+            close(dms);
+            return 0;
+        }
+        /* bands-restore continues to the NAS write below. */
+        printf("QMI bands-restore hw_lte=0x%016llx nr_bands=%d\n",
+            (unsigned long long)mask64(lte_mask), use_nr);
+    }
+
+    if (!strcmp(cmd, "bands-restore")) {
+        if (!mask64(lte_mask)) {
+            printf("QMI bands-restore fail=hw_capability empty_lte\n");
+            close(dms);
+            return 9;
+        }
+        n = (int)qp_nas_ssp_set(buf, 2, lte_mask, use_nr ? nr_mask : NULL, -1);
+    } else if (!strcmp(cmd, "bands-set")) {
         if (argc < 3 || !parse_hex_le(argv[2], lte_mask, 8)) {
             printf("QMI bands-set fail=usage\n"); close(sd); return 5;
         }
@@ -324,6 +394,7 @@ static int run_lock_command(int argc, char **argv) {
         result == QP_REJECTED ? "" : "");
     if (result == QP_REJECTED) printf("QMI %s qmi_error=%u\n", cmd, (unsigned)error);
     close(sd);
+    if (dms >= 0) close(dms);
     return result == QP_SUCCESS ? 0 : result == QP_REJECTED ? 7 : 8;
 }
 

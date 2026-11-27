@@ -26,6 +26,8 @@ enum {
     QMI_NAS_LTE_LOCK_GET = 0x00D7,
     QMI_NAS_NR_LOCK_SET = 0x010E,
     QMI_NAS_NR_LOCK_GET = 0x010F,
+    QMI_DMS_SERVICE = 0x02,
+    QMI_DMS_GET_BANDS = 0x0045,
 };
 
 /* TLV ids are per NAS message, not global. */
@@ -76,6 +78,30 @@ static size_t qp_nas_get_serving_system(uint8_t *out, uint32_t txn) {
 
 static size_t qp_nas_get_rf_band_info(uint8_t *out, uint32_t txn) {
     return qp_finish(out, qp_req_hdr(out, txn, QMI_NAS_GET_RF_BAND_INFO));
+}
+
+/* DMS hardware band capability: the modem's own supported-band report. */
+static size_t qp_dms_get_bands(uint8_t *out, uint32_t txn) {
+    return qp_finish(out, qp_req_hdr(out, txn, QMI_DMS_GET_BANDS));
+}
+
+/* DMS GET_BANDS TLV ids. 0x01 legacy (GSM/WCDMA) u64, 0x10 LTE u64,
+ * 0x12 LTE band list, 0x13 NR band list (count:u16 then band:u16 each). */
+enum {
+    QP_DMS_TLV_LEGACY = 0x01,
+    QP_DMS_TLV_LTE = 0x10,
+    QP_DMS_TLV_LTE_LIST = 0x12,
+    QP_DMS_TLV_NR_LIST = 0x13,
+};
+
+/* Bit band-1 of a list mask, matching the NV/EFS route's band numbering. */
+static void qp_mask_from_band_list(const uint8_t *value, uint16_t len, uint8_t *mask, int bytes) {
+    if (len < 2) return;
+    int count = (int)qp_read16(value);
+    for (int i = 0; i < count && 2 + 2 * i + 1 < len; i++) {
+        int band = (int)qp_read16(value + 2 + 2 * i);
+        if (band >= 1 && band <= bytes * 8) mask[(band - 1) / 8] |= (uint8_t)(1 << ((band - 1) % 8));
+    }
 }
 
 /* ---- lock commands ---------------------------------------------------- */

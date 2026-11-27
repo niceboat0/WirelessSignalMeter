@@ -93,6 +93,26 @@ __declspec(dllexport) int test_qmi_lock(void) {
     n = qp_nas_nr_lock_get(out, 15);
     CHECK(n == QMI_HEADER && qp_read16(out + 3) == QMI_NAS_NR_LOCK_GET);
 
+    /* DMS hardware capability GET is header-only. */
+    n = qp_dms_get_bands(out, 17);
+    CHECK(n == QMI_HEADER && qp_read16(out + 3) == QMI_DMS_GET_BANDS);
+
+    /* Band list -> bit band-1 masks (LTE 8 bytes, NR 64 bytes). */
+    uint8_t list[6];                     /* count 2, bands 3 and 78 (LE u16) */
+    list[0] = 2; list[1] = 0;
+    list[2] = 3; list[3] = 0;
+    list[4] = 78; list[5] = 0;
+    uint8_t lte_m[8] = {0}, nr_m[64] = {0};
+    qp_mask_from_band_list(list, 6, lte_m, 8);
+    CHECK(lte_m[0] == 0x04);                                           /* band 3 -> bit 2 */
+    qp_mask_from_band_list(list, 6, nr_m, 64);
+    CHECK(nr_m[9] == 0x20);                                            /* band 78 -> bit 77 = byte 9, bit 5 */
+    uint8_t edge[4];                     /* band 512 lands on the last bit */
+    edge[0] = 1; edge[1] = 0; edge[2] = 0x00; edge[3] = 0x02;
+    uint8_t nr_edge[64] = {0};
+    qp_mask_from_band_list(edge, 4, nr_edge, 64);
+    CHECK(nr_edge[63] == 0x80);
+
     /* qp_find_tlv on a synthetic response: result TLV then an LTE mask. */
     uint8_t resp[64];
     size_t r = qp_req_hdr(resp, 16, QMI_NAS_GET_SSP);
