@@ -204,6 +204,90 @@ static int open_service(uint32_t service, int *fd, struct sockaddr_qrtr *server)
     return 0;
 }
 
+/* Print decoded system selection preference TLVs (shared by bands-get and
+ * post-SET readback so logs always show readable band lists and NR domains). */
+static void print_ssp_state(const char *tag, const uint8_t *buf, size_t len) {
+    const uint8_t *v = NULL;
+    uint16_t tlen = 0;
+    char bands[1024];
+    if (qp_find_tlv(buf, len, QP_TLV_SSP_MODE, &v, &tlen) && tlen >= 2)
+        printf("QMI %s mode_pref=0x%04x\n", tag, (unsigned)qp_read16(v));
+    if (qp_find_tlv(buf, len, QP_TLV_SSP_LTE_BANDS, &v, &tlen) && tlen == 8) {
+        qp_format_band_list(v, 8, bands, sizeof bands);
+        printf("QMI %s lte=0x%016llx\n", tag, (unsigned long long)mask64(v));
+        printf("QMI %s lte_bands=%s\n", tag, bands);
+    }
+    if (qp_find_tlv(buf, len, QP_TLV_SSP_EXT_LTE_GET, &v, &tlen) && tlen == 32) {
+        qp_format_band_list(v, 32, bands, sizeof bands);
+        printf("QMI %s lte_ext_bands=%s\n", tag, bands);
+    }
+    if (qp_find_tlv(buf, len, QP_TLV_SSP_NR_BANDS, &v, &tlen)) {
+        if (tlen == 4) {
+            const char *nm = v[0] == 0 ? "both" : v[0] == 1 ? "nsa" : v[0] == 2 ? "sa" : "other";
+            printf("QMI %s nr_mode=%s(%u)\n", tag, nm, (unsigned)v[0]);
+        } else if (tlen == 64) {
+            qp_format_band_list(v, 64, bands, sizeof bands);
+            printf("QMI %s nr=", tag);
+            for (int i = 63; i >= 0; i--) printf("%02x", v[i]);
+            printf("\n");
+            printf("QMI %s nr_bands=%s\n", tag, bands);
+        }
+    }
+    if (qp_find_tlv(buf, len, QP_TLV_SSP_NR_SA_GET, &v, &tlen) && tlen == 64) {
+        qp_format_band_list(v, 64, bands, sizeof bands);
+        printf("QMI %s nr_sa_bands=%s\n", tag, bands);
+    }
+    if (qp_find_tlv(buf, len, QP_TLV_SSP_NR_NSA_GET, &v, &tlen) && tlen == 64) {
+        qp_format_band_list(v, 64, bands, sizeof bands);
+        printf("QMI %s nr_nsa_bands=%s\n", tag, bands);
+    }
+}
+
+/* Best-effort independent NR-SA (0x2F) / NR-NSA (0x30) SSP writes. Some
+ * modems read only 0x2B; others evaluate 0x2F/0x30 and reject or accept them
+ * separately from 0x2B. Never fails a command whose 0x2B write succeeded. */
+static void apply_nr_domains(int sd, uint32_t txn_base, const char *cmd, const uint8_t nr_mask[64]) {
+    static const struct { const char *name; uint8_t tag; } domains[] = {
+        { "nr_sa", QP_TLV_SSP_NR_SA_SET },
+        { "nr_nsa", QP_TLV_SSP_NR_NSA_SET },
+    };
+    static uint8_t msg[QMI_MAX];
+    for (int i = 0; i < 2; i++) {
+        int qn = (int)qp_nas_ssp_set_nr_tag(msg, txn_base + (uint32_t)i, NULL, nr_mask, domains[i].tag, -1);
+        int qreply = 0;
+        int te = nas_exchange(sd, msg, qn, &qreply);
+        if (te) {
+            printf("QMI %s %s=transport_error:%s\n", cmd, domains[i].name, strerror(te));
+            continue;
+        }
+        uint16_t err = 0;
+        enum qp_result r = qp_read_result(msg, (size_t)qreply, &err);
+        if (r == QP_SUCCESS) printf("QMI %s %s=ok\n", cmd, domains[i].name);
+        else if (r == QP_REJECTED) printf("QMI %s %s=rejected(qmi_error=%u)\n", cmd, domains[i].name, (unsigned)err);
+        else printf("QMI %s %s=malformed\n", cmd, domains[i].name);
+    }
+}
+
+/* Read back 0x0034 immediately after a band write so logs verify what the
+ * modem actually stored instead of guessing from a bare VERDICT ok. */
+static void readback_ssp(int sd, uint32_t txn) {
+    static uint8_t msg[QMI_MAX];
+    int qn = (int)qp_nas_ssp_get(msg, txn);
+    int qreply = 0;
+    int te = nas_exchange(sd, msg, qn, &qreply);
+    if (te) {
+        printf("QMI readback fail=transport:%s\n", strerror(te));
+        return;
+    }
+    uint16_t err = 0;
+    enum qp_result r = qp_read_result(msg, (size_t)qreply, &err);
+    if (r != QP_SUCCESS) {
+        printf("QMI readback fail=%s qmi_error=%u\n", verdict_of(r, err), (unsigned)err);
+        return;
+    }
+    print_ssp_state("readback", msg, (size_t)qreply);
+}
+
 static int run_lock_command(int argc, char **argv) {
     const char *cmd = argv[1];
     const int need_dms = !strcmp(cmd, "bands-hw") || !strcmp(cmd, "bands-restore");
@@ -223,7 +307,7 @@ static int run_lock_command(int argc, char **argv) {
     uint8_t buf[QMI_MAX];
     int n = 0, reply = 0;
     uint8_t lte_mask[8] = {0}, nr_mask[64] = {0};
-    int use_nr = 0;
+    int use_lte = 0, use_nr = 0;
 
     /* Hardware capability (DMS): the modem's own supported bands. Needed for
        bands-hw and for bands-restore, whose masks must stay inside it: an
@@ -257,30 +341,43 @@ static int run_lock_command(int argc, char **argv) {
             qp_mask_from_band_list(v, len, nr_mask, 64);
             for (int i = 0; i < 64; i++) if (nr_mask[i]) use_nr = 1;
         }
+        char lte_csv[256], nr_csv[1024];
+        qp_format_band_list(lte_mask, 8, lte_csv, sizeof lte_csv);
+        qp_format_band_list(nr_mask, 64, nr_csv, sizeof nr_csv);
         if (!strcmp(cmd, "bands-hw")) {
             printf("QMI hw lte=0x%016llx\n", (unsigned long long)mask64(lte_mask));
+            printf("QMI hw lte_bands=%s\n", lte_csv);
             printf("QMI hw nr=");
             for (int i = 63; i >= 0; i--) printf("%02x", nr_mask[i]);
             printf("\n");
+            printf("QMI hw nr_bands=%s\n", nr_csv);
             printf("VERDICT ok\n");
             close(dms);
             return 0;
         }
         /* bands-restore continues to the NAS write below. */
-        printf("QMI bands-restore hw_lte=0x%016llx nr_bands=%d\n",
-            (unsigned long long)mask64(lte_mask), use_nr);
+        printf("QMI bands-restore hw_lte=0x%016llx lte_bands=%s nr_bands=%s\n",
+            (unsigned long long)mask64(lte_mask), lte_csv, nr_csv);
     }
 
     if (!strcmp(cmd, "bands-restore")) {
         if (!mask64(lte_mask)) {
             printf("QMI bands-restore fail=hw_capability empty_lte\n");
+            if (sd >= 0) close(sd);
             close(dms);
             return 9;
         }
+        use_lte = 1;
         n = (int)qp_nas_ssp_set(buf, 2, lte_mask, use_nr ? nr_mask : NULL, -1);
     } else if (!strcmp(cmd, "bands-set")) {
-        if (argc < 3 || !parse_hex_le(argv[2], lte_mask, 8)) {
+        if (argc < 3) {
             printf("QMI bands-set fail=usage\n"); close(sd); return 5;
+        }
+        if (strcmp(argv[2], "-") != 0 && strcmp(argv[2], "keep") != 0) {
+            if (!parse_hex_le(argv[2], lte_mask, 8)) {
+                printf("QMI bands-set fail=usage\n"); close(sd); return 5;
+            }
+            use_lte = 1;
         }
         int argi = 3, mode = -1;
         if (argi < argc && strcmp(argv[argi], "--mode")) {
@@ -298,7 +395,16 @@ static int run_lock_command(int argc, char **argv) {
                 printf("QMI bands-set fail=usage\n"); close(sd); return 5;
             }
         }
-        n = (int)qp_nas_ssp_set(buf, 1, lte_mask, use_nr ? nr_mask : NULL, mode);
+        if (!use_lte && !use_nr && mode < 0) {
+            printf("QMI bands-set fail=usage\n"); close(sd); return 5;
+        }
+        char lte_csv[256], nr_csv[1024];
+        if (use_lte) qp_format_band_list(lte_mask, 8, lte_csv, sizeof lte_csv);
+        else snprintf(lte_csv, sizeof lte_csv, "keep");
+        if (use_nr) qp_format_band_list(nr_mask, 64, nr_csv, sizeof nr_csv);
+        else snprintf(nr_csv, sizeof nr_csv, "keep");
+        printf("QMI bands-set req lte_bands=%s nr_bands=%s mode=%d\n", lte_csv, nr_csv, mode);
+        n = (int)qp_nas_ssp_set(buf, 1, use_lte ? lte_mask : NULL, use_nr ? nr_mask : NULL, mode);
     } else if (!strcmp(cmd, "mode")) {
         if (argc < 3) { printf("QMI mode fail=usage\n"); close(sd); return 5; }
         int mode = mode_pref_text(argv[2]);
@@ -355,6 +461,7 @@ static int run_lock_command(int argc, char **argv) {
     if (transport_error) {
         printf("QMI %s transport_error=%s\n", cmd, strerror(transport_error));
         close(sd);
+        if (dms >= 0) close(dms);
         return 6;
     }
     uint16_t error = 0;
@@ -364,13 +471,7 @@ static int run_lock_command(int argc, char **argv) {
         const uint8_t *v = NULL;
         uint16_t len = 0;
         if (!strcmp(cmd, "bands-get")) {
-            if (qp_find_tlv(buf, (size_t)reply, QP_TLV_SSP_LTE_BANDS, &v, &len) && len == 8)
-                printf("QMI bands lte=0x%016llx\n", (unsigned long long)mask64(v));
-            if (qp_find_tlv(buf, (size_t)reply, QP_TLV_SSP_NR_BANDS, &v, &len) && len == 64) {
-                printf("QMI bands nr=");
-                for (int i = 63; i >= 0; i--) printf("%02x", v[i]);
-                printf("\n");
-            }
+            print_ssp_state("bands", buf, (size_t)reply);
         } else if (!strcmp(cmd, "celllte-get")) {
             if (qp_find_tlv(buf, (size_t)reply, QP_TLV_LTE_APPLY, &v, &len) && len >= 1) {
                 int count = v[0];
@@ -389,6 +490,10 @@ static int run_lock_command(int argc, char **argv) {
                 printf("QMI cellnr pci=%u arfcn=%u scs_index=%u\n",
                     (unsigned)qp_read16(v), (unsigned)qp_read32(v + 6), (unsigned)qp_read32(v + 2));
         }
+    }
+    if (result == QP_SUCCESS && (!strcmp(cmd, "bands-set") || !strcmp(cmd, "bands-restore"))) {
+        if (use_nr) apply_nr_domains(sd, 10, cmd, nr_mask);
+        readback_ssp(sd, 20);
     }
     printf("VERDICT %s%s\n", verdict_of(result, error),
         result == QP_REJECTED ? "" : "");

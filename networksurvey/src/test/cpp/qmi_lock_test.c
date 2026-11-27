@@ -18,6 +18,11 @@ int _fltused = 0;
 
 #define CHECK(x) do { if (!(x)) return __LINE__; } while (0)
 
+static int str_eq(const char *a, const char *b) {
+    while (*a && *a == *b) { a++; b++; }
+    return *a == *b;
+}
+
 static uint8_t out[4096];
 
 __declspec(dllexport) int test_qmi_lock(void) {
@@ -143,5 +148,47 @@ __declspec(dllexport) int test_qmi_lock(void) {
     uint16_t error = 0;
     CHECK(qp_read_result(resp, r, &error) == QP_SUCCESS);
     CHECK(qp_find_tlv(resp, r, 0x33, &v, &len) == 0);
+
+    /* NR-only SSP write under 0x2F (SA) / 0x30 (NSA) with no LTE/mode TLVs. */
+    n = qp_nas_ssp_set_nr_tag(out, 18, NULL, nr_m, QP_TLV_SSP_NR_SA_SET, -1);
+    CHECK(n == QMI_HEADER + (3 + 1) + (3 + 64));
+    CHECK(out[7] == QP_TLV_SSP_DURATION && out[10] == 1);
+    CHECK(out[11] == QP_TLV_SSP_NR_SA_SET && qp_read16(out + 12) == 64 && out[14 + 9] == 0x20);
+    n = qp_nas_ssp_set_nr_tag(out, 19, NULL, nr_m, QP_TLV_SSP_NR_NSA_SET, -1);
+    CHECK(n == QMI_HEADER + (3 + 1) + (3 + 64));
+    CHECK(out[11] == QP_TLV_SSP_NR_NSA_SET && qp_read16(out + 12) == 64 && out[14 + 9] == 0x20);
+
+    /* Band list formatter: empty, multi-band LTE/NR, and tight-buffer truncation. */
+    char text[64];
+    uint8_t zero_m[8] = {0};
+    qp_format_band_list(zero_m, 8, text, sizeof text);
+    CHECK(str_eq(text, "none"));
+    uint8_t lte_1341[8] = {0};
+    lte_1341[0] = 0x05;                                                /* B1 + B3 */
+    lte_1341[5] = 0x01;                                                /* B41 (bit 40 = byte 5, bit 0) */
+    qp_format_band_list(lte_1341, 8, text, sizeof text);
+    CHECK(str_eq(text, "1,3,41"));
+    qp_format_band_list(nr_m, 64, text, sizeof text);
+    CHECK(str_eq(text, "3,78"));
+    char small[8];
+    qp_format_band_list(lte_1341, 8, small, sizeof small);             /* "1,3,41" fits in 7 bytes; try 6 */
+    CHECK(str_eq(small, "1,3,41"));
+    char tighter[6];
+    qp_format_band_list(lte_1341, 8, tighter, sizeof tighter);
+    CHECK(str_eq(tighter, "1,..."));
+
+    /* GET 0x0034 synthetic reply: 4-byte 0x2B mode + 64-byte 0x2C SA + 0x2D NSA. */
+    uint8_t ssp_resp[256];
+    size_t sr = qp_req_hdr(ssp_resp, 20, QMI_NAS_GET_SSP);
+    ssp_resp[0] = QMI_TYPE_RESP;
+    sr = qp_tlv(ssp_resp, sr, 0x02, res, 4);
+    uint8_t nrmode[4] = {2, 0, 0, 0};                                  /* SA */
+    sr = qp_tlv(ssp_resp, sr, QP_TLV_SSP_NR_BANDS, nrmode, 4);
+    sr = qp_tlv(ssp_resp, sr, QP_TLV_SSP_NR_SA_GET, nr_m, 64);
+    sr = qp_tlv(ssp_resp, sr, QP_TLV_SSP_NR_NSA_GET, nr_m, 64);
+    qp_put16(ssp_resp + 5, (uint32_t)(sr - QMI_HEADER));
+    CHECK(qp_find_tlv(ssp_resp, sr, QP_TLV_SSP_NR_BANDS, &v, &len) == 1 && len == 4 && v[0] == 2);
+    CHECK(qp_find_tlv(ssp_resp, sr, QP_TLV_SSP_NR_SA_GET, &v, &len) == 1 && len == 64 && v[9] == 0x20);
+    CHECK(qp_find_tlv(ssp_resp, sr, QP_TLV_SSP_NR_NSA_GET, &v, &len) == 1 && len == 64 && v[9] == 0x20);
     return 0;
 }
