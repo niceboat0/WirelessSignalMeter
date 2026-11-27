@@ -127,12 +127,213 @@ static int qmi_exchange(int fd, uint8_t *buf, int len, int *reply_len) {
     }
 }
 
+/* ---- lock commands (bands / cell lock / mode) ------------------------- */
+
+static int is_lock_command(const char *cmd) {
+    static const char *const names[] = {
+        "bands-set", "bands-get", "celllte-set", "celllte-get", "celllte-clear",
+        "cellnr-set", "cellnr-get", "cellnr-clear", "mode",
+    };
+    for (size_t i = 0; i < sizeof names / sizeof names[0]; i++)
+        if (!strcmp(cmd, names[i])) return 1;
+    return 0;
+}
+
+/* "<hex>" -> nbytes little-endian; returns 0 on a bad digit or overflow. */
+static int parse_hex_le(const char *text, uint8_t *out, int nbytes) {
+    if (text[0] == '0' && (text[1] == 'x' || text[1] == 'X')) text += 2;
+    size_t len = strlen(text);
+    if (!len || len > (size_t)nbytes * 2) return 0;
+    for (int i = 0; i < nbytes; i++) out[i] = 0;
+    for (size_t i = 0; i < len; i++) {
+        char ch = text[len - 1 - i];
+        int v = ch >= '0' && ch <= '9' ? ch - '0'
+            : ch >= 'a' && ch <= 'f' ? ch - 'a' + 10
+            : ch >= 'A' && ch <= 'F' ? ch - 'A' + 10 : -1;
+        if (v < 0) return 0;
+        out[i / 2] |= (uint8_t)(v << ((i & 1) * 4));
+    }
+    return 1;
+}
+
+/* QMI scs is an index: 0=15k, 1=30k, 2=60k, 3=120k, 4=240k. */
+static int parse_scs(const char *text) {
+    long v = strtol(text, NULL, 10);
+    if (v >= 0 && v <= 4 && text[1] == 0) return (int)v;
+    switch (v) { case 15: return 0; case 30: return 1; case 60: return 2; case 120: return 3; case 240: return 4; }
+    return -1;
+}
+
+static uint64_t mask64(const uint8_t m[8]) {
+    uint64_t v = 0;
+    for (int i = 7; i >= 0; i--) v = (v << 8) | m[i];
+    return v;
+}
+
+/* One NAS exchange: returns 0 and fills reply_len, or an errno value. */
+static int nas_exchange(int fd, uint8_t *buf, int len, int *reply_len) {
+    if (len <= 0) return EINVAL;
+    return qmi_exchange(fd, buf, len, reply_len);
+}
+
+static const char *verdict_of(enum qp_result r, uint16_t error) {
+    (void)error;
+    return r == QP_SUCCESS ? "ok" : r == QP_REJECTED ? "rejected" : "malformed";
+}
+
+/* mode_pref bitmask: 4 GSM, 8 WCDMA, 16 LTE, 64 NR; 0xFF = everything. */
+static int mode_pref_text(const char *text) {
+    if (!strcmp(text, "auto") || !strcmp(text, "all")) return 0xFF;
+    if (!strcmp(text, "lte")) return 16;
+    if (!strcmp(text, "nr") || !strcmp(text, "nr5g")) return 64;
+    if (!strcmp(text, "gsm")) return 4;
+    if (!strcmp(text, "wcdma") || !strcmp(text, "umts")) return 8;
+    return -1;
+}
+
+static int run_lock_command(int argc, char **argv) {
+    const char *cmd = argv[1];
+    int sd = socket(AF_QIPCRTR, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    if (sd < 0) { printf("QMI %s fail=%s\n", cmd, strerror(errno)); return 2; }
+    struct sockaddr_qrtr server;
+    int e = qrtr_lookup(QMI_NAS_SERVICE, 1, &server);
+    if (e) e = qrtr_lookup(QMI_NAS_SERVICE, 0, &server);
+    if (e) { printf("QMI %s fail=lookup:%s\n", cmd, strerror(e)); close(sd); return 3; }
+    if (connect(sd, (struct sockaddr *)&server, sizeof server) < 0) {
+        printf("QMI %s fail=connect:%s\n", cmd, strerror(errno)); close(sd); return 4;
+    }
+
+    uint8_t buf[QMI_MAX];
+    int n = 0, reply = 0;
+    uint8_t lte_mask[8] = {0}, nr_mask[64] = {0};
+    int use_nr = 0;
+
+    if (!strcmp(cmd, "bands-set")) {
+        if (argc < 3 || !parse_hex_le(argv[2], lte_mask, 8)) {
+            printf("QMI bands-set fail=usage\n"); close(sd); return 5;
+        }
+        int argi = 3, mode = -1;
+        if (argi < argc && strcmp(argv[argi], "--mode")) {
+            if (!parse_hex_le(argv[argi], nr_mask, 64)) {
+                printf("QMI bands-set fail=usage\n"); close(sd); return 5;
+            }
+            use_nr = 1;
+            argi++;
+        }
+        if (argi < argc) {
+            if (!strcmp(argv[argi], "--mode") && argi + 1 < argc) {
+                mode = mode_pref_text(argv[argi + 1]);
+                if (mode < 0) { printf("QMI bands-set fail=usage\n"); close(sd); return 5; }
+            } else {
+                printf("QMI bands-set fail=usage\n"); close(sd); return 5;
+            }
+        }
+        n = (int)qp_nas_ssp_set(buf, 1, lte_mask, use_nr ? nr_mask : NULL, mode);
+    } else if (!strcmp(cmd, "mode")) {
+        if (argc < 3) { printf("QMI mode fail=usage\n"); close(sd); return 5; }
+        int mode = mode_pref_text(argv[2]);
+        if (mode < 0) { printf("QMI mode fail=usage\n"); close(sd); return 5; }
+        n = (int)qp_nas_ssp_set(buf, 1, NULL, NULL, mode);
+    } else if (!strcmp(cmd, "bands-get")) {
+        n = (int)qp_nas_ssp_get(buf, 1);
+    } else if (!strcmp(cmd, "celllte-set")) {
+        uint16_t pci[64];
+        uint32_t earfcn[64];
+        int count = 0;
+        if (argc < 3) { printf("QMI celllte-set fail=usage\n"); close(sd); return 5; }
+        char *list = argv[2];
+        for (char *tok = strtok(list, ","); tok; tok = strtok(NULL, ",")) {
+            if (count >= 64) break;
+            char *colon = strchr(tok, ':');
+            if (!colon) { printf("QMI celllte-set fail=usage\n"); close(sd); return 5; }
+            *colon = 0;
+            pci[count] = (uint16_t)strtoul(tok, NULL, 0);
+            earfcn[count] = (uint32_t)strtoul(colon + 1, NULL, 0);
+            count++;
+        }
+        n = (int)qp_nas_lte_lock_set(buf, 1, pci, earfcn, count);
+        if (!n) { printf("QMI celllte-set fail=usage\n"); close(sd); return 5; }
+    } else if (!strcmp(cmd, "celllte-clear")) {
+        n = (int)qp_nas_lte_lock_set(buf, 1, NULL, NULL, 0);
+    } else if (!strcmp(cmd, "celllte-get")) {
+        n = (int)qp_nas_lte_lock_get(buf, 1);
+    } else if (!strcmp(cmd, "cellnr-set")) {
+        int scs;
+        if (argc >= 4 && !strcmp(argv[2], "arfcn")) {
+            if (argc < 5 || (scs = parse_scs(argv[4])) < 0) {
+                printf("QMI cellnr-set fail=usage\n"); close(sd); return 5;
+            }
+            n = (int)qp_nas_nr_lock_set_arfcn(buf, 1, (uint32_t)strtoul(argv[3], NULL, 0), (uint32_t)scs);
+        } else {
+            if (argc < 5 || (scs = parse_scs(argv[4])) < 0) {
+                printf("QMI cellnr-set fail=usage\n"); close(sd); return 5;
+            }
+            memset(nr_mask, 0, sizeof nr_mask);
+            if (argc >= 6 && !parse_hex_le(argv[5], nr_mask, 64)) {
+                printf("QMI cellnr-set fail=usage\n"); close(sd); return 5;
+            }
+            n = (int)qp_nas_nr_lock_set_pci(buf, 1, (uint16_t)strtoul(argv[2], NULL, 0),
+                (uint32_t)scs, (uint32_t)strtoul(argv[3], NULL, 0), nr_mask);
+        }
+    } else if (!strcmp(cmd, "cellnr-clear")) {
+        n = (int)qp_nas_nr_lock_clear(buf, 1);
+    } else {
+        n = (int)qp_nas_nr_lock_get(buf, 1);
+    }
+
+    int transport_error = nas_exchange(sd, buf, n, &reply);
+    if (transport_error) {
+        printf("QMI %s transport_error=%s\n", cmd, strerror(transport_error));
+        close(sd);
+        return 6;
+    }
+    uint16_t error = 0;
+    enum qp_result result = qp_read_result(buf, (size_t)reply, &error);
+    int is_query = strstr(cmd, "-get") != NULL;
+    if (is_query && result == QP_SUCCESS) {
+        const uint8_t *v = NULL;
+        uint16_t len = 0;
+        if (!strcmp(cmd, "bands-get")) {
+            if (qp_find_tlv(buf, (size_t)reply, QP_TLV_SSP_LTE_BANDS, &v, &len) && len == 8)
+                printf("QMI bands lte=0x%016llx\n", (unsigned long long)mask64(v));
+            if (qp_find_tlv(buf, (size_t)reply, QP_TLV_SSP_NR_BANDS, &v, &len) && len == 64) {
+                printf("QMI bands nr=");
+                for (int i = 63; i >= 0; i--) printf("%02x", v[i]);
+                printf("\n");
+            }
+        } else if (!strcmp(cmd, "celllte-get")) {
+            if (qp_find_tlv(buf, (size_t)reply, QP_TLV_LTE_APPLY, &v, &len) && len >= 1) {
+                int count = v[0];
+                printf("QMI celllte count=%d", count);
+                for (int i = 0; i < count && (size_t)(1 + i * 4) + 4 <= len; i++) {
+                    uint16_t pci = qp_read16(v + 1 + i * 4);
+                    uint16_t earfcn = qp_read16(v + 3 + i * 4);
+                    printf(" %u:%u", (unsigned)pci, (unsigned)earfcn);
+                }
+                printf("\n");
+            }
+        } else {
+            if (qp_find_tlv(buf, (size_t)reply, QP_TLV_NR_TYPE, &v, &len) && len == 4)
+                printf("QMI cellnr type=%u\n", (unsigned)qp_read32(v));
+            if (qp_find_tlv(buf, (size_t)reply, QP_TLV_NR_PCI, &v, &len) && len >= 10)
+                printf("QMI cellnr pci=%u arfcn=%u scs_index=%u\n",
+                    (unsigned)qp_read16(v), (unsigned)qp_read32(v + 6), (unsigned)qp_read32(v + 2));
+        }
+    }
+    printf("VERDICT %s%s\n", verdict_of(result, error),
+        result == QP_REJECTED ? "" : "");
+    if (result == QP_REJECTED) printf("QMI %s qmi_error=%u\n", cmd, (unsigned)error);
+    close(sd);
+    return result == QP_SUCCESS ? 0 : result == QP_REJECTED ? 7 : 8;
+}
+
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IOLBF, 0);
     if (geteuid() != 0) {
         fprintf(stderr, "qmi-probe requires root.\n");
         return 1;
     }
+    if (argc >= 2 && is_lock_command(argv[1])) return run_lock_command(argc, argv);
     uint32_t service = argc >= 2 ? (uint32_t)strtoul(argv[1], NULL, 0) : QMI_NAS_SERVICE;
     printf("QMI probe: service 0x%x over QRTR\n", service);
 

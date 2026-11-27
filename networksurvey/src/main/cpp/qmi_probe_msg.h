@@ -20,6 +20,29 @@ enum {
     QMI_NAS_SERVICE = 0x03,
     QMI_NAS_GET_SERVING_SYSTEM = 0x0024,
     QMI_NAS_GET_RF_BAND_INFO = 0x0031,
+    QMI_NAS_SET_SSP = 0x0033,          /* Set System Selection Preference */
+    QMI_NAS_GET_SSP = 0x0034,          /* Get System Selection Preference */
+    QMI_NAS_LTE_LOCK_SET = 0x00D8,
+    QMI_NAS_LTE_LOCK_GET = 0x00D7,
+    QMI_NAS_NR_LOCK_SET = 0x010E,
+    QMI_NAS_NR_LOCK_GET = 0x010F,
+};
+
+/* TLV ids are per NAS message, not global. */
+enum {
+    /* 0x0033/0x0034 (system selection preference). */
+    QP_TLV_SSP_MODE = 0x11,            /* u16 mode_pref: 4 GSM, 8 WCDMA, 16 LTE, 64 NR */
+    QP_TLV_SSP_LTE_BANDS = 0x15,       /* u64 LTE band mask */
+    QP_TLV_SSP_DURATION = 0x17,        /* u8, 1 = permanent */
+    QP_TLV_SSP_USAGE = 0x21,           /* u32 usage setting, 1 = voice centric */
+    QP_TLV_SSP_NR_BANDS = 0x2B,        /* 64-byte NR band mask */
+    /* 0x00D8 (LTE cell lock set). */
+    QP_TLV_LTE_LIST = 0x01,            /* count:u8 + count*[pci:u16, earfcn:u32] */
+    QP_TLV_LTE_APPLY = 0x10,           /* apply:u8 = 1 (also the 0x00D7 GET list id) */
+    /* 0x010E (NR cell lock set). */
+    QP_TLV_NR_TYPE = 0x01,             /* u32: 0 PCI, 1 ARFCN, 2 none, 3 multi-PCI, 4 gNB */
+    QP_TLV_NR_PCI = 0x10,              /* pci:u16, scs:u32, arfcn:u32, band_mask:64B (74B) */
+    QP_TLV_NR_ARFCN = 0x11,            /* count:u8(=1), arfcn:u32, scs:u32 (9B) */
 };
 
 static void qp_put16(uint8_t *p, uint32_t v) {
@@ -53,6 +76,130 @@ static size_t qp_nas_get_serving_system(uint8_t *out, uint32_t txn) {
 
 static size_t qp_nas_get_rf_band_info(uint8_t *out, uint32_t txn) {
     return qp_finish(out, qp_req_hdr(out, txn, QMI_NAS_GET_RF_BAND_INFO));
+}
+
+/* ---- lock commands ---------------------------------------------------- */
+
+static void qp_put32(uint8_t *p, uint32_t v) {
+    p[0] = (uint8_t)v;
+    p[1] = (uint8_t)(v >> 8);
+    p[2] = (uint8_t)(v >> 16);
+    p[3] = (uint8_t)(v >> 24);
+}
+
+static uint32_t qp_read32(const uint8_t *p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+/* tag:u8 | length:u16 | value */
+static size_t qp_tlv(uint8_t *out, size_t at, uint8_t tag, const uint8_t *value, uint16_t len) {
+    out[at] = tag;
+    qp_put16(out + at + 1, len);
+    for (uint16_t i = 0; i < len; i++) out[at + 3 + i] = value[i];
+    return at + 3 + len;
+}
+
+/* System selection preference: LTE band mask (8 bytes, little endian),
+ * optional 64-byte NR mask. Always carries duration so the modem keeps the
+ * preference (a lone optional TLV can be read as a query). */
+static size_t qp_nas_ssp_set(uint8_t *out, uint32_t txn,
+        const uint8_t lte_mask[8], const uint8_t *nr_mask, int mode_pref) {
+    size_t at = qp_req_hdr(out, txn, QMI_NAS_SET_SSP);
+    uint8_t one = 1;
+    at = qp_tlv(out, at, QP_TLV_SSP_DURATION, &one, 1);
+    if (mode_pref >= 0) {
+        uint8_t mode[2];
+        qp_put16(mode, (uint32_t)mode_pref);
+        at = qp_tlv(out, at, QP_TLV_SSP_MODE, mode, 2);
+    }
+    if (lte_mask) at = qp_tlv(out, at, QP_TLV_SSP_LTE_BANDS, lte_mask, 8);
+    if (nr_mask) at = qp_tlv(out, at, QP_TLV_SSP_NR_BANDS, nr_mask, 64);
+    return qp_finish(out, at);
+}
+
+static size_t qp_nas_ssp_get(uint8_t *out, uint32_t txn) {
+    return qp_finish(out, qp_req_hdr(out, txn, QMI_NAS_GET_SSP));
+}
+
+/* LTE cell lock: count entries of [pci:u16, earfcn:u32], then apply=1.
+ * count 0 clears. The GET reply reports earfcn as u16 (x16 truncation). */
+static size_t qp_nas_lte_lock_set(uint8_t *out, uint32_t txn,
+        const uint16_t *pci, const uint32_t *earfcn, int count) {
+    if (count < 0 || count > 64) return 0;
+    size_t at = qp_req_hdr(out, txn, QMI_NAS_LTE_LOCK_SET);
+    uint8_t list[1 + 64 * 6];
+    list[0] = (uint8_t)count;
+    for (int i = 0; i < count; i++) {
+        qp_put16(list + 1 + i * 6, pci[i]);
+        qp_put32(list + 3 + i * 6, earfcn[i]);
+    }
+    at = qp_tlv(out, at, QP_TLV_LTE_LIST, list, (uint16_t)(1 + count * 6));
+    uint8_t apply = 1;
+    at = qp_tlv(out, at, QP_TLV_LTE_APPLY, &apply, 1);
+    return qp_finish(out, at);
+}
+
+static size_t qp_nas_lte_lock_get(uint8_t *out, uint32_t txn) {
+    return qp_finish(out, qp_req_hdr(out, txn, QMI_NAS_LTE_LOCK_GET));
+}
+
+/* NR cell lock. type 0 = PCI (74-byte TLV), 1 = ARFCN (9 bytes),
+ * 2 = clear. band_mask is 64 bytes; scs is the QMI index (0..4). */
+static size_t qp_nas_nr_lock_set_pci(uint8_t *out, uint32_t txn,
+        uint16_t pci, uint32_t scs, uint32_t arfcn, const uint8_t band_mask[64]) {
+    size_t at = qp_req_hdr(out, txn, QMI_NAS_NR_LOCK_SET);
+    uint8_t type[4] = {0, 0, 0, 0};
+    at = qp_tlv(out, at, QP_TLV_NR_TYPE, type, 4);
+    uint8_t value[74];
+    qp_put16(value, pci);
+    qp_put32(value + 2, scs);
+    qp_put32(value + 6, arfcn);
+    for (int i = 0; i < 64; i++) value[10 + i] = band_mask[i];
+    at = qp_tlv(out, at, QP_TLV_NR_PCI, value, 74);
+    return qp_finish(out, at);
+}
+
+static size_t qp_nas_nr_lock_set_arfcn(uint8_t *out, uint32_t txn, uint32_t arfcn, uint32_t scs) {
+    size_t at = qp_req_hdr(out, txn, QMI_NAS_NR_LOCK_SET);
+    uint8_t type[4] = {1, 0, 0, 0};
+    at = qp_tlv(out, at, QP_TLV_NR_TYPE, type, 4);
+    uint8_t value[9];
+    value[0] = 1;
+    qp_put32(value + 1, arfcn);
+    qp_put32(value + 5, scs);
+    at = qp_tlv(out, at, QP_TLV_NR_ARFCN, value, 9);
+    return qp_finish(out, at);
+}
+
+static size_t qp_nas_nr_lock_clear(uint8_t *out, uint32_t txn) {
+    size_t at = qp_req_hdr(out, txn, QMI_NAS_NR_LOCK_SET);
+    uint8_t type[4] = {2, 0, 0, 0};
+    at = qp_tlv(out, at, QP_TLV_NR_TYPE, type, 4);
+    return qp_finish(out, at);
+}
+
+static size_t qp_nas_nr_lock_get(uint8_t *out, uint32_t txn) {
+    return qp_finish(out, qp_req_hdr(out, txn, QMI_NAS_NR_LOCK_GET));
+}
+
+/* Locate one TLV in a well-formed response body. Returns 1 when found. */
+static int qp_find_tlv(const uint8_t *p, size_t n, uint8_t tag,
+        const uint8_t **value, uint16_t *length) {
+    if (n < QMI_HEADER || qp_read16(p + 5) != n - QMI_HEADER) return 0;
+    for (size_t at = QMI_HEADER; at < n;) {
+        if (n - at < 3) return 0;
+        uint8_t t = p[at];
+        uint16_t len = qp_read16(p + at + 1);
+        at += 3;
+        if (len > n - at) return 0;
+        if (t == tag) {
+            if (value) *value = p + at;
+            if (length) *length = len;
+            return 1;
+        }
+        at += len;
+    }
+    return 0;
 }
 
 /* True when a datagram is the QMI response matching the given txn/message. */
