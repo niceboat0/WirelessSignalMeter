@@ -915,7 +915,7 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
                         if (row.has("mcs_avg") || row.has("retx_pct")) keep(row, record.type)
                         if (row.has("pucch_dbm")) keep(row, "${record.type}:pucch")
                     }
-                    record.type == "nr_pdsch" -> if (row.has("bler_pct") || row.has("retx_pct")) keep(row, record.type)
+                    record.type == "nr_pdsch" -> if (row.has("bler_pct") || row.has("retx_pct") || row.has("phy_tb_mbps")) keep(row, record.type)
                     record.type == "lte_rank" -> if (row.has("rank_avg") || row.has("tx") || row.has("rx")) keep(row, record.type)
                     row.optInt("tb") > 0 -> keep(row, record.type)
                 }

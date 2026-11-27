@@ -46,6 +46,62 @@ void diag_q_drop_epoch(struct diag_queue *q, uint16_t len) {
     q->stats.epoch_dropped++;
 }
 
+void diag_latest_init(struct diag_latest_set *s) { memset(s, 0, sizeof(*s)); }
+
+int diag_latest_pending(const struct diag_latest_set *s) {
+    for (int i = 0; i < DIAG_LATEST_SLOTS; i++) if (s->slot[i].occupied) return 1;
+    return 0;
+}
+
+unsigned diag_latest_count(const struct diag_latest_set *s) {
+    unsigned n = 0;
+    for (int i = 0; i < DIAG_LATEST_SLOTS; i++) n += s->slot[i].occupied ? 1u : 0u;
+    return n;
+}
+
+void diag_latest_drop_epoch(struct diag_latest_set *s, uint16_t len) {
+    (void)len;
+    s->epoch_dropped++;
+}
+
+/* One unread snapshot per cumulative code. A replacement is not a sample drop:
+   the counters are absolute, so the next parsed frame still yields the delta. */
+int diag_latest_push(struct diag_latest_set *s, uint16_t code, const uint8_t *data, uint16_t len) {
+    /* len is uint16_t and the slot is DIAG_Q_SLOT bytes, so it always fits. */
+    if (!s || !data || !len || !diag_code_coalesce(code)) return 0;
+    struct diag_latest *slot = NULL;
+    for (int i = 0; i < DIAG_LATEST_SLOTS; i++) {
+        if (s->slot[i].occupied && s->slot[i].code == code) { slot = &s->slot[i]; break; }
+    }
+    if (!slot) {
+        for (int i = 0; i < DIAG_LATEST_SLOTS; i++) if (!s->slot[i].occupied) { slot = &s->slot[i]; break; }
+    }
+    if (!slot) {
+        s->dropped++;
+        return 0;
+    }
+    if (slot->occupied) s->superseded++;
+    memcpy(slot->bytes, data, len);
+    slot->len = len;
+    slot->code = code;
+    slot->occupied = 1;
+    s->pushed++;
+    return 1;
+}
+
+int diag_latest_pop(struct diag_latest_set *s, struct diag_q_item *item) {
+    for (int n = 0; n < DIAG_LATEST_SLOTS; n++) {
+        unsigned i = (s->cursor + (unsigned)n) % DIAG_LATEST_SLOTS;
+        if (!s->slot[i].occupied) continue;
+        item->data = s->slot[i].bytes;
+        item->len = s->slot[i].len;
+        s->slot[i].occupied = 0;
+        s->cursor = (i + 1) % DIAG_LATEST_SLOTS;
+        return 1;
+    }
+    return 0;
+}
+
 /* See diag_queue.h. Keep this list in sync with the parser switch in
    root_diag.c: signalling and serving/measurement records must stay high. */
 int diag_code_priority(uint16_t code) {
@@ -60,4 +116,22 @@ int diag_code_priority(uint16_t code) {
     default:
         return DIAG_PRIO_HIGH;
     }
+}
+
+/* Absolute counters. Replacing an unread frame does not lose the byte delta.
+   Per-TB (B887/B883), power (B884) and CQI (B8A7) stay on the sample queue. */
+int diag_code_coalesce(uint16_t code) {
+    switch (code) {
+    case 0xB888:
+    case 0xB842: case 0xB860: case 0xB84D:
+    case 0xB868: case 0xB881:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+int diag_code_lane(uint16_t code) {
+    if (diag_code_coalesce(code)) return DIAG_LANE_COALESCE;
+    return diag_code_priority(code) == DIAG_PRIO_LOW ? DIAG_LANE_LOW : DIAG_LANE_HIGH;
 }

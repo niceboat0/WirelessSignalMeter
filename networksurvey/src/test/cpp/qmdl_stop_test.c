@@ -48,7 +48,8 @@ static void qmdl_request_mask(int enabled) { step(MASK); }
 #include "qmdl_stop_under_test.inc"
 
 static struct diag_queue g_dq, g_dq_lo;
-static int g_dq_mu, g_dq_cv, decoded, queued, queued_high, queued_low, g_dq_started = 1;
+static struct diag_latest_set g_latest;
+static int g_dq_mu, g_dq_cv, decoded, queued, queued_high, queued_low, coalesced, g_dq_started = 1;
 /* The freestanding Windows harness has no system headers for stdatomic.h. */
 typedef _Atomic(unsigned long) atomic_ulong;
 #define memory_order_relaxed __ATOMIC_RELAXED
@@ -62,6 +63,11 @@ int diag_q_push(struct diag_queue *queue, const uint8_t *data, uint16_t size) {
     queued++;
     if (queue == &g_dq) queued_high++;
     if (queue == &g_dq_lo) queued_low++;
+    return 1;
+}
+int diag_latest_push(struct diag_latest_set *set, uint16_t code, const uint8_t *data, uint16_t len) {
+    (void)set; (void)data; (void)len; (void)code;
+    coalesced++;
     return 1;
 }
 static void pthread_cond_signal(int *ignored) {}
@@ -141,10 +147,12 @@ __declspec(dllexport) int test_diag_live_priority(void) {
         12, 0, 0x7f, 0xb9, 0, 0, 0, 0, 0, 0, 0, 0,
     };
     int previous_high = queued_high, previous_low = queued_low, previous_decoded = decoded;
+    int previous_coalesced = coalesced;
     g_dq_started = 1;
     on_log(packets, sizeof(packets));
-    if (queued_high != previous_high + 2 || queued_low != previous_low + 1 ||
-        decoded != previous_decoded) return __LINE__;
+    /* B888 is cumulative and must not take a sample-queue slot. NAS and measurement stay high. */
+    if (queued_high != previous_high + 2 || queued_low != previous_low ||
+        coalesced != previous_coalesced + 1 || decoded != previous_decoded) return __LINE__;
     if (g_qmdl_fd != -1 || file_size || write_calls || g_qmdl_packets || g_qmdl_pending_bytes) return __LINE__;
     g_dq_started = 0;
     trace = 0;

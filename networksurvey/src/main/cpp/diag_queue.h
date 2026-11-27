@@ -48,10 +48,41 @@ int diag_epoch_allows(const struct diag_epoch_barrier *barrier, uint64_t timesta
 void diag_q_drop_epoch(struct diag_queue *q, uint16_t len);
 
 /* Periodic statistics use a separate queue to protect signalling/measurement
-   records from their bursts. Some are cumulative; per-TB/power/CQI samples
-   are not replayed, so drops still represent missing statistical coverage. */
+   records from their bursts. Per-TB, power and CQI samples are not replayed,
+   so a full sample queue still means missing coverage. Cumulative PDSCH and
+   layer counters are absolute: a newer unread snapshot replaces the previous
+   one, and the next parsed delta covers the gap. */
 #define DIAG_PRIO_HIGH 0
 #define DIAG_PRIO_LOW 1
+#define DIAG_LANE_HIGH 0
+#define DIAG_LANE_LOW 1
+#define DIAG_LANE_COALESCE 2
+#define DIAG_LATEST_SLOTS 6
+
+struct diag_latest {
+    uint16_t code;
+    uint16_t len;
+    int occupied;
+    uint8_t bytes[DIAG_Q_SLOT];
+};
+
+struct diag_latest_set {
+    struct diag_latest slot[DIAG_LATEST_SLOTS];
+    unsigned cursor;
+    unsigned long pushed;
+    unsigned long superseded;
+    unsigned long dropped;
+    unsigned long epoch_dropped;
+};
+
 int diag_code_priority(uint16_t code);
+int diag_code_coalesce(uint16_t code);
+int diag_code_lane(uint16_t code);
+void diag_latest_init(struct diag_latest_set *s);
+int diag_latest_push(struct diag_latest_set *s, uint16_t code, const uint8_t *data, uint16_t len);
+int diag_latest_pop(struct diag_latest_set *s, struct diag_q_item *item);
+int diag_latest_pending(const struct diag_latest_set *s);
+unsigned diag_latest_count(const struct diag_latest_set *s);
+void diag_latest_drop_epoch(struct diag_latest_set *s, uint16_t len);
 
 #endif
