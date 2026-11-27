@@ -58,12 +58,32 @@ static int run_queue_tests(void) {
     CHECK(!diag_code_coalesce(0xB8A7) && diag_code_lane(0xB8A7) == DIAG_LANE_LOW);
     CHECK(diag_code_lane(0xB821) == DIAG_LANE_HIGH);
     CHECK(diag_code_lane(0xB97F) == DIAG_LANE_HIGH);
+    CHECK(diag_code_priority(0xB14D) == DIAG_PRIO_LOW);
+    CHECK(diag_code_priority(0xB14E) == DIAG_PRIO_LOW);
+    CHECK(diag_code_priority(0xB13C) == DIAG_PRIO_LOW);
+    CHECK(diag_code_priority(0xB16F) == DIAG_PRIO_LOW);
+    CHECK(diag_code_priority(0xB16D) == DIAG_PRIO_LOW);
+    CHECK(diag_code_priority(0xB16E) == DIAG_PRIO_LOW);
+    CHECK(diag_code_priority(0xB173) == DIAG_PRIO_LOW);
+    CHECK(diag_code_priority(0xB139) == DIAG_PRIO_LOW);
+    CHECK(diag_code_priority(0xB126) == DIAG_PRIO_LOW);
+    CHECK(diag_code_priority(0xB063) == DIAG_PRIO_LOW);
+    CHECK(diag_code_priority(0xB064) == DIAG_PRIO_LOW);
+    CHECK(diag_code_priority(0xB087) == DIAG_PRIO_LOW);
+    CHECK(diag_code_priority(0xB097) == DIAG_PRIO_LOW);
+    CHECK(diag_code_priority(0xB0A4) == DIAG_PRIO_LOW);
+    CHECK(diag_code_priority(0xB0B4) == DIAG_PRIO_LOW);
     /* must NOT be dropped under pressure */
     CHECK(diag_code_priority(0xB821) == DIAG_PRIO_HIGH);   /* NR RRC */
     CHECK(diag_code_priority(0xB97F) == DIAG_PRIO_HIGH);   /* NR measurement DB */
     CHECK(diag_code_priority(0xB96A) == DIAG_PRIO_HIGH);   /* NR neighbour SINR */
     CHECK(diag_code_priority(0xB8D8) == DIAG_PRIO_HIGH);   /* nr_snr source */
     CHECK(diag_code_priority(0xB80B) == DIAG_PRIO_HIGH);   /* NR NAS */
+    CHECK(diag_code_priority(0xB0C0) == DIAG_PRIO_HIGH);   /* LTE RRC */
+    CHECK(diag_code_priority(0xB193) == DIAG_PRIO_HIGH);   /* LTE serving/neighbor */
+    CHECK(diag_code_priority(0xB179) == DIAG_PRIO_HIGH);   /* LTE neighbor */
+    CHECK(diag_code_priority(0xB184) == DIAG_PRIO_HIGH);   /* LTE CA config */
+    CHECK(diag_code_priority(0xB0ED) == DIAG_PRIO_HIGH);   /* LTE NAS */
     CHECK(diag_code_priority(0x156E) == DIAG_PRIO_HIGH);   /* IMS SIP */
 
     /* split-queue behaviour: a counter flood on the low priority queue must

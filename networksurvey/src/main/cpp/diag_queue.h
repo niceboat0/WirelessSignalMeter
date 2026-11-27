@@ -6,7 +6,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define DIAG_Q_SLOTS 32
+#define DIAG_Q_SLOTS 128
 #define DIAG_Q_SLOT 65535
 
 struct diag_q_stats {

@@ -275,3 +275,25 @@ class DiagRecordingSessionTest {
         assertEquals(0, dir.listFiles()?.size ?: 0)
     }
 }
+
+class DiagnosticEventTitleTest {
+    @Test
+    fun nasReleaseFormatsReadableTitleWithoutTrailingColons() {
+        assertEquals(
+            "NR 会话释放 · PSI 1",
+            formatDiagnosticEventTitle("nas_release", "NR", "NR", "", "", 1, -1, ":::", false),
+        )
+        assertEquals(
+            "LTE 会话释放 · EBI 5",
+            formatDiagnosticEventTitle("nas_release", "LTE", "LTE", "", "", -1, 5, ":::", false),
+        )
+    }
+
+    @Test
+    fun fallbackTitleDoesNotAppendEmptyStateColons() {
+        assertEquals(
+            "nas_mm",
+            formatDiagnosticEventTitle("nas_mm", "NR", "NR", "", "", -1, -1, ":::", false),
+        )
+    }
+}
