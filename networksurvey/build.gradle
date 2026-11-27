@@ -62,7 +62,10 @@ android {
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
         release {
-            // 正式 keystore 已随 yzy 误删丢失，先用 debug 签名出可装机包
+            // 正式签名由 CI 注入：.github/workflows/android-release.yaml 通过
+            // -Pandroid.injected.signing.* 传入 KEYSTORE_FILE / KEYSTORE_PASSWORD /
+            // KEY_ALIAS / KEY_PASSWORD，任一凭据缺失时该 job 直接失败，不会回退到下面。
+            // 本地直接 assembleCdrRelease 会退回 debug 签名，仅供自测装机，切勿分发。
             signingConfig signingConfigs.debug
             minifyEnabled true
             shrinkResources true
