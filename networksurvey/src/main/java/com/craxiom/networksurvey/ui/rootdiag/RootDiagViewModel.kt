@@ -20,6 +20,7 @@ import com.craxiom.networksurvey.model.AndroidNrCarriers
 import com.craxiom.networksurvey.model.NrCarrier
 import com.craxiom.networksurvey.ui.cellular.CellularChartViewModel
 import com.craxiom.networksurvey.util.AndroidLteSinrReader
+import com.craxiom.networksurvey.util.DiagJournal
 import com.craxiom.networksurvey.util.LteSinrUtils
 import com.craxiom.networksurvey.services.CaptureServiceNotification
 import com.craxiom.networksurvey.services.RootDiagCollectorService
@@ -174,6 +175,16 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
     }
 
     init {
+        viewModelScope.launch(Dispatchers.IO) {
+            DiagJournal.append(app, JSONObject()
+                .put("type", "session_start")
+                .put("t", System.currentTimeMillis())
+                .put("app_version", BuildConfig.VERSION_NAME)
+                .put("app_version_code", BuildConfig.VERSION_CODE)
+                .put("android", Build.VERSION.SDK_INT)
+                .put("model", Build.MODEL)
+                .put("baseband", Build.getRadioVersion().orEmpty()))
+        }
         viewModelScope.launch {
             val hasRecording = withContext(Dispatchers.IO) { recordingSession.latestRecording() != null }
             if (hasRecording) qmdlState.value = qmdlState.value.copy(hasRecording = true)
@@ -328,6 +339,10 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
         val rootNrCa = nrCaObservations.toList()
         val neighborTables = neighborTableDiagnostics(snapshot)
         val invalidLines = invalidLineCount
+        val journal = withContext(Dispatchers.IO) {
+            DiagJournal.flush(app)
+            DiagJournal.read(app)
+        }
         withContext(Dispatchers.IO) {
             val tasks = SurveyTaskStore.get(app)
             val taskIds = (snapshot.records.map { it.data } + records + samples + probeSamples + rootNrCa)
@@ -364,6 +379,8 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
                 .put("collector_state", snapshot.status.name)
                 .put("error_code", snapshot.errorCode ?: JSONObject.NULL)
                 .put("invalid_json_lines", invalidLines)
+                .put("journal_lines", journal.size)
+                .put("journal_dropped", DiagJournal.droppedLines())
                 .put("measurement_samples_included", includeMeasurementSamples)
                 .put("neighbor_probe_samples", probeSamples.size)
                 .put("android_lte_sinr_samples", androidLteSinr.size)
@@ -408,7 +425,13 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
                 for (entry in layouts) writer.appendLine(redactDiagnostic(entry).toString())
                 for (entry in snapshot.records) writer.appendLine(redactDiagnostic(entry.data)
                     .put("task_id", entry.taskId ?: JSONObject.NULL).put("clock_id", entry.clockId ?: JSONObject.NULL).toString())
-                for (entry in records) writer.appendLine(redactDiagnostic(entry).toString())
+                /* The journal outlives this process and already contains every
+                   record mirrored from recordDiagnostic (redacted). */
+                if (journal.isNotEmpty()) {
+                    for (line in journal) writer.appendLine(line)
+                } else {
+                    for (entry in records) writer.appendLine(redactDiagnostic(entry).toString())
+                }
                 for (entry in samples) writer.appendLine(redactDiagnostic(entry).toString())
                 for (entry in probeSamples) writer.appendLine(redactDiagnostic(entry).toString())
             }
@@ -449,6 +472,11 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
                 if (diagnosticRecords.size == MAX_DIAGNOSTIC_MESSAGES) diagnosticRecords.removeFirst()
                 diagnosticRecords.addLast(if (value.has("decoded_tree")) redactDiagnostic(value) else value)
             }
+        }
+        /* Mirror the exported records to the crash-safe journal. A crash must
+           not lose the signaling/event history of the current run. */
+        if (type == "status" || type == "qmdl" || type == "ims_provider" || type in signalingTypes) {
+            DiagJournal.append(app, if (value.has("decoded_tree")) redactDiagnostic(value) else value)
         }
     }
 
@@ -598,6 +626,7 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
     internal fun clearSignaling() {
         firstVisibleMessageId = nextId
         signalingState.value = emptyList()
+        DiagJournal.clear(app)
     }
 
     private fun start() {
