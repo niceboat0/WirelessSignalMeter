@@ -56,6 +56,13 @@ int diag_code_priority(uint16_t code) {
     case 0xB842: case 0xB860: case 0xB84D:
     case 0xB868: case 0xB881:                          /* NR layer-2 stats */
     case 0xB887:                                       /* NR MAC PDSCH per-TB */
+    case 0xB14D: case 0xB14E:                          /* LTE CSI feedback */
+    case 0xB13C: case 0xB16F:                          /* LTE PUCCH/SRS power */
+    case 0xB16D: case 0xB16E:                          /* LTE GM Tx / PUSCH power */
+    case 0xB173: case 0xB139:                          /* LTE PDSCH / UL scheduling */
+    case 0xB126:                                       /* LTE demapper rank */
+    case 0xB063: case 0xB064:                          /* LTE MAC transport blocks */
+    case 0xB087: case 0xB097: case 0xB0A4: case 0xB0B4:/* LTE layer-2 byte counters */
         return DIAG_PRIO_LOW;
     default:
         return DIAG_PRIO_HIGH;

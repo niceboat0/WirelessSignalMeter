@@ -930,12 +930,19 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
                 val fresh = sourceTime > 0 && sourceAge in 0..10_000
                 val pci = value.optInt("to_pci", value.optInt("pci", -1)).takeIf { !estimated && fresh && it in 0..1007 }
                 val arfcn = value.optInt("to_arfcn", value.optInt("arfcn", -1)).takeIf { !estimated && fresh && it >= 0 }
-                val title = if (type == "cell_change") "服务小区变化（DIAG）"
-                    else (if (messageRat == "IMS") value.optString("event") else value.optString("msg"))
-                        .ifBlank { value.optString("event").ifBlank { "$type $state" } } +
-                        if (estimated) "（推测）" else ""
+                val title = formatDiagnosticEventTitle(
+                    type = type,
+                    rat = rat,
+                    messageRat = messageRat,
+                    msg = value.optString("msg"),
+                    event = value.optString("event"),
+                    psi = value.optInt("psi", -1),
+                    ebi = value.optInt("ebi", -1),
+                    state = state,
+                    estimated = estimated,
+                )
                 val safeValue = redactDiagnostic(value)
-                val details = listOf("msg", "cause", "why", "from_pci", "from_arfcn", "to_pci",
+                val details = listOf("msg", "cause", "why", "psi", "ebi", "from_pci", "from_arfcn", "to_pci",
                     "to_arfcn", "rrc_transaction_id", "related_message_id", "collector_run", "src", "tentative", "guess", "decode_incomplete")
                     .filter { safeValue.has(it) }.joinToString(" · ") { "$it=${safeValue.opt(it)}" }
                 try {
@@ -1539,6 +1546,28 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
             "ims_call", "ims_reg", "ims_session", "ims_reg_log", "ims_state", "cell_change",
         )
     }
+}
+
+internal fun formatDiagnosticEventTitle(
+    type: String,
+    rat: String?,
+    messageRat: String,
+    msg: String,
+    event: String,
+    psi: Int,
+    ebi: Int,
+    state: String,
+    estimated: Boolean,
+): String = when (type) {
+    "cell_change" -> "服务小区变化（DIAG）"
+    "nas_release" -> {
+        val session = psi.takeIf { it > 0 }?.let { "PSI $it" }
+            ?: ebi.takeIf { it >= 0 }?.let { "EBI $it" }
+        listOfNotNull(rat?.let { "$it 会话释放" } ?: "NAS 会话释放", session).joinToString(" · ")
+    }
+    else -> (if (messageRat == "IMS") event else msg)
+        .ifBlank { event.ifBlank { listOf(type, state.trim(':')).filter { it.isNotBlank() }.joinToString(" ") } } +
+        if (estimated) "（推测）" else ""
 }
 
 private fun AndroidLteSinrReader.Sample.toDiagnosticJson() = JSONObject().apply {

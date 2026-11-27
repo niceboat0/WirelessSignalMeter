@@ -155,16 +155,18 @@ __declspec(dllexport) int test_diag_epoch_worker(void) {
     CHECK(parsed == 4 && parsed_time[3] == 1);
 
     reset();
-    for (int i = 0; i < DIAG_Q_SLOTS; i++) CHECK(enqueue(0xB884, (uint64_t)(100 + i), 0, 0));
-    CHECK(!enqueue(0xB884, 132, 0, 0));
+    for (int i = 0; i < DIAG_Q_SLOTS; i++) CHECK(enqueue(0xB884, (uint64_t)(10 + i), 0, 0));
+    CHECK(!enqueue(0xB884, 199, 0, 0));
     struct diag_q_item item;
-    for (int i = 0; i < 16; i++) CHECK(diag_q_pop(&g_dq_lo, &item));
-    for (int i = 0; i < 16; i++) CHECK(enqueue(0xB884, (uint64_t)(201 + i), 0, 0));
+    const int kept = 16;
+    const int stale = DIAG_Q_SLOTS - kept;
+    for (int i = 0; i < kept; i++) CHECK(diag_q_pop(&g_dq_lo, &item));
+    for (int i = 0; i < kept; i++) CHECK(enqueue(0xB884, (uint64_t)(201 + i), 0, 0));
     CHECK(enqueue(0xB823, 200, 20, 635000));
     decode_worker(NULL);
-    CHECK(parsed == 17 && parsed_codes[0] == 0xB823 && parsed_time[1] == 201 && parsed_time[16] == 216);
-    CHECK(g_dq_lo.stats.epoch_dropped == 16 && g_dq_lo.stats.dropped == 17);
-    CHECK(g_dq_lo.stats.dropped_bytes == 17 * 18 && diag_q_empty(&g_dq_lo));
+    CHECK(parsed == (unsigned)(1 + kept) && parsed_codes[0] == 0xB823 && parsed_time[1] == 201 && parsed_time[kept] == (uint64_t)(200 + kept));
+    CHECK(g_dq_lo.stats.epoch_dropped == (unsigned long)stale && g_dq_lo.stats.dropped == (unsigned long)(stale + 1));
+    CHECK(g_dq_lo.stats.dropped_bytes == (unsigned long)(stale + 1) * 18 && diag_q_empty(&g_dq_lo));
 
     /* A -> B -> A must not reuse A's pre-handover cumulative baseline. */
     reset();

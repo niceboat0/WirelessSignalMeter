@@ -3847,7 +3847,15 @@ static void parse_nr_b9a7(const uint8_t *b, int n) {
         int derived = n > HEADER ? (n - HEADER) / STRIDE : 0;
         int usable = n > HEADER && (n - HEADER) % STRIDE == 0 && derived >= 1 && derived <= MAX_CC;
         if (usable && count <= MAX_CC && derived > count) {
-            count_used = derived;
+            /* Fixed-capacity firmware (e.g. SM8750 v3.2 240B = 9 slots) pads
+             * unused trailing slots with all-zero bytes while keeping b[count_at]
+             * as the active carrier count. Only promote count_used when a
+             * trailing slot actually carries non-zero carrier data. */
+            int tail_all_zero = 1;
+            for (int off = HEADER + count * STRIDE; off < n; off++) {
+                if (b[off] != 0) { tail_all_zero = 0; break; }
+            }
+            if (!tail_all_zero) count_used = derived;
         } else {
             unknown_layout(NR_CA_STATE_CODE, ver, b, n, "count/length");
             return;
@@ -5198,7 +5206,17 @@ static double ambr_mbps(const uint8_t *field) {
     return units[unit] * ((field[1] << 8) | field[2]);
 }
 
+/* Deduplicate repeated nas_release bursts for the same (rat, session_id)
+ * within 2 s: Qualcomm emits both embedded 5GMM NAS Transport (0xB80A/0xB80B)
+ * and plain 5GSM (0xB800/0xB801) for Release Command (0xD3) and Release
+ * Complete (0xD4), which previously emitted 4 identical nas_release events.
+ * Cleared on fresh session establishment (0xC2 / 0xC1 / 0xC5). */
+static int64_t g_last_nas_release_ms[2][16];
 static void emit_nas_release(int nr, int id) {
+    int64_t now = mono_ms();
+    int64_t *last = (id >= 0 && id < 16) ? &g_last_nas_release_ms[nr ? 1 : 0][id] : NULL;
+    if (last && *last && now >= *last && now - *last < 2000) return;
+    if (last) *last = now ? now : 1;
     struct jb j; jb_init(&j, "nas_release");
     jb_add(&j, ",\"rat\":\"%s\",\"%s\":%d", nr ? "NR" : "LTE", nr ? "psi" : "ebi", id);
     jb_emit(&j);
@@ -5219,6 +5237,7 @@ static void nr_5gsm(const uint8_t *sm, int n, int dl) {
             ul_ambr = ambr_mbps(sm + p + 3);
         }
         p += ambr_len;
+        g_last_nas_release_ms[1][psi] = 0;
         memset(s, 0, sizeof(*s)); s->used = 1;
         s->pdu_type = sm[4] & 7;
         s->ssc_mode = (sm[4] >> 4) & 7;
@@ -5341,6 +5360,7 @@ static void parse_lte_esm_plain(const uint8_t *b, int n, int dl) {
         int ql = m[3], qci = ql ? m[4] : 0, p = 4 + ql;
         if (p >= ml) return;
         char apn[101] = ""; int al = m[p]; if (p + 1 + al <= ml) nas_dnn(m + p + 1, al, apn, sizeof(apn));
+        g_last_nas_release_ms[0][ebi] = 0;
         memset(e, 0, sizeof(*e)); e->used = 1; e->qci = qci; e->ims = is_ims_name(apn);
         struct jb j; jb_init(&j, "nas_pdu");
         jb_add(&j, ",\"rat\":\"LTE\",\"ebi\":%d,\"apn\":\"%s\",\"qci\":%d,\"ims\":%d", ebi, apn, qci, e->ims);
@@ -5349,6 +5369,7 @@ static void parse_lte_esm_plain(const uint8_t *b, int n, int dl) {
         update_ims_bearer("ims_pdu");
     } else if (mt == 0xc5 && dl && ml >= 5) {   /* linked EBI in byte 3 low nibble, EPS QoS LV at 4 */
         int linked = m[3] & 15, ql = m[4], qci = ql ? (ml > 5 ? m[5] : 0) : 0;
+        g_last_nas_release_ms[0][ebi] = 0;
         memset(e, 0, sizeof(*e)); e->used = 1; e->qci = qci; e->linked = linked; e->ims = g_ebi[linked].ims;
         /* 2.2: after N1 interworking (EPS fallback) the IMS default bearer was never activated on LTE: infer it from QCI 1 */
         if (!e->ims && qci == 1 && !g_ebi[linked].used && linked) {
