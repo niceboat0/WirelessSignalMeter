@@ -60,6 +60,8 @@ internal object QmiLockCommand {
     fun readCell(radio: LockRadio): List<String> =
         if (radio == LockRadio.Lte) listOf("celllte-get") else listOf("cellnr-get")
 
+    fun mode(mode: LockNetworkMode): List<String> = listOf("mode", mode.argument)
+
     private fun bandNumbers(text: String, maxBand: Int): List<Int> {
         val tokens = text.trim().split(Regex("[,;\\s]+")).filter { it.isNotBlank() }
         require(tokens.isNotEmpty() && tokens.size <= maxBand) { "no bands selected" }

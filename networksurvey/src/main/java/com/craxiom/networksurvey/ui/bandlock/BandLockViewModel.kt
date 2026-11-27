@@ -226,9 +226,12 @@ internal class BandLockViewModel(application: Application) : AndroidViewModel(ap
                     execute = {
                         val decision = writeDecision(command, mutableState.value.copy(busy = false))
                         if (decision == WriteDecision.Allowed) {
-                            val execution = command.executeWithMode(onModemRestartRequested = {
-                                withContext(Dispatchers.Main) { onModemRestartRequested?.invoke() }
-                            }) { step -> execute(step, recordDiagnostics = !fromConsole) }
+                            val execution = command.executeWithMode(
+                                onModemRestartRequested = {
+                                    withContext(Dispatchers.Main) { onModemRestartRequested?.invoke() }
+                                },
+                                executeQmiMode = if (fromConsole) null else ::runQmiMode,
+                            ) { step -> execute(step, recordDiagnostics = !fromConsole) }
                             updateExecution(command, execution, fromConsole)
                         } else {
                             rejectWrite(kind, decision)
@@ -349,6 +352,34 @@ internal class BandLockViewModel(application: Application) : AndroidViewModel(ap
      * output to the log without overwriting the standard result line. */
     fun runRaw(text: String) {
         run(BandLockCommand.console(text), fromConsole = true)
+    }
+
+    private suspend fun runQmiMode(mode: LockNetworkMode): QmiLockOutcome {
+        val arguments = QmiLockCommand.mode(mode)
+        val started = SystemClock.elapsedRealtime()
+        AppLogger.i(AppLogger.BAND_LOCK_TAG,
+            "run=$started backend=qmi cmd=mode stage=start model=${Build.MODEL} soc=${Build.SOC_MODEL} api=${Build.VERSION.SDK_INT} args=${mode.argument}")
+        appendLog("${LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm:ss"))} > qmi ${arguments.joinToString(" ")}")
+        val outcome = qmiRunner.run(arguments)
+        outcome.output.lineSequence().map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .forEach { line ->
+                appendLog(line)
+                if (line.startsWith("QMI ") || line.startsWith("VERDICT ")) {
+                    AppLogger.i(AppLogger.BAND_LOCK_TAG, "run=$started backend=qmi cmd=mode stage=native $line")
+                }
+            }
+        AppLogger.i(AppLogger.BAND_LOCK_TAG,
+            "run=$started backend=qmi cmd=mode stage=finish exit=${outcome.exit} verdict=${outcome.verdict} " +
+                "error=${outcome.errorCode} reachable=${outcome.reachable} elapsed_ms=${SystemClock.elapsedRealtime() - started}")
+        if (outcome.reachable) {
+            qmiMutable.update { it.copy(availability = LockAvailability.Ready) }
+        }
+        if (!outcome.accepted) {
+            appendLog("QMI mode ${outcome.verdict}; falling back to DIAG")
+            AppLogger.i(AppLogger.BAND_LOCK_TAG, "run=$started backend=qmi cmd=mode stage=fallback detail=diag")
+        }
+        return outcome
     }
 
     private suspend fun execute(command: BandLockCommand, recordDiagnostics: Boolean): BandLockOutcome = try {

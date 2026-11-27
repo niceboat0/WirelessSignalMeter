@@ -202,6 +202,7 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
         viewModelScope.launch(Dispatchers.IO) {
             DiagJournal.append(app, JSONObject()
                 .put("type", "session_start")
+                .put("clock_id", SurveyTaskStore.CLOCK_ID)
                 .put("t", System.currentTimeMillis())
                 .put("app_version", BuildConfig.VERSION_NAME)
                 .put("app_version_code", BuildConfig.VERSION_CODE)
@@ -394,10 +395,11 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
         val rootNrCa = nrCaObservations.toList()
         val neighborTables = neighborTableDiagnostics(snapshot)
         val invalidLines = invalidLineCount
-        val journal = withContext(Dispatchers.IO) {
+        val rawJournal = withContext(Dispatchers.IO) {
             DiagJournal.flush(app)
             DiagJournal.read(app)
         }
+        val journal = DiagJournal.filterExportLines(rawJournal, SurveyTaskStore.CLOCK_ID)
         withContext(Dispatchers.IO) {
             val tasks = SurveyTaskStore.get(app)
             val taskIds = (snapshot.records.map { it.data } + records + samples + probeSamples + rootNrCa)
@@ -408,6 +410,7 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
             val header = JSONObject()
                 .put("type", "export")
                 .put("schema", 4)
+                .put("clock_id", SurveyTaskStore.CLOCK_ID)
                 .put("active_task_id", tasks.active.value?.id ?: JSONObject.NULL)
                 .put("tasks", JSONArray(taskIds.map { id -> tasks.taskMetadata(id).apply {
                     put("mission_count", optJSONArray("mission_ids")?.length() ?: 0)
@@ -435,6 +438,7 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
                 .put("error_code", snapshot.errorCode ?: JSONObject.NULL)
                 .put("invalid_json_lines", invalidLines)
                 .put("journal_lines", journal.size)
+                .put("journal_stale_heartbeats_filtered", rawJournal.size - journal.size)
                 .put("journal_dropped", DiagJournal.droppedLines())
                 .put("measurement_samples_included", includeMeasurementSamples)
                 .put("neighbor_probe_samples", probeSamples.size)
