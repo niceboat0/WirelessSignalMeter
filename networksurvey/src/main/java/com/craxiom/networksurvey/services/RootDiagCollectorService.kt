@@ -17,7 +17,9 @@ import android.widget.TextView
 import com.craxiom.networksurvey.R
 import com.craxiom.networksurvey.ui.rootdiag.DiagOverlaySnapshot
 import com.craxiom.networksurvey.ui.rootdiag.DiagOverlayState
+import com.craxiom.networksurvey.ui.rootdiag.DiagRecordingPolicy
 import com.craxiom.networksurvey.ui.rootdiag.RootDiagPrefs
+import com.craxiom.networksurvey.ui.rootdiag.diagPresenceHeadline
 import com.craxiom.networksurvey.ui.rootdiag.imsHeadlineId
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -52,7 +54,7 @@ class RootDiagCollectorService : Service() {
         serviceState.value = State.Running
         scope.launch {
             DiagOverlayState.snapshot.collect { snap ->
-                CaptureServiceNotification.updateDiag(this@RootDiagCollectorService, snap.isTask())
+                CaptureServiceNotification.updateDiag(this@RootDiagCollectorService, snap.presence())
             }
         }
         maybeShowOverlay()
@@ -84,7 +86,7 @@ class RootDiagCollectorService : Service() {
                 this,
                 if (Build.VERSION.SDK_INT >= 34) ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
                 else ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
-                DiagOverlayState.snapshot.value.isTask(),
+                DiagOverlayState.snapshot.value.presence(),
             )
             return true
         } catch (error: RuntimeException) {
@@ -93,7 +95,7 @@ class RootDiagCollectorService : Service() {
         }
     }
 
-    private fun DiagOverlaySnapshot.isTask() = recording
+    private fun DiagOverlaySnapshot.presence() = DiagRecordingPolicy.presence(status, recording)
 
     private fun maybeShowOverlay() {
         if (!RootDiagPrefs.overlayWanted(this) || !Settings.canDrawOverlays(this)) {
@@ -177,13 +179,7 @@ class RootDiagCollectorService : Service() {
 
     private fun formatOverlay(snap: DiagOverlaySnapshot): String {
         val parts = mutableListOf<String>()
-        parts += when {
-            snap.recording || snap.status == "recording" -> getString(R.string.diag_overlay_recording)
-            snap.status == "task" -> getString(R.string.diag_overlay_task_open)
-            snap.status == "listening" -> getString(R.string.diag_overlay_listening)
-            snap.status == "standby" -> getString(R.string.diag_overlay_standby)
-            else -> snap.status.ifBlank { getString(R.string.diag_overlay_standby) }
-        }
+        parts += getString(diagPresenceHeadline(snap.presence()))
         if (RootDiagPrefs.showRf(this)) {
             val rf = buildString {
                 if (snap.rat.isNotBlank()) append(snap.rat)

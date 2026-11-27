@@ -265,7 +265,7 @@
     <string name="lock_mode_unconfirmed">The lock settings were acknowledged, but the mode change is unconfirmed. Check the execution log or switch modes manually.</string>
     <string name="lock_and_mode_accepted">The modem acknowledged the lock and mode change. Check the serving cell to confirm the result.</string>
     <string name="tool_road_coverage_title">Test tasks</string>
-    <string name="tool_road_coverage_description">Manage test tasks and replay drive test routes and events.</string>
+    <string name="tool_road_coverage_description">Manage test tasks and replay saved map marks and events.</string>
     <string name="road_import">Import CSV</string>
     <string name="road_reload">Load saved points</string>
     <string name="road_export">Export route</string>
@@ -273,16 +273,29 @@
     <string name="road_import_failed">Choose a UTF‑8 CSV with WGS84 coordinates, timestamps and signal measurements (up to 50,000 rows).</string>
     <string name="road_export_failed">Could not export the route</string>
     <string name="road_exported">Route saved</string>
-    <string name="road_empty">Enable location and automatic points in Cell tower map, or import signal measurements from a CSV.</string>
+    <string name="road_empty">Turn on location and map marks in Cell tower map (saved on this phone for replay, not a GPX track), or import a signal CSV.</string>
     <string name="road_track_picker">Route %1$d of %2$d ▾</string>
     <string name="road_recent_limit">Showing the latest 50,000 saved points</string>
     <string name="road_play">Play 10×</string>
-    <string name="road_pause">Pause</string>
+    <string name="road_pause">Pause replay</string>
     <string name="road_summary">%1$d points · %2$s km</string>
     <string name="road_weak_summary">Mean RSRP %1$s · below −110 dBm %2$s</string>
     <string name="road_weak_sections">Weak coverage sections (%1$d)</string>
-    <string name="road_start_recording">Resume automatic points</string>
-    <string name="road_stop_recording">Pause points and load route</string>
+    <string name="road_start_recording">Resume map marks</string>
+    <string name="road_stop_recording">Stop map marks and load replay</string>
+    <string name="road_map_mark_hint">Map marks in this page menu are saved on this phone for replay. They are not the GPX drive-test track and not air-interface recording.</string>
+    <string name="road_task_active_hint">End task also stops air-interface recording that is in progress.</string>
+    <string name="road_task_create_title">New test task</string>
+    <string name="road_task_create_confirm">Create task</string>
+    <string name="road_task_create_and_record">Create and start recording</string>
+    <string name="road_task_name">Task name</string>
+    <string name="road_task_log_title">Record the air interface for this task</string>
+    <string name="road_task_log_on_hint">After you create the task, the air-interface file uses the format selected below. It starts only while modem listening is already running, and it does not write a file while listening is stopped. This is not map marking. Ending the task stops that recording. The signaling page can stop the segment, or choose a format again for the next one.</string>
+    <string name="road_task_log_off_hint">This does not start an air-interface file. You can still choose QMDL or DLF on the signaling page and start recording there.</string>
+    <string name="road_task_format">Air-interface format</string>
+    <string name="road_task_status_log_on">Air interface will record</string>
+    <string name="road_task_status_log_off">Air interface stays off</string>
+    <string name="road_task_status_log_format">Air interface %1$s</string>
     <string name="road_options">Replay options</string>
     <string name="road_statistics">Statistics</string>
     <string name="road_task_idle">No active task</string>
@@ -1332,10 +1345,10 @@
     <string name="diag_denied">Root access denied or timed out</string>
     <string name="diag_starting">Starting Qualcomm diagnostics</string>
     <string name="diag_root_active">Qualcomm DIAG · Root active</string>
-    <string name="diag_stopped">Root capture paused</string>
+    <string name="diag_stopped">Modem listening stopped</string>
     <string name="diag_start_failed">Unable to start Qualcomm diagnostics</string>
     <string name="diag_error_code">Diagnostic error %1$d</string>
-    <string name="diag_pause">Pause capture</string>
+    <string name="diag_pause">Stop modem listening</string>
     <string name="diag_retry">Retry Root</string>
     <string name="diag_clear">Clear list</string>
     <string name="diag_root_source">Root · DIAG</string>
@@ -1513,6 +1526,10 @@
     <string name="diag_qmdl_exported">Raw logs exported</string>
     <string name="diag_qmdl_exporting">Exporting raw logs · %1$d%%</string>
     <string name="diag_qmdl_export_failed">Could not export raw logs</string>
+    <string name="diag_air_starting">Starting %1$s recording…</string>
+    <string name="diag_air_stopping">Finishing %1$s recording…</string>
+    <string name="diag_control_hint">Start and stop recording only open or close the air-interface file, and the format is chosen first. Stop modem listening stops the whole DIAG listener. It does not only pause writing.</string>
+    <string name="diag_record_needs_task">Recording cannot start without a test task. Live view does not create an air-interface file.</string>
     <string name="diag_export_subtitle">Recent signaling and decoder status</string>
     <string name="diag_export_explanation">Save the recent diagnostic records as a local JSONL file. The standard export omits subscriber and cell identifiers. Raw QMDL recordings are not redacted.</string>
     <string name="diag_export_include_mr">Include raw RRC and DIAG neighbor samples (may contain cell identifiers)</string>
@@ -1530,9 +1547,9 @@
 
     <string name="diag_bg_notification_title">DIAG collection running</string>
     <string name="diag_bg_notification_text">Collection continues after the screen is off or the app is switched away. Force-stop still ends it.</string>
-    <string name="diag_bg_stop">Stop collection</string>
+    <string name="diag_bg_stop">Stop modem listening</string>
     <string name="diag_bg_title">Background collection</string>
-    <string name="diag_bg_subtitle">Keep live DIAG running when the app leaves the screen. QMDL recording still requires a test task.</string>
+    <string name="diag_bg_subtitle">Keep modem listening on when the app leaves the screen. This setting does not start air-interface recording.</string>
     <string name="diag_overlay_title">Collection overlay</string>
     <string name="diag_overlay_subtitle">Show a small, draggable status window. This needs the system overlay permission; it is not opened automatically.</string>
     <string name="diag_overlay_need_permission">The overlay stays off until you grant “Display over other apps” in system settings. This app will not open that page by itself.</string>
@@ -1610,10 +1627,12 @@
     <string name="diag_overlay_recording">Recording raw log</string>
     <string name="diag_overlay_listening">Live view</string>
     <string name="diag_overlay_standby">Standby</string>
-    <string name="diag_bg_notification_title_task">Test task collecting</string>
-    <string name="diag_bg_notification_text_task">Collecting DIAG data for a test task.</string>
-    <string name="diag_bg_notification_title_listen">Live DIAG</string>
-    <string name="diag_bg_notification_text_listen">Listening for modem data. No test task is recording.</string>
+    <string name="diag_bg_notification_title_task">Task in progress</string>
+    <string name="diag_bg_notification_text_task">A test task is open. No air-interface file is being written. Modem listening is still on.</string>
+    <string name="diag_bg_notification_title_listen">Live view</string>
+    <string name="diag_bg_notification_text_listen">Listening for modem data. No test task is open and no air-interface file is being written.</string>
+    <string name="diag_bg_notification_text_recording">Writing modem data to a QMDL or DLF file.</string>
+    <string name="diag_bg_notification_text_standby">Modem listening is stopped. No air-interface file is being written.</string>
 
 
     <string name="update_install_permission">Allow installation from this app, then tap Update again.</string>

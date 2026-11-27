@@ -670,6 +670,7 @@ internal fun SignalingScreen(viewModel: RootDiagViewModel, onBack: () -> Unit) {
                                 },
                             )
                         }
+                        HorizontalDivider()
                         AppMenuItem(
                             title = stringResource(if (running) R.string.diag_pause else R.string.diag_retry),
                             onClick = { menuOpen = false; if (running) viewModel.pause() else viewModel.retry() },
@@ -684,10 +685,25 @@ internal fun SignalingScreen(viewModel: RootDiagViewModel, onBack: () -> Unit) {
                         )
                     }
             }
+            Text(
+                stringResource(R.string.diag_control_hint),
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (collectionMode != DiagRecordingPolicy.Mode.TaskRecording &&
+                qmdl.phase != QmdlPhase.Recording && qmdl.phase != QmdlPhase.Starting) {
+                Text(
+                    stringResource(R.string.diag_record_needs_task),
+                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             CaptureErrors(status)
+            val formatName = if (qmdl.format == DiagLogFormat.Dlf) "DLF" else "QMDL"
             val qmdlLabel = when (qmdl.phase) {
-                QmdlPhase.Starting -> R.string.diag_qmdl_starting
-                QmdlPhase.Stopping -> R.string.diag_qmdl_stopping
+                QmdlPhase.Starting, QmdlPhase.Stopping -> null
                 QmdlPhase.Recording -> R.string.diag_qmdl_recording
                 QmdlPhase.Idle -> when (qmdl.result) {
                     QmdlResult.Saved -> R.string.diag_qmdl_saved
@@ -698,13 +714,16 @@ internal fun SignalingScreen(viewModel: RootDiagViewModel, onBack: () -> Unit) {
                     null -> null
                 }
             }
-            if (qmdlLabel != null || exportProgress != null) {
+            if (qmdlLabel != null || exportProgress != null ||
+                qmdl.phase == QmdlPhase.Starting || qmdl.phase == QmdlPhase.Stopping) {
                 Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp),
                     verticalAlignment = Alignment.CenterVertically) {
                     val progress = exportProgress
                     val error = qmdl.errorCode
                     val label = when {
                         progress != null -> stringResource(R.string.diag_qmdl_exporting, progress)
+                        qmdl.phase == QmdlPhase.Starting -> stringResource(R.string.diag_air_starting, formatName)
+                        qmdl.phase == QmdlPhase.Stopping -> stringResource(R.string.diag_air_stopping, formatName)
                         qmdl.phase == QmdlPhase.Recording -> stringResource(R.string.diag_qmdl_recording,
                             if (qmdl.format == DiagLogFormat.Dlf) "DLF" else "QMDL", qmdl.packets,
                             android.text.format.Formatter.formatShortFileSize(context, qmdl.bytes))
