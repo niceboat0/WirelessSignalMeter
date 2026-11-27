@@ -166,7 +166,7 @@ abstract class CompileRootDiag extends DefaultTask {
 def compileRootDiag = tasks.register("compileRootDiag", CompileRootDiag) {
     binaryName.set("libwireless_root_diag.so")
     sourceFile.set(layout.projectDirectory.file("src/main/cpp/root_diag.c"))
-    decoderSources.from(fileTree("src/main/cpp") { include "sigdec.c", "nasdec.c", "rrc_schema.h", "diag_queue.c", "diag_queue.h", "ims_logcat.c", "ims_logcat.h", "lte_b193_sinr.h", "nr_band_guess.h" })
+    decoderSources.from(fileTree("src/main/cpp") { include "sigdec.c", "nasdec.c", "rrc_schema.h", "diag_queue.c", "diag_queue.h", "ims_logcat.c", "ims_logcat.h", "lte_b193_sinr.h", "nr_band_guess.h", "nr_csf_window.h" })
     ndkDirectory.set(androidComponents.sdkComponents.ndkDirectory)
     ndkVersion.set(android.ndkVersion)
     outputDirectory.set(layout.buildDirectory.dir("generated/rootDiag/jniLibs"))

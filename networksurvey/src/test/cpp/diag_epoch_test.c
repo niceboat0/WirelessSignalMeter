@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <stdarg.h>
 #include "../../main/cpp/diag_queue.c"
+#include "../../main/cpp/nr_csf_window.h"
 
 int snprintf(char *, size_t, const char *, ...);
 int _vsnprintf(char *, size_t, const char *, va_list);
@@ -30,11 +31,11 @@ static struct { int pci; long arfcn; } g_nr;
 
 /* The worker's reset operates on these other windows only through memset/timers. */
 static uint64_t g_nr_layer[12], g_dl[8], g_ul[8], g_us[8];
-static int64_t g_csf_t, g_dl_t, g_dl_last, g_ul_t, g_us_t;
-static int g_csf_n, g_csf_cqi_sum, g_csf_reports, g_csf_skipped, g_csf_cc;
-static int g_csf_cqi_min, g_csf_cqi_max, g_csf_rank[5];
+static int64_t g_dl_t, g_dl_last, g_ul_t, g_us_t;
 static int g_dl_bad, g_dl_other_rnti, g_us_bad;
+static struct nr_csf_window g_csf;
 static struct diag_queue g_dq, g_dq_lo;
+static struct diag_latest_set g_latest;
 static int g_stop, g_mu, g_dq_mu, g_dq_cv;
 static unsigned parsed;
 static uint16_t parsed_codes[64];
@@ -105,6 +106,7 @@ static int enqueue_pdsch(uint64_t time, int scale) {
 static void reset(void) {
     diag_q_init(&g_dq);
     diag_q_init(&g_dq_lo);
+    diag_latest_init(&g_latest);
     g_nr.pci = 10;
     g_nr.arfcn = 627264;
     nr_statistics_reset();

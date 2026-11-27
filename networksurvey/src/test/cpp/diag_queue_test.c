@@ -48,6 +48,16 @@ static int run_queue_tests(void) {
     CHECK(diag_code_priority(0xB868) == DIAG_PRIO_LOW);
     CHECK(diag_code_priority(0xB881) == DIAG_PRIO_LOW);
     CHECK(diag_code_priority(0xB887) == DIAG_PRIO_LOW);
+    /* Cumulative counters collapse to the newest frame. Samples and signalling do not. */
+    CHECK(diag_code_coalesce(0xB888) && diag_code_lane(0xB888) == DIAG_LANE_COALESCE);
+    CHECK(diag_code_coalesce(0xB842) && diag_code_coalesce(0xB860));
+    CHECK(diag_code_coalesce(0xB84D) && diag_code_coalesce(0xB868) && diag_code_coalesce(0xB881));
+    CHECK(!diag_code_coalesce(0xB887) && diag_code_lane(0xB887) == DIAG_LANE_LOW);
+    CHECK(!diag_code_coalesce(0xB883) && diag_code_lane(0xB883) == DIAG_LANE_LOW);
+    CHECK(!diag_code_coalesce(0xB884) && diag_code_lane(0xB884) == DIAG_LANE_LOW);
+    CHECK(!diag_code_coalesce(0xB8A7) && diag_code_lane(0xB8A7) == DIAG_LANE_LOW);
+    CHECK(diag_code_lane(0xB821) == DIAG_LANE_HIGH);
+    CHECK(diag_code_lane(0xB97F) == DIAG_LANE_HIGH);
     /* must NOT be dropped under pressure */
     CHECK(diag_code_priority(0xB821) == DIAG_PRIO_HIGH);   /* NR RRC */
     CHECK(diag_code_priority(0xB97F) == DIAG_PRIO_HIGH);   /* NR measurement DB */
@@ -84,6 +94,39 @@ static int run_queue_tests(void) {
     CHECK(lo.stats.dropped_bytes == 16);
     diag_q_init(&lo);
     CHECK(lo.stats.dropped == 0 && lo.stats.epoch_dropped == 0);
+
+    /* A PDSCH flood keeps one latest frame and does not occupy or drop sample slots. */
+    static struct diag_latest_set latest;
+    uint8_t packet[16];
+    diag_latest_init(&latest);
+    CHECK(!diag_latest_push(&latest, 0xB8A7, a, 8));
+    CHECK(!diag_latest_push(&latest, 0xB821, a, 8));
+    for (int i = 0; i < 64; i++) {
+        packet[0] = (uint8_t)i;
+        CHECK(diag_latest_push(&latest, 0xB888, packet, sizeof packet));
+    }
+    CHECK(diag_latest_count(&latest) == 1);
+    CHECK(latest.superseded == 63);
+    CHECK(diag_latest_pop(&latest, &it) && it.len == sizeof packet && it.data[0] == 63);
+    CHECK(!diag_latest_pending(&latest));
+    packet[0] = 1;
+    CHECK(diag_latest_push(&latest, 0xB888, packet, sizeof packet));
+    packet[0] = 2;
+    CHECK(diag_latest_push(&latest, 0xB842, packet, sizeof packet));
+    CHECK(diag_latest_count(&latest) == 2);
+    int seen_pdsch = 0, seen_pdcp = 0;
+    for (int n = 0; n < 2; n++) {
+        CHECK(diag_latest_pop(&latest, &it));
+        if (it.data[0] == 1) seen_pdsch = 1;
+        if (it.data[0] == 2) seen_pdcp = 1;
+    }
+    CHECK(seen_pdsch && seen_pdcp && !diag_latest_pending(&latest));
+    diag_q_init(&lo);
+    for (int i = 0; i < DIAG_Q_SLOTS; i++) CHECK(diag_q_push(&lo, b, 4));
+    CHECK(diag_latest_push(&latest, 0xB860, a, 8));
+    CHECK(diag_q_count(&lo) == DIAG_Q_SLOTS && lo.stats.dropped == 0);
+    CHECK(!diag_q_push(&lo, a, 8));
+    CHECK(lo.stats.dropped == 1 && diag_latest_count(&latest) == 1);
     return 0;
 }
 

@@ -60,6 +60,8 @@ jobs:
         run: |
           cc -std=c11 -Wall -Wextra -Werror -O2 -o diag_queue_test networksurvey/src/test/cpp/diag_queue_test.c
           ./diag_queue_test
+          cc -std=c11 -Wall -Wextra -Werror -O2 -o nr_csf_window_test networksurvey/src/test/cpp/nr_csf_window_test.c
+          ./nr_csf_window_test
 
   test:
     if: "! startsWith(github.event.head_commit.message, 'Bump version to')"

@@ -458,7 +458,6 @@ private fun NasConfiguration(rat: String, records: Map<String, List<DiagRecord>>
 
 private data class DirectionRow(val parameter: String, val ul: String = SIGNAL_UNAVAILABLE, val dl: String = SIGNAL_UNAVAILABLE)
 
-private const val THROUGHPUT_FRESH_MS = 3_000L
 private const val LAST_DIAG_MS = 30_000L
 
 private fun DiagRecord.matchesLteServing(identity: ServingIdentity?) =
@@ -506,11 +505,13 @@ private fun LayerThroughput(rat: String, records: Map<String, List<DiagRecord>>,
         }
     }
     fun row(name: String, ul: Double?, dl: Double?) =
-        DirectionRow(name, (ul ?: 0.0).mbpsText(), (dl ?: 0.0).mbpsText())
+        DirectionRow(name, ul.mbpsText(), dl.mbpsText())
     val nr = rat == "NR"
     val phyUl = if (nr) reported("nr_ul_sched", "ul_mbps") else reported("lte_ul_sched", "phy_tb_mbps", "cc")
-    val phyDl = if (nr) reported("nr_dl_sched", "phy_tb_mbps", "cc") ?: reported("nr_pdsch", "phy_tb_mbps", "recs")
-        else reported("lte_dl_sched", "phy_tb_mbps", "cc")
+    val phyDl = if (nr) nrDlPhyMbps(
+        reported("nr_pdsch", "phy_tb_mbps", "recs"),
+        reported("nr_dl_sched", "phy_tb_mbps", "cc"),
+    ) else reported("lte_dl_sched", "phy_tb_mbps", "cc")
     val macUlStats = rate("MAC", "UL")
     val macUlTb = if (nr && macUlStats == null) reported("nr_mac_ul_window", "mac_new_tb_mbps") else null
     val macDlStats = rate("MAC", "DL") ?: if (nr) reported("nr_pdsch", "mac_mbps", "recs") else null
@@ -547,8 +548,6 @@ private data class MobileTrafficSample(val time: Long, val tx: Long, val rx: Lon
     }
 }
 
-private fun Double?.mbpsText() = if (this == null) SIGNAL_UNAVAILABLE else String.format(Locale.ROOT, "%.2f", this)
-
 @Composable
 private fun Map<String, List<DiagRecord>>.servingSchedule(identity: ServingIdentity?): List<DiagRecord> {
     if (identity == null || identity.arfcn < 0 || identity.pci < 0) return emptyList()
@@ -565,9 +564,9 @@ private fun PhysicalScheduling(
 ) {
     val nr = rat == "NR"
     val prefix = if (nr) "nr" else "lte"
+    val now = SystemClock.elapsedRealtime()
     val snapshots = records.servingSchedule(identity)
-    fun samples(suffix: String) = snapshots.filter { it.data.optString("group") == "${prefix}_$suffix" }
-        .associateBy { it.data.optInt("cc", -1) }
+    fun samples(suffix: String) = scheduleByCarrier(snapshots, "${prefix}_$suffix", now)
     val dl = samples("dl_sched")
     val ul = samples("ul_sched")
     val gmTx = samples("ul_tx")
@@ -585,9 +584,6 @@ private fun PhysicalScheduling(
     val feedback = csi[cc]?.data
     // 0xB126 demapper reports the true serving-cell rank and the TX/RX chain count.
     val antenna = demapper[cc]?.data
-    val now = SystemClock.elapsedRealtime()
-    fun phyRate(sample: DiagRecord?, key: String) = sample
-        ?.takeIf { now - it.receivedAt in 0..THROUGHPUT_FRESH_MS }?.data?.number(key) ?: 0.0
     fun transportBlocksPerSecond(carrier: JSONObject?): String {
         val blocks = carrier?.number("tb")?.takeIf { it >= 0 } ?: return SIGNAL_UNAVAILABLE
         val ms = carrier?.number("dt_ms")?.takeIf { it > 0 } ?: return SIGNAL_UNAVAILABLE
@@ -605,9 +601,13 @@ private fun PhysicalScheduling(
             else -> null
         }
     }
+    // A stale per-CC CSF must not fall back to the serving snapshot, or CQI stays up beside an idle PHY.
+    val lteServingCqi = serving?.channel("cqi")?.takeIf {
+        cc == 0 && snapshots.none { it.data.optString("group") == "lte_csf" && it.data.optInt("cc", -1) == 0 }
+    }
     val rows = listOf(
         DirectionRow("CQI", dl = if (nr) feedback.signalValue("cqi_avg") else
-            (feedback?.channel("cqi") ?: serving?.channel("cqi")?.takeIf { cc == 0 })?.toString().signalDisplayValue()),
+            (feedback?.channel("cqi") ?: lteServingCqi)?.toString().signalDisplayValue()),
         DirectionRow("Rank", up.signalValue("rank"),
             if (nr) feedback.signalValue("rank") else
                 rankSample?.let { String.format(Locale.ROOT, "%.1f", it) }.signalDisplayValue()),
@@ -628,8 +628,10 @@ private fun PhysicalScheduling(
         DirectionRow("UL HARQ Retx", (ulTx?.number("retx_pct") ?: up?.number("retx_pct"))
             ?.let { "$it%" }.signalDisplayValue()),
     )) + listOf(
-        DirectionRow("PHY (Mbps)", phyRate(ul[cc], if (nr) "ul_mbps" else "phy_tb_mbps").mbpsText(),
-            phyRate(dl[cc], "phy_tb_mbps").mbpsText()),
+        DirectionRow("PHY (Mbps)",
+            up?.number(if (nr) "ul_mbps" else "phy_tb_mbps").mbpsText(),
+            (if (nr) nrDlPhyMbps(pdsch[cc]?.data?.number("phy_tb_mbps"), down?.number("phy_tb_mbps"))
+            else down?.number("phy_tb_mbps")).mbpsText()),
     ) + listOfNotNull(pdsch[cc]?.data?.number("retx_pct")
         ?.let { DirectionRow("DL HARQ Retx", dl = "$it%") })
     val modulationRows = listOf("QPSK", "16QAM", "64QAM", "256QAM", "1024QAM", "BPSK")

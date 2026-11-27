@@ -207,15 +207,15 @@ static void on_sig(int signo) {
 
 #include "diag_queue.c"
 #include "ims_logcat.c"
+#include "nr_csf_window.h"
 
-/* Two decode queues split by log-code priority. High-rate periodic statistics
-   go to the low queue and absorb drops first. Per-TB/power/CQI samples are not
-   replayed, so their drops still mean missing coverage. RRC/NAS/measurement DB/
-   serving) goes to the high queue so those records are never displaced by a
-   counter flood. Both queues share g_dq_mu/g_dq_cv; the worker drains high
-   before low. */
+/* High-priority signalling is drained before anything else. Per-TB, power and
+   CQI samples use the low queue and are not replayed. Cumulative PDSCH and
+   layer counters keep only the newest unread frame, so their rate survives a
+   burst without taking sample-queue slots or delaying RRC/NAS. */
 static struct diag_queue g_dq;
 static struct diag_queue g_dq_lo;
+static struct diag_latest_set g_latest;
 static pthread_mutex_t g_dq_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_dq_cv = PTHREAD_COND_INITIALIZER;
 static pthread_t g_dq_th;
@@ -3713,61 +3713,31 @@ static void parse_lte_mac_tb(uint16_t code, const uint8_t *b, int n) {
 
 static int pos_fits(int off, int bits, int nbytes) { return off + bits <= nbytes * 8; }
 
-/* --- 0xB8A7 NR5G ML1 CSF report (RI, CRI, CQI, carrier ID; v3.5 matched run3/run4 samples) --- */
-struct b8a7_l { uint32_t ver; int rc_off, rec_start, reps_at, rep_bytes; };
-static const struct b8a7_l B8A7_L[] = {
-    { 0x20000, 120, 16, 8, 40 }, { 0x20001, 120, 16, 8, 60 }, { 0x20002, 120, 16, 12, 60 }, { 0x20003, 120, 16, 12, 60 },
-    { 0x30000, 56, 8, 8, 60 }, { 0x30001, 56, 8, 12, 0 }, { 0x30002, 56, 8, 12, 0 }, { 0x30003, 56, 8, 12, 0 },
-    { 0x30004, 56, 8, 12, 60 }, { 0x30005, 56, 8, 16, 60 }, { 0x30006, 56, 8, 16, 60 }, { 0x30007, 56, 8, 16, 60 },
-};
-static int64_t g_csf_t; static int g_csf_n, g_csf_cqi_sum, g_csf_cqi_min = 99, g_csf_cqi_max = -1, g_csf_rank[5], g_csf_cc, g_csf_reports, g_csf_skipped;
+/* --- 0xB8A7 NR5G ML1 CSF report (RI, CRI, CQI, carrier ID; v3.5 matched run3/run4 samples) ---
+   The versioned walk lives in nr_csf_window.h and keeps one CQI/Rank window per carrier. */
+static struct nr_csf_window g_csf;
 static void parse_nr_b8a7(const uint8_t *b, int n) {
-    if (n < 4) return;
-    int rel_min = rd16(b), rel_maj = rd16(b + 2);
-    uint32_t ver = ((uint32_t)rel_maj << 16 | (uint32_t)rel_min);
-    layout_seen(0xB8A7, ver, b, n);
-    const struct b8a7_l *L = NULL;
-    for (size_t i = 0; i < sizeof(B8A7_L) / sizeof(B8A7_L[0]); i++) if (B8A7_L[i].ver == ver) L = &B8A7_L[i];
-    if (!L) { unknown_layout(0xB8A7, ver, b, n, "version"); return; }
-    if (!pos_fits(L->rc_off, 8, n)) return;
-    int recs = (int)lebits(b, L->rc_off, 8), pos = L->rec_start;
-    if (L->rep_bytes) {           /* walk everything first: the packet must be consumed exactly */
-        int p = pos;
-        for (int r = 0; r < recs; r++) {
-            if (p + L->reps_at > n) return;
-            uint32_t k = rd32(b + p + 4); p += L->reps_at;
-            if (k > (uint32_t)((n - p) / L->rep_bytes)) return;
-            p += (int)k * L->rep_bytes;
-        }
-        if (p != n) { unknown_layout(0xB8A7, ver, b, n, "length"); return; }
-    } else if (recs > 1) recs = 1; /* variable-size reports (3.1-3.3): first report only */
-    for (int r = 0; r < recs; r++) {
-        if (pos + L->reps_at > n) return;
-        uint32_t k = rd32(b + pos + 4); pos += L->reps_at;
-        if (!L->rep_bytes && k > 1) k = 1;
-        for (uint32_t i = 0; i < k; i++, pos += L->rep_bytes) {
-            if (pos + 10 > n) return;
-            const uint8_t *rp = b + pos;
-            g_csf_reports++;
-            if (lebits(rp, 16, 8) & 32) { g_csf_skipped++; continue; }   /* L1-RSRP-only report: no RI/CQI */
-            int cc = (int)lebits(rp, 4, 4), ri = (int)lebits(rp, 67, 2), cqi = (int)lebits(rp, 69, 4);
-            if (cqi == 0 || cc > 7) continue;
-            g_csf_n++; g_csf_cqi_sum += cqi; if (cqi < g_csf_cqi_min) g_csf_cqi_min = cqi; if (cqi > g_csf_cqi_max) g_csf_cqi_max = cqi;
-            g_csf_rank[ri + 1]++; g_csf_cc = cc;
-        }
-    }
+    struct nr_csf_packet info;
+    int rc = nr_csf_feed(&g_csf, b, n, &info);
+    if (rc == NR_CSF_SHORT) return;
+    if (rc == NR_CSF_VERSION) { unknown_layout(0xB8A7, info.ver, b, n, "version"); return; }
+    layout_seen(0xB8A7, info.ver, b, n);
+    if (rc == NR_CSF_LENGTH) { unknown_layout(0xB8A7, info.ver, b, n, "length"); return; }
+    if (rc != NR_CSF_OK) return;
     int64_t now = mono_ms();
-    if (!g_csf_t) g_csf_t = now;
-    if (now - g_csf_t < 1000 || !g_csf_n) return;
-    int rk = 1; for (int i = 2; i <= 4; i++) if (g_csf_rank[i] > g_csf_rank[rk]) rk = i;
-    struct jb j; jb_init(&j, "nr_csf");
-    jb_add(&j, ",\"src\":\"B8A7\",\"ver\":\"%d.%d\",\"tentative\":%d,\"cc\":%d,\"n\":%d,\"rank\":%d,\"cqi_min\":%d,\"cqi_max\":%d",
-           rel_maj, rel_min, (ver == 0x30005) ? 0 : 1, g_csf_cc, g_csf_n, rk, g_csf_cqi_min, g_csf_cqi_max);
-    jb_f(&j, "cqi_avg", (double)g_csf_cqi_sum / g_csf_n);
-    jb_add(&j, ",\"rank_hist\":[%d,%d,%d,%d],\"reports\":%d,\"rsrp_only\":%d", g_csf_rank[1], g_csf_rank[2], g_csf_rank[3], g_csf_rank[4],
-           g_csf_reports, g_csf_skipped);
-    jb_emit(&j);
-    g_csf_t = now; g_csf_n = g_csf_cqi_sum = g_csf_reports = g_csf_skipped = 0; g_csf_cqi_min = 99; g_csf_cqi_max = -1; memset(g_csf_rank, 0, sizeof(g_csf_rank));
+    if (!nr_csf_due(&g_csf, now)) return;
+    struct nr_csf_result out[NR_CSF_CCS];
+    int count = nr_csf_flush(&g_csf, out, NR_CSF_CCS, now);
+    for (int i = 0; i < count; i++) {
+        const struct nr_csf_result *r = &out[i];
+        struct jb j; jb_init(&j, "nr_csf");
+        jb_add(&j, ",\"src\":\"B8A7\",\"ver\":\"%d.%d\",\"tentative\":%d,\"cc\":%d,\"n\":%d,\"rank\":%d,\"cqi_min\":%d,\"cqi_max\":%d",
+               info.rel_maj, info.rel_min, (info.ver == 0x30005) ? 0 : 1, r->cc, r->n, r->rank, r->cqi_min, r->cqi_max);
+        jb_f(&j, "cqi_avg", r->cqi_avg);
+        jb_add(&j, ",\"rank_hist\":[%d,%d,%d,%d],\"reports\":%d,\"rsrp_only\":%d",
+               r->rank_hist[0], r->rank_hist[1], r->rank_hist[2], r->rank_hist[3], r->reports, r->rsrp_only);
+        jb_emit(&j);
+    }
 }
 
 /* --- 0xB825 NR5G RRC Configuration Info: serving cell list (QBM table 3.0-3.10; run3/run4 v3.8 hex matches) --- */
@@ -5103,11 +5073,7 @@ static void nr_statistics_reset(void) {
     memset(g_pd_base, 0, sizeof(g_pd_base));
     g_pd_t = 0;
     memset(g_nr_layer, 0, sizeof(g_nr_layer));
-    g_csf_t = 0;
-    g_csf_n = g_csf_cqi_sum = g_csf_reports = g_csf_skipped = g_csf_cc = 0;
-    g_csf_cqi_min = 99;
-    g_csf_cqi_max = -1;
-    memset(g_csf_rank, 0, sizeof(g_csf_rank));
+    nr_csf_reset(&g_csf);
     g_dl_t = g_dl_last = g_ul_t = g_us_t = 0;
     memset(g_dl, 0, sizeof(g_dl));
     memset(g_ul, 0, sizeof(g_ul));
@@ -5119,23 +5085,41 @@ static void *decode_worker(void *arg) {
     (void)arg;
     uint8_t tmp[DIAG_Q_SLOT];
     struct diag_epoch_barrier nr_epoch = {0};
+    /* Let cumulative snapshots through often enough to keep a PHY rate, without
+       putting them ahead of signalling or ahead of a short run of CQI/TB samples. */
+    int samples_since_cumulative = 0;
     for (;;) {
         pthread_mutex_lock(&g_dq_mu);
-        while (!g_stop && diag_q_empty(&g_dq) && diag_q_empty(&g_dq_lo))
+        while (!g_stop && diag_q_empty(&g_dq) && diag_q_empty(&g_dq_lo) && !diag_latest_pending(&g_latest))
             pthread_cond_wait(&g_dq_cv, &g_dq_mu);
-        if (diag_q_empty(&g_dq) && diag_q_empty(&g_dq_lo)) {
+        if (diag_q_empty(&g_dq) && diag_q_empty(&g_dq_lo) && !diag_latest_pending(&g_latest)) {
             pthread_mutex_unlock(&g_dq_mu);
             break;
         }
         struct diag_q_item it;
         int high = !diag_q_empty(&g_dq);
-        if (high) diag_q_pop(&g_dq, &it);
-        else diag_q_pop(&g_dq_lo, &it);
+        int coalesced = 0;
+        int got;
+        if (high) got = diag_q_pop(&g_dq, &it);
+        else if (!diag_q_empty(&g_dq_lo) &&
+                 (samples_since_cumulative < 16 || !diag_latest_pending(&g_latest))) {
+            got = diag_q_pop(&g_dq_lo, &it);
+            if (got) samples_since_cumulative++;
+        } else {
+            got = diag_latest_pop(&g_latest, &it);
+            coalesced = 1;
+            if (got) samples_since_cumulative = 0;
+        }
+        if (!got) {
+            pthread_mutex_unlock(&g_dq_mu);
+            continue;
+        }
         uint16_t n = it.len;
         memcpy(tmp, it.data, n);
         uint64_t timestamp = n >= 12 ? rd64(tmp + 4) : 0;
         if (!high && !diag_epoch_allows(&nr_epoch, timestamp)) {
-            diag_q_drop_epoch(&g_dq_lo, n);
+            if (coalesced) diag_latest_drop_epoch(&g_latest, n);
+            else diag_q_drop_epoch(&g_dq_lo, n);
             pthread_mutex_unlock(&g_dq_mu);
             continue;
         }
@@ -5627,9 +5611,14 @@ static void on_log(unsigned char *ptr, int len) {
             }
         } else {
             /* log record = len(2) code(2) ts(8) body; route by code priority. */
-            struct diag_queue *q = diag_code_priority(rd16(ptr + pos + 2)) == DIAG_PRIO_LOW ? &g_dq_lo : &g_dq;
+            uint16_t code = rd16(ptr + pos + 2);
             pthread_mutex_lock(&g_dq_mu);
-            diag_q_push(q, ptr + pos, (uint16_t)rl);
+            if (diag_code_lane(code) == DIAG_LANE_COALESCE)
+                diag_latest_push(&g_latest, code, ptr + pos, (uint16_t)rl);
+            else {
+                struct diag_queue *q = diag_code_lane(code) == DIAG_LANE_LOW ? &g_dq_lo : &g_dq;
+                diag_q_push(q, ptr + pos, (uint16_t)rl);
+            }
             pthread_cond_signal(&g_dq_cv);
             pthread_mutex_unlock(&g_dq_mu);
         }
@@ -5708,14 +5697,15 @@ static void emit_status_locked(const char *state, int rc) {
                g_details_mask.count, g_details_mask.batch_rc, g_details_mask.accepted,
                g_live_details_before_first_packet ? "true" : "false");
     jb_add(&j, ",\"decode_queued\":%u,\"decode_dropped\":%lu,\"decode_high_water\":%u,\"decode_oversized\":%lu",
-           diag_q_count(&g_dq) + diag_q_count(&g_dq_lo),
+           diag_q_count(&g_dq) + diag_q_count(&g_dq_lo) + diag_latest_count(&g_latest),
            g_dq.stats.dropped + g_dq_lo.stats.dropped,
            g_dq.stats.high_water > g_dq_lo.stats.high_water ? g_dq.stats.high_water : g_dq_lo.stats.high_water,
            g_dq.stats.oversized);
     jb_add(&j, ",\"decode_queued_hi\":%u,\"decode_queued_lo\":%u,\"decode_dropped_hi\":%lu,\"decode_dropped_lo\":%lu",
            diag_q_count(&g_dq), diag_q_count(&g_dq_lo),
            g_dq.stats.dropped, g_dq_lo.stats.dropped);
-    jb_add(&j, ",\"decode_epoch_dropped\":%lu", g_dq_lo.stats.epoch_dropped);
+    jb_add(&j, ",\"decode_epoch_dropped\":%lu,\"decode_coalesced\":%lu",
+           g_dq_lo.stats.epoch_dropped + g_latest.epoch_dropped, g_latest.superseded);
     jb_add(&j, ",\"logcat_alive\":%d,\"logcat_fmt\":%s,\"logcat_sip\":%lu,\"logcat_rcs_skipped\":%lu,\"diag_ims_pkts\":%d",
            g_lc_alive, g_lc_fmt ? "true" : "false", g_lc_sip, g_lc_rcs, g_diag_ims_pkts);
     if (g_last_pkt_mono) jb_add(&j, ",\"last_pkt_age_s\":%lld",
@@ -6010,6 +6000,7 @@ int main(int argc, char **argv) {
     emit_ims_provider("mediatek", "unsupported", "false", "no_backend");
     diag_q_init(&g_dq);
     diag_q_init(&g_dq_lo);
+    diag_latest_init(&g_latest);
     if (pthread_create(&g_dq_th, NULL, decode_worker, NULL) == 0) g_dq_started = 1;
     alarm(12);
     int rc = dci_start();
