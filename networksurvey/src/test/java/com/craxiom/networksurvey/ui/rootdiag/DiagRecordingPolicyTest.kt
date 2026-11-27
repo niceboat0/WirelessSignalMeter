@@ -314,6 +314,30 @@ class DiagRecordingSessionTest {
     }
 
     @Test
+    fun crashArchivePointsFloorPlanFileAtTheRenamedPlan() {
+        val dir = temp()
+        val document = """{"mode":"CQT","task_id":"keep-me","clock_id":"c","floor_plan":{"kind":"image","width_px":20,"height_px":10,"source_name":"plan","file":"active.cqt-plan"},"points":[{"x_px":1}]}"""
+        DiagRecordingSession(dir).start("keep-me", DiagLogFormat.Dlf).writeBytes(byteArrayOf(9))
+        File(dir, RecordingLocationSidecar.ACTIVE_CQT).writeText(document)
+        File(dir, ACTIVE_CQT_PLAN).writeBytes(byteArrayOf(7, 8))
+        DiagRecordingSession(dir).recoverLeftoverActive()
+        val text = File(dir, "keep-me.dlf.cqt.json").readText()
+        assertTrue(text.contains("\"file\":\"keep-me.dlf.cqt-plan\""))
+        assertFalse(text.contains("active.cqt-plan"))
+        assertTrue(text.contains("\"x_px\":1"))
+        assertTrue(File(dir, "keep-me.dlf.cqt-plan").readBytes().contentEquals(byteArrayOf(7, 8)))
+        assertFalse(File(dir, ACTIVE_CQT_PLAN).exists())
+
+        DiagRecordingSession(dir).start("keep-me").writeBytes(byteArrayOf(3))
+        File(dir, RecordingLocationSidecar.ACTIVE_CQT).writeText(document)
+        File(dir, ACTIVE_CQT_PLAN).writeBytes(byteArrayOf(1))
+        DiagRecordingSession(dir).recoverLeftoverActive()
+        val qmdlText = File(dir, "keep-me.qmdl.cqt.json").readText()
+        assertTrue(qmdlText.contains("\"file\":\"keep-me.qmdl.cqt-plan\""))
+        assertFalse(qmdlText.contains("active.cqt-plan"))
+    }
+
+    @Test
     fun emptyAirSegmentDeletesTheSidecar() {
         val dir = temp()
         val session = DiagRecordingSession(dir)

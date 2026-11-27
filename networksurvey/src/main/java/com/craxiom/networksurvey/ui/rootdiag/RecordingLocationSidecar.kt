@@ -409,11 +409,89 @@ internal fun discardActiveLocationSidecars(root: File) {
     }
 }
 
+/**
+ * Point `floor_plan.file` at [archivedPlanName].
+ * A document with no floor plan is left unchanged. A missing plan becomes `null`, not `active.cqt-plan`.
+ */
+internal fun retargetFloorPlanFile(document: String, archivedPlanName: String?): String {
+    val key = "\"floor_plan\":"
+    val start = document.indexOf(key)
+    if (start < 0) return document
+    val brace = document.indexOf('{', start + key.length)
+    if (brace < 0) return document
+    val end = endOfJsonObject(document, brace)
+    if (end < 0) return document
+    val objectText = document.substring(brace, end + 1)
+    val fileKey = "\"file\":"
+    val fileAt = objectText.indexOf(fileKey)
+    if (fileAt < 0) return document
+    val valueStart = fileAt + fileKey.length
+    val valueEnd = endOfJsonValue(objectText, valueStart)
+    if (valueEnd < 0) return document
+    val replacement = if (archivedPlanName == null) "null" else jsonString(archivedPlanName)
+    val updated = objectText.substring(0, valueStart) + replacement + objectText.substring(valueEnd)
+    return document.substring(0, brace) + updated + document.substring(end + 1)
+}
+
 /** Move leftover sidecars onto [airFileName], for example `task.dlf.gpx` beside `task.dlf`. */
 internal fun archiveActiveLocationSidecars(root: File, airFileName: String, rename: (File, File) -> Boolean) {
     moveActiveSidecar(root, RecordingLocationSidecar.ACTIVE_GPX, "$airFileName.gpx", seal = true, rename)
-    moveActiveSidecar(root, RecordingLocationSidecar.ACTIVE_CQT, "$airFileName.cqt.json", seal = false, rename)
-    moveActiveSidecar(root, ACTIVE_CQT_PLAN, "$airFileName.cqt-plan", seal = false, rename)
+    val jsonName = "$airFileName.cqt.json"
+    val planName = "$airFileName.cqt-plan"
+    moveActiveSidecar(root, RecordingLocationSidecar.ACTIVE_CQT, jsonName, seal = false, rename)
+    moveActiveSidecar(root, ACTIVE_CQT_PLAN, planName, seal = false, rename)
+    val json = File(root, jsonName)
+    if (!json.isFile || json.length() == 0L) return
+    val plan = File(root, planName)
+    val target = if (plan.isFile && plan.length() > 0L) plan.name else null
+    val updated = retargetFloorPlanFile(json.readText(Charsets.UTF_8), target)
+    if (updated != json.readText(Charsets.UTF_8)) json.writeText(updated, Charsets.UTF_8)
+}
+
+private fun endOfJsonObject(text: String, openBrace: Int): Int {
+    var depth = 0
+    var inString = false
+    var index = openBrace
+    while (index < text.length) {
+        val ch = text[index]
+        if (inString) {
+            if (ch == '\\') {
+                index += 2
+                continue
+            }
+            if (ch == '"') inString = false
+            index++
+            continue
+        }
+        when (ch) {
+            '"' -> inString = true
+            '{' -> depth++
+            '}' -> {
+                depth--
+                if (depth == 0) return index
+            }
+        }
+        index++
+    }
+    return -1
+}
+
+private fun endOfJsonValue(text: String, start: Int): Int {
+    var index = start
+    while (index < text.length && text[index].isWhitespace()) index++
+    if (index >= text.length) return -1
+    if (text.startsWith("null", index)) return index + 4
+    if (text[index] != '"') return -1
+    index++
+    while (index < text.length) {
+        if (text[index] == '\\') {
+            index += 2
+            continue
+        }
+        if (text[index] == '"') return index + 1
+        index++
+    }
+    return -1
 }
 
 /** Latest air file for [taskId] that does not already have its own sidecar. */

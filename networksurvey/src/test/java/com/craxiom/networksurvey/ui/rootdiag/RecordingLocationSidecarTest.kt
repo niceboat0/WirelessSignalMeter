@@ -139,7 +139,20 @@ class RecordingLocationSidecarTest {
             setOf("task-1.dlf.cqt.json", "task-1.dlf.cqt-plan"),
             locationSidecarsFor(dir, listOf(dlf)).map { it.name }.toSet(),
         )
-        assertFalse(json.readText().contains("task-1.qmdl"))
+        val recorded = json.readText()
+        assertTrue(recorded.contains("\"file\":\"task-1.dlf.cqt-plan\""))
+        assertFalse(recorded.contains("active.cqt-plan"))
+        assertFalse(recorded.contains("task-1.qmdl"))
+    }
+
+    @Test fun retargetFloorPlanFileReplacesOnlyThePlanName() {
+        val raw = """{"mode":"CQT","floor_plan":{"kind":"image","file":"active.cqt-plan"},"points":[{"x_px":1}]}"""
+        val updated = retargetFloorPlanFile(raw, "task.qmdl.cqt-plan")
+        assertTrue(updated.contains("\"file\":\"task.qmdl.cqt-plan\""))
+        assertFalse(updated.contains("active.cqt-plan"))
+        assertTrue(updated.contains("\"x_px\":1"))
+        assertEquals("""{"task_id":"keep-me"}""", retargetFloorPlanFile("""{"task_id":"keep-me"}""", "task.qmdl.cqt-plan"))
+        assertTrue(retargetFloorPlanFile(raw, null).contains("\"file\":null"))
     }
 
     @Test fun cqtStoresFloorTapsAndUndoWithoutSplittingTheAirFile() {
