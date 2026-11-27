@@ -53,7 +53,7 @@
         android:theme="@style/NetworkSurveyTheme"
         tools:ignore="GoogleAppIndexingWarning"
         tools:replace="android:allowBackup,android:usesCleartextTraffic"
-        android:usesCleartextTraffic="true">
+        android:usesCleartextTraffic="false">
 
         <!-- 百度地图 API Key（已绑定 com.wireless.signalmeter.new + SHA1:2E:07:E0:AE:68:EB:C0:16:42:96:FD:4A:98:6B:99:3C:1A:4E:9A:31） -->
         <meta-data
