@@ -48,6 +48,8 @@ class DiagRecordingPolicyTest {
         assertEquals(DiagRecordingPolicy.Mode.TaskRecording, mode)
         assertTrue(DiagRecordingPolicy.shouldRecord(mode))
         assertEquals("task", DiagRecordingPolicy.overlayStatus(mode))
+        assertEquals("recording", DiagRecordingPolicy.overlayStatus(mode, recording = true))
+        assertEquals("task", DiagRecordingPolicy.overlayStatus(mode, recording = false))
     }
 
     @Test
@@ -263,6 +265,36 @@ class DiagRecordingSessionTest {
         assertTrue(second.exists())
         assertNotEquals(first.name, second.name)
         assertEquals(2, session.recordings().size)
+    }
+
+    @Test
+    fun exportListsEverySegmentIncludingTheOpenFile() {
+        val session = DiagRecordingSession(temp())
+        session.start("task-1").writeBytes(byteArrayOf(1))
+        session.finish()
+        session.start("task-1").writeBytes(byteArrayOf(2, 2))
+        assertEquals(setOf("task-1.qmdl", "active.qmdl"), session.exportableRecordings().map { it.name }.toSet())
+    }
+
+    @Test
+    fun dlfUsesItsOwnExtensionAndDoesNotReplaceQmdl() {
+        val session = DiagRecordingSession(temp())
+        session.start("task-1").writeBytes(byteArrayOf(1))
+        session.finish()
+        session.start("task-1", DiagLogFormat.Dlf).writeBytes(byteArrayOf(2, 2))
+        val saved = session.finish()
+        assertEquals("task-1.dlf", saved?.name)
+        assertEquals(setOf("task-1.qmdl", "task-1.dlf"), session.exportableRecordings().map { it.name }.toSet())
+    }
+
+    @Test
+    fun leftoverActiveKeepsTheTaskIdFromTheMarker() {
+        val dir = temp()
+        DiagRecordingSession(dir).start("keep-me").writeBytes(byteArrayOf(9))
+        val next = DiagRecordingSession(dir)
+        next.start("other")
+        assertTrue(next.recordings().any { it.name == "keep-me.qmdl" })
+        assertFalse(next.recordings().any { it.name == "orphan.qmdl" })
     }
 
     @Test

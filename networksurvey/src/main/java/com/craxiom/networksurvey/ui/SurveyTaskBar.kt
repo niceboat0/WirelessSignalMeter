@@ -102,8 +102,8 @@ internal fun SurveyTaskBar() {
                 }
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     Column(Modifier.weight(1f)) {
-                        Text("录制 QMDL")
-                        Text("仅此任务期间录制基带日志", style = MaterialTheme.typography.bodySmall,
+                        Text("录制原始日志")
+                        Text("仅此任务期间写入 QMDL 或 DLF", style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     Switch(checked = needLog, onCheckedChange = { needLog = it })

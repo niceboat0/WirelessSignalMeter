@@ -109,6 +109,15 @@ class DeviceCapabilityTest {
 
 class CollectorRestartPolicyTest {
     @Test
+    fun modemRecoveryRestartsWhileARecordingIsOpen() {
+        assertEquals("restarting_collector", CollectorRestartPolicy.modemRecoveryPhase(true, 1, 0))
+        assertEquals("packets_resumed", CollectorRestartPolicy.modemRecoveryPhase(false, 1, 0))
+        assertEquals("still_stalled", CollectorRestartPolicy.modemRecoveryPhase(
+            true, CollectorRestartPolicy.MODEM_RECOVERY_CHECKS, 0,
+        ))
+    }
+
+    @Test
     fun modemRecoveryOnlyRestartsWhenStatusOrPacketStreamIsStale() {
         assertFalse(CollectorRestartPolicy.needsModemRecovery(true, 1_000, 2_000, 12_000))
         assertTrue(CollectorRestartPolicy.needsModemRecovery(true, 1_000, 38_000, 36_000))
