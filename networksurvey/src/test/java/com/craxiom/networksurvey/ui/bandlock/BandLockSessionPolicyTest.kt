@@ -288,7 +288,7 @@ class BandLockCollectorReuseTest {
     }
 
     @Test
-    fun qmiModeSuccessSkipsDiagModeAfterLock() {
+    fun qmiModeSuccessSkipsDiagModeAfterLock() = runTest(dispatcher) {
         val model = model()
         val runner = RecordingRunner { model.state.value.availability }.also { it.connected = true }
         val qmi = FakeQmiRunner().apply {
@@ -306,7 +306,7 @@ class BandLockCollectorReuseTest {
             BandLockCommand.apply(LockRadio.Nr, LockTarget.Bands, "1", "", "", 30),
             collectorRunning = true,
         )
-        dispatcher.scheduler.advanceUntilIdle()
+        model.state.first { !it.busy }
 
         assertEquals(listOf("nr-band"), runner.calls.map { it.second.first() })
         assertEquals(listOf(listOf("mode", "nr")), qmi.calls)
