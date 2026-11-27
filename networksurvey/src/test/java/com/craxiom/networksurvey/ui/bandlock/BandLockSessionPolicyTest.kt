@@ -328,10 +328,8 @@ class BandLockCollectorReuseTest {
         }
         qmi.responses.addLast(QmiLockOutcome(0, "QMI bands lte=0x0000000000000005\nVERDICT ok\n", "ok", reachable = true))
         qmi.responses.addLast(QmiLockOutcome(0, "VERDICT ok\n", "ok", reachable = true))
-        qmi.responses.addLast(QmiLockOutcome(0, "VERDICT ok\n", "ok", reachable = true))
         qmi.responses.addLast(QmiLockOutcome(9, "QMI bands-restore fail=hw_capability\n", "fail", reachable = false))
         qmi.responses.addLast(QmiLockOutcome(0, "QMI bands lte=0x0000000000000005\nVERDICT ok\n", "ok", reachable = true))
-        qmi.responses.addLast(QmiLockOutcome(0, "VERDICT ok\n", "ok", reachable = true))
         qmi.responses.addLast(QmiLockOutcome(0, "VERDICT ok\n", "ok", reachable = true))
         model.commandRunner = runner
         model.qmiRunner = qmi
@@ -378,7 +376,7 @@ class BandLockCollectorReuseTest {
             onModemRestartRequested = {},
         )
         model.qmi.first { !it.busy }
-        assertEquals(listOf("bands-get", "bands-set", "mode", "bands-restore", "bands-get", "bands-set", "mode"),
+        assertEquals(listOf("bands-get", "bands-set", "bands-restore", "bands-get", "bands-set"),
             qmi.calls.map { it.first() })
     }
 }
