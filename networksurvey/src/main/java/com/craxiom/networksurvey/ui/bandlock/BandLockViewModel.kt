@@ -26,7 +26,7 @@ internal data class QmiLockState(
     val availability: LockAvailability = LockAvailability.Unchecked,
     val busy: Boolean = false,
     val log: String = "",
-    val result: Int? = null,
+    val result: String? = null,
 )
 internal data class BandLockState(
     val availability: LockAvailability = LockAvailability.Unchecked,
@@ -114,7 +114,7 @@ internal class BandLockViewModel(application: Application) : AndroidViewModel(ap
     fun qmiApplyBands(radio: LockRadio, bands: String) {
         val arguments = runCatching { QmiLockCommand.applyBands(radio, bands) }.getOrNull()
         if (arguments == null) {
-            qmiMutable.value = qmiMutable.value.copy(result = R.string.lock_qmi_failed)
+            qmiMutable.value = qmiMutable.value.copy(result = app.getString(R.string.lock_qmi_failed))
             return
         }
         qmiRun(arguments)
@@ -125,7 +125,7 @@ internal class BandLockViewModel(application: Application) : AndroidViewModel(ap
     fun qmiLockCell(radio: LockRadio, channel: String, pci: String, scs: Int) {
         val arguments = runCatching { QmiLockCommand.lockCell(radio, channel, pci, scs) }.getOrNull()
         if (arguments == null) {
-            qmiMutable.value = qmiMutable.value.copy(result = R.string.lock_qmi_failed)
+            qmiMutable.value = qmiMutable.value.copy(result = app.getString(R.string.lock_qmi_failed))
             return
         }
         qmiRun(arguments)
@@ -147,9 +147,21 @@ internal class BandLockViewModel(application: Application) : AndroidViewModel(ap
                 busy = false,
                 availability = if (outcome.reachable) LockAvailability.Ready else LockAvailability.Unavailable,
                 log = (current.log + outcome.output).takeLast(8000),
-                result = if (outcome.accepted) null else R.string.lock_qmi_failed,
+                result = qmiResultMessage(outcome),
             )
         }
+    }
+
+    /* Map a rejected QMI run to a readable message. The raw output stays in the
+       log pane, so the code is explained rather than hidden. */
+    private fun qmiResultMessage(outcome: QmiLockOutcome): String? = when {
+        outcome.accepted -> null
+        outcome.verdict == "unavailable" -> app.getString(R.string.lock_qmi_unavailable)
+        outcome.verdict == "rejected" -> outcome.errorCode?.let { code ->
+            if (code == 3) app.getString(R.string.lock_qmi_error_internal)
+            else app.getString(R.string.lock_qmi_rejected_code, code)
+        } ?: app.getString(R.string.lock_qmi_failed)
+        else -> app.getString(R.string.lock_qmi_failed)
     }
 
     internal fun restoreForTest(state: BandLockState) {

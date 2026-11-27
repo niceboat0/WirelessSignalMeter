@@ -64,11 +64,20 @@ internal class QmiLockRunner(private val helper: () -> File) {
                     else -> "fail"
                 }
                 val reachable = verdict in setOf("ok", "rejected")
-                QmiLockOutcome(exit, output.toString(), verdict, reachable)
+                /* A rejected command prints "QMI <cmd> qmi_error=N"; surface the
+                   code so the UI can explain it instead of saying "failed". */
+                val errorCode = lines.asSequence()
+                    .mapNotNull { ERROR_CODE.find(it)?.groupValues?.get(1)?.toIntOrNull() }
+                    .lastOrNull()
+                QmiLockOutcome(exit, output.toString(), verdict, reachable, errorCode)
             } finally {
                 runCatching { process.destroy() }
             }
         }
 
     private fun quote(text: String) = "'" + text.replace("'", "'\\''") + "'"
+
+    private companion object {
+        val ERROR_CODE = Regex("qmi_error=(\\d+)")
+    }
 }

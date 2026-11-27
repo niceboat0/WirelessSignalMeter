@@ -179,6 +179,8 @@
     <string name="lock_qmi_clear_cell">清除小区锁</string>
     <string name="lock_qmi_log">QMI 输出</string>
     <string name="lock_qmi_failed">modem 未确认该 QMI 命令。</string>
+    <string name="lock_qmi_rejected_code">modem 拒绝了该命令（QMI 错误 %1$d）。请先用“检测”回读当前状态，再重试。</string>
+    <string name="lock_qmi_error_internal">modem 报内部错误（QMI 3）。可能是请求的频段超出本机硬件能力，或当前状态不允许修改。请先用“检测”回读，再改选受支持的频段重试。</string>
     <string name="lock_current_cell">当前驻留小区</string>
     <string name="lock_current_unavailable">暂无近期 DIAG 驻留测量</string>
     <string name="lock_use_current_cell">填入当前小区</string>

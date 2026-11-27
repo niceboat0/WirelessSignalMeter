@@ -31,8 +31,16 @@ internal object QmiLockCommand {
         }
     }
 
-    /** All bands: no exclusions. */
-    fun restoreBands(): List<String> = listOf("bands-set", "ffffffffffffffff", "ff".repeat(64))
+    /**
+     * Restore every band the modem itself reports as supported. The native
+     * `bands-restore` path reads DMS GET_BANDS and writes only that mask with
+     * no mode TLV, so the network mode preference is left untouched. Sending
+     * an all-ones mask instead was rejected on a real SM-S9370 (qmi_error=3),
+     * because it names bands that modem does not support.
+     *
+     * Requires qmi-probe built with the bands-restore command.
+     */
+    fun restoreBands(): List<String> = listOf("bands-restore")
 
     fun lockCell(radio: LockRadio, channel: String, pci: String, scs: Int): List<String> {
         val frequency = channel.trim().toIntOrNull() ?: error("invalid ARFCN")
@@ -68,6 +76,7 @@ internal data class QmiLockOutcome(
     val output: String,
     val verdict: String,        // ok / rejected / fail / unavailable / timeout
     val reachable: Boolean,     // the QRTR NAS channel answered at all
+    val errorCode: Int? = null, // qmi_error=N from a rejected command, if printed
 ) {
     val accepted: Boolean get() = verdict == "ok"
 }

@@ -353,8 +353,8 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
                     Text(stringResource(R.string.lock_qmi_clear_cell))
                 }
             }
-            qmi.result?.let {
-                Text(stringResource(it), style = MaterialTheme.typography.bodySmall,
+            qmi.result?.let { message ->
+                Text(message, style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error)
             }
             if (qmi.log.isNotBlank()) {
