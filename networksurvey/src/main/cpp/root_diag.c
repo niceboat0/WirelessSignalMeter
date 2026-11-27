@@ -410,13 +410,14 @@ static void unknown_layout(uint16_t code, uint32_t ver, const uint8_t *body, int
         for (int i = 0; i < s->nwarned; i++) if (s->warned_vers[i] == ver) return;
         if (s->nwarned < 8) s->warned_vers[s->nwarned++] = ver;
     }
-    /* The first 16 body bytes are enough to settle layout questions offline
-       (count-byte position, header stride, version field) without exporting
-       the whole payload; full frames are already preserved by QMDL capture.
-       Layout failures are deduplicated per (code, ver), so this stays a
-       handful of one-line records per session. */
-    char head[16 * 3 + 1] = {0};
-    int hn = (blen > 16) ? 16 : blen;
+    /* The first 64 body bytes settle layout questions offline: header, the
+       version field, and at least the first record of a 24-byte-stride carrier
+       table (0xB9A7 header 24 + carrier 24). A 16-byte head was not enough to
+       tell which carrier field a v0x30002 table failed on. Full frames are
+       already preserved by QMDL capture. Layout failures are deduplicated per
+       (code, ver), so this stays a handful of one-line records per session. */
+    char head[64 * 3 + 1] = {0};
+    int hn = (blen > 64) ? 64 : blen;
     if (hn < 0 || !body) hn = 0;
     static const char hex[] = "0123456789abcdef";
     for (int i = 0; i < hn; i++) {
@@ -501,14 +502,33 @@ static double q7(uint32_t v) {
     return r;
 }
 
+/* Recent measurement-report triggers, kept so a following handover can be
+   attributed to the report whose best neighbor it switched to. */
+struct mr_recent { int rat; int meas; int best_pc; long long t; };
+static struct mr_recent g_mr_recent[8];
+static int g_mr_head;
+
 /* serving cell change tracking */
 static void serving_update(struct serving *s, int pci, long arfcn, const char *src) {
     if (pci < 0 || pci > 1007) return;
     if (pci == 0 && arfcn == 0) return; /* 1.5: transitional RRC packets with no cell (pci 0 / arfcn 0) */
     if (s->pci != NA_I && (s->pci != pci || (arfcn >= 0 && s->arfcn >= 0 && s->arfcn != arfcn))) {
+        long long t = mono_ms();
+        int tmeas = 0, ttarget = 0;
+        for (int i = 0; i < 8; i++) {
+            const struct mr_recent *m = &g_mr_recent[i];
+            if (!m->t) continue;
+            if (m->rat != (s->rat[0] == 'N')) continue;
+            if (m->best_pc != pci) continue;
+            if (t - m->t > 2500) continue;
+            tmeas = m->meas;
+            ttarget = m->best_pc;
+            break;
+        }
         struct jb j; jb_init(&j, "cell_change");
         jb_add(&j, ",\"rat\":\"%s\",\"from_pci\":%d,\"from_arfcn\":%ld,\"to_pci\":%d,\"to_arfcn\":%ld,\"src\":\"%s\"",
                s->rat, s->pci, s->arfcn, pci, arfcn >= 0 ? arfcn : s->arfcn, src);
+        if (tmeas) jb_add(&j, ",\"triggered_by\":{\"meas_id\":%d,\"target_pci\":%d}", tmeas, ttarget);
         jb_emit(&j);
         s->rsrp = s->rsrq = s->rssi = s->sinr = NA_F;
         s->t_meas = s->t_sinr = s->t_cell = 0;
@@ -864,16 +884,114 @@ static void emit_meas_config_events(int nr, const struct sd_meas_config *m) {
     }
 }
 
+/* The measurement report's own read-out, used to tie a report to the
+   MeasConfig that produced it and to the cell a handover went to. */
+struct mr_out {
+    int meas_id;
+    int serving_rsrp;   /* RSRP range index of the PCell; -1 unknown */
+    int best_rsrp;      /* highest neighbor RSRP index; -1 none */
+    int best_pci;       /* neighbor with the highest RSRP; -1 none */
+    int neighbor_count;
+};
+
+/* Current MeasConfig applied by the network, kept across messages so a
+   measurementReport can be matched to the trigger that defined it. */
+static struct sd_meas_config g_meas_cfg[2];
+
+static void meas_state_apply(int nr, const struct sd_meas_config *src) {
+    struct sd_meas_config *dst = &g_meas_cfg[nr];
+    for (int id = 1; id <= SD_MEAS_LIMIT; id++) {
+        uint64_t bit = UINT64_C(1) << (id - 1);
+        if (src->removed_objects & bit) {
+            dst->objects_present &= ~bit;
+            dst->objects[id] = (struct sd_meas_object){ 0, -1, -1, -1 };
+        }
+        if (src->removed_reports & bit) {
+            dst->reports_present &= ~bit;
+            dst->reports[id] = (struct sd_meas_report){ 0 };
+        }
+        if (src->removed_ids & bit) {
+            dst->ids_present &= ~bit;
+            dst->links[id] = (struct sd_meas_link){ 0 };
+        }
+        if (src->objects_present & bit) { dst->objects[id] = src->objects[id]; dst->objects_present |= bit; }
+        if (src->ids_present & bit) { dst->links[id] = src->links[id]; dst->ids_present |= bit; }
+        if (src->reports_present & bit) { dst->reports[id] = src->reports[id]; dst->reports_present |= bit; }
+    }
+}
+
+/* The report config a measId is linked to, with its object id; NULL if unset. */
+static const struct sd_meas_report *meas_report_for(int nr, int meas_id, int *object_id) {
+    const struct sd_meas_config *m = &g_meas_cfg[nr];
+    if (meas_id < 1 || meas_id > SD_MEAS_LIMIT ||
+        !(m->ids_present & (UINT64_C(1) << (meas_id - 1)))) return NULL;
+    int rid = m->links[meas_id].report_id;
+    int oid = m->links[meas_id].object_id;
+    if (rid < 1 || rid > SD_MEAS_LIMIT || !(m->reports_present & (UINT64_C(1) << (rid - 1)))) return NULL;
+    if (object_id) *object_id = oid;
+    return &m->reports[rid];
+}
+
+/* Emit one event per measurement report that names a best neighbor, linking it
+   to the configured trigger (A1-A6 / B1-B2) and the RSRP lead over the serving
+   cell. Kept in a small ring so the next cell_change can be attributed. */
+static void emit_mr_trigger(int nr, const struct mr_out *mr) {
+    long long now = mono_ms();
+    for (int i = 0; i < 8; i++) {
+        const struct mr_recent *r = &g_mr_recent[i];
+        if (!r->t) continue;
+        if (r->rat != nr || r->meas != mr->meas_id) continue;
+        if (now - r->t > 5000) continue;
+        return;   /* identical report already emitted in the last 5 s */
+    }
+    int object_id = 0;
+    const struct sd_meas_report *rp = meas_report_for(nr, mr->meas_id, &object_id);
+    const char *event = rp ? rp->event : "";
+    const char *short_event = !strncmp(event, "event", 5) ? event + 5 : event;
+    const struct serving *s = nr ? &g_nr : &g_lte;
+    struct jb j;
+    jb_init(&j, "event");
+    jb_add(&j, ",\"rat\":\"%s\",\"event\":\"mr_trigger\",\"msg\":\"MeasurementReport\",\"display_msg\":\"MR %d\"",
+           nr ? "NR" : "LTE", mr->meas_id);
+    jb_i(&j, "meas_id", mr->meas_id);
+    if (rp && rp->event[0]) jb_add(&j, ",\"report\":\"%s\"", short_event);
+    if (rp && rp->has_offset) jb_i(&j, "offset_db", rp->offset_db);
+    if (rp && rp->has_threshold) {
+        jb_i(&j, "threshold_raw", rp->threshold);
+        double db = meas_threshold_db(nr, rp->quantity, rp->threshold);
+        if (db != NA_F) {
+            if (rp->quantity == SD_Q_RSRP) jb_f(&j, "threshold_dbm", db);
+            else jb_f(&j, "threshold_db", db);
+        }
+    }
+    if (object_id) jb_i(&j, "object_id", object_id);
+    if (mr->best_pci >= 0) jb_i(&j, "best_pci", mr->best_pci);
+    if (mr->serving_rsrp >= 0 && mr->best_rsrp >= 0) {
+        double sv = meas_threshold_db(nr, SD_Q_RSRP, mr->serving_rsrp);
+        double bv = meas_threshold_db(nr, SD_Q_RSRP, mr->best_rsrp);
+        if (sv != NA_F && bv != NA_F) jb_f(&j, "best_delta_db", bv - sv);
+    }
+    if (s->pci >= 0) jb_i(&j, "pci", s->pci);
+    if (s->arfcn >= 0) jb_i(&j, "arfcn", s->arfcn);
+    jb_emit(&j);
+    g_mr_recent[g_mr_head] = (struct mr_recent){ nr, mr->meas_id, mr->best_pci, now };
+    g_mr_head = (g_mr_head + 1) & 7;
+}
+
 static void add_measurement_report(struct jb *j, int nr, int serving_pci, const uint8_t *b, int n,
-                                   int lte_pcell_sinr);
+                                   int lte_pcell_sinr, struct mr_out *mr);
 
 static void emit_rrc_signaling(struct jb *j, int nr, int ch, int pci, const uint8_t *pdu, int len, int can_decode) {
     const char *root = can_decode ? signaling_root(nr, ch) : NULL;
     struct sd_summary summary = {0};
     struct sd_out out = { g_signal_tree, 0, sizeof(g_signal_tree), 0 };
     int incomplete = !root || sd_decode(nr ? "NR" : "LTE", root, pdu, len, 0, &out, 0, &summary);
-    if (root && ch == CH_UL_DCCH && summary.message && !strcmp(summary.message, "measurementReport"))
-        add_measurement_report(j, nr, pci, pdu, len, incomplete ? -1 : summary.lte_pcell_sinr_plus_one - 1);
+    if (root && ch == CH_UL_DCCH && summary.message && !strcmp(summary.message, "measurementReport")) {
+        struct mr_out mr = { .meas_id = 0, .serving_rsrp = -1, .best_rsrp = -1, .best_pci = -1 };
+        add_measurement_report(j, nr, pci, pdu, len,
+            incomplete ? -1 : summary.lte_pcell_sinr_plus_one - 1, &mr);
+        if (!incomplete && mr.meas_id > 0) emit_mr_trigger(nr, &mr);
+    }
     if (out.trunc) {
         out.trunc = 0;
         sd_put(&out, "\n<内容过长，已截断>\n");
@@ -936,6 +1054,7 @@ static void emit_rrc_signaling(struct jb *j, int nr, int ch, int pci, const uint
     /* A length-delimited unknown extension after a complete MeasConfig does not erase it. */
     if (summary.meas_complete) {
         add_meas_config(j, nr, &summary.meas);
+        meas_state_apply(nr, &summary.meas);
         emit_meas_config_events(nr, &summary.meas);
     }
     if (summary.plmn_count && !summary.plmn_invalid) {
@@ -1294,7 +1413,7 @@ static void add_report_cell(struct jb *j, const struct report_cell *cell, int nr
 }
 
 static void add_measurement_report(struct jb *j, int nr, int serving_pci, const uint8_t *b, int n,
-                                   int lte_pcell_sinr) {
+                                   int lte_pcell_sinr, struct mr_out *mr) {
     struct per_reader r = { b, n, 5, 0, 8 * n }; /* UL-DCCH c1 and message choice */
     int critical = per_get(&r, nr ? 1 : 4); /* LTE criticalExtensions (1) and c1 choice (3). */
     if (r.error || critical) {
@@ -1356,6 +1475,17 @@ static void add_measurement_report(struct jb *j, int nr, int serving_pci, const 
     }
     if (!nr && extension && !r.error && can_read_extensions) {
         per_lte_meas_extensions(&r, LTE_MEAS_ID, &meas_id);
+    }
+    if (mr) {
+        mr->meas_id = meas_id;
+        mr->serving_rsrp = serving_count > 0 ? serving[0].ssb.rp : -1;
+        int br = -1, bp = -1;
+        for (int i = 0; i < neighbor_count; i++) {
+            if (neighbors[i].ssb.rp > br) { br = neighbors[i].ssb.rp; bp = neighbors[i].pci; }
+        }
+        mr->best_rsrp = br;
+        mr->best_pci = bp;
+        mr->neighbor_count = neighbor_count;
     }
     jb_add(j, ",\"measResults\":{\"measId\":%d,\"%s\":[", meas_id,
            nr ? "measResultServingMOList" : "measResultPCell");
@@ -1985,6 +2115,7 @@ static void parse_lte_b193(const uint8_t *b, int n) {
             unknown_layout(0xB193, (uint32_t)sv, b, n, "subpkt version");
             continue;
         }
+        int emitted = 0, power_count = 0, quality_count = 0;
         for (int c = 0; c < ncells && c < 8; c++) {
             if (cell0 + (c + 1) * csz > sbl) break;
             const uint8_t *cb = sb + cell0 + c * csz;
@@ -1992,11 +2123,23 @@ static void parse_lte_b193(const uint8_t *b, int n) {
             int pci = v0 & 0x1ff, scell_idx = (v0 >> 9) & 7, is_scell = (v0 >> 12) & 1;
             if (pci > 503) continue;
             const uint8_t *rb = cb + 16;
+            /* The v48/v50 bit offsets are carried over from the v36 replay and
+               are not settled against a QMDL frame. The 2026-11-27 Redmi K30
+               export reported rsrp=+10 dBm together with rsrq=-30 and
+               rssi=-110, the last two being exactly the formula floors, i.e.
+               those bit fields read as zero. That reading is not usable, and
+               without a window check it overwrites the serving cell and the UI
+               shows RSRP=+10. Apply the physical window the v66 path already
+               has, so an unsettled offset cannot publish a value. */
             double rsrp = -180.0 + lebits(rb, 108, 12) * 0.0625 + 40.0;
+            if (rsrp < -144.0 || rsrp > -40.0) continue;
             double rsrq = -30.0 + lebits(rb, 224, 10) * 0.0625;
             double rssi = -110.0 + lebits(rb, 320, 11) * 0.0625;
             double snr0 = lebits(cb + snr_off, 0, 9) * 0.1 - 20.0;
             double snr1 = lebits(cb + snr_off, 9, 9) * 0.1 - 20.0;
+            emitted++;
+            if (rsrp >= -140.0) power_count++;
+            if (rsrq > -30.0 && rsrq <= 5.0) quality_count++;
             struct jb j; jb_init(&j, "lte_meas");
             jb_add(&j, ",\"src\":\"B193\",\"pci\":%d,\"earfcn\":%ld,\"cc\":%d,\"is_scell\":%d", pci, earfcn, scell_idx, is_scell);
             jb_f(&j, "rsrp", rsrp); jb_f(&j, "rsrq", rsrq); jb_f(&j, "rssi", rssi);
@@ -2013,6 +2156,10 @@ static void parse_lte_b193(const uint8_t *b, int n) {
                 snprintf(g_lte.sinr_src, sizeof(g_lte.sinr_src), "B193");
             }
         }
+        /* The v66 path reports here through its own counters; v48/v50 used to
+           report nothing, so the diagnostics pane showed received=929 with
+           decoded_blocks=0 and gave no hint that anything was parsed. */
+        neighbor_decoded(0xB193, emitted, power_count, quality_count, 0, 0);
     }
 }
 
