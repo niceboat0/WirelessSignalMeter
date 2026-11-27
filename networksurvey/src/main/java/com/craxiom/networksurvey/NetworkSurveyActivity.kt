@@ -20,7 +20,6 @@ import android.widget.Toast
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
-import androidx.appcompat.app.AppCompatDelegate
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
@@ -103,34 +102,11 @@ class NetworkSurveyActivity : AppCompatActivity(), StartupDialogActions {
 
         // 主题模式（浅色/深色/跟随系统）由设置页 ThemePref 控制；onCreate 时套用
         ThemePref.apply(this)
-        // 状态栏/导航栏图标颜色随主题适配（浅色主题用深色图标，深色主题用浅色图标）
-        runCatching {
-            val night = when (ThemePref.get(this)) {
-                ThemePref.MODE_LIGHT -> false
-                ThemePref.MODE_DARK -> true
-                else -> (resources.configuration.uiMode and
-                    android.content.res.Configuration.UI_MODE_NIGHT_MASK) ==
-                    android.content.res.Configuration.UI_MODE_NIGHT_YES
-            }
-            androidx.core.view.WindowCompat.getInsetsController(window, window.decorView).apply {
-                isAppearanceLightStatusBars = !night
-                isAppearanceLightNavigationBars = !night
-            }
-        }
-        // 系统栏底色取当前主题的 colorSurface：开启 Material You 时为壁纸动态色，关闭时为静态配色
-        runCatching {
-            val surface = com.google.android.material.color.MaterialColors.getColor(
-                this,
-                com.google.android.material.R.attr.colorSurface,
-                android.graphics.Color.BLACK
-            )
-            window.statusBarColor = surface
-            window.navigationBarColor = surface
-        }
         setContent {
             MainCompose(
                 appVersion = NsUtils.getAppVersionName(this),
-                deepLinkViewModel = deepLinkViewModel
+                deepLinkViewModel = deepLinkViewModel,
+                window = window,
             )
         }
 

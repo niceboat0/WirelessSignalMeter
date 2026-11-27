@@ -25,6 +25,7 @@ import androidx.compose.ui.semantics.SemanticsNode
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.unit.sp
+import androidx.core.view.WindowCompat
 import androidx.preference.PreferenceManager
 import com.craxiom.networksurvey.R
 import com.craxiom.networksurvey.ui.theme.NsTheme
@@ -82,7 +83,7 @@ class ColorPaletteFlowTest {
         fun newView() = ComposeView(activity).apply {
             setParentCompositionContext(recomposer)
             setContent {
-                NsTheme {
+                NsTheme(window = activity.window) {
                     val scheme = MaterialTheme.colorScheme
                     val currentPrimary = MiuixTheme.colorScheme.primary
                     SideEffect {
@@ -107,6 +108,7 @@ class ColorPaletteFlowTest {
             val wallpaperPrimary = primary
             click(view, "绿色")
             settleTheme()
+            assertSystemBars(activity, background, darkIcons = true)
             assertEquals(ThemePref.SEED_GREEN, ThemePref.getSeed(context))
             assertFalse(ThemePref.isMonet(context))
             capture(activity, "palette-green-light")
@@ -128,6 +130,7 @@ class ColorPaletteFlowTest {
             settleTheme()
             assertEquals(ThemePref.MODE_DARK, ThemePref.get(context))
             assertNotEquals(lightBackground, background)
+            assertSystemBars(activity, background, darkIcons = false)
             capture(activity, "palette-green-dark")
             click(view, "纯黑背景")
             settleTheme()
@@ -139,6 +142,7 @@ class ColorPaletteFlowTest {
             settleTheme()
             assertEquals(selectedPrimary, primary)
             assertEquals(Color.Black, background)
+            assertSystemBars(activity, background, darkIcons = false)
             assertFalse(ThemePref.isFloatingNavigationEnabled(context))
             assertFalse(ThemePref.isLiquidGlassEnabled(context))
             click(remountedView, activity.getString(R.string.floating_navigation))
@@ -159,16 +163,19 @@ class ColorPaletteFlowTest {
     }
 
     @Test
+    @Config(sdk = [30, 33, 34])
     fun materialContentInMiuixContainersFollowsLightAndDarkThemes() {
         val controller = Robolectric.buildActivity(ComponentActivity::class.java).setup().visible()
         val activity = controller.get()
         val context = activity.applicationContext
         var iconTint = Color.Unspecified
         var expectedColor = Color.Unspecified
+        var background = Color.Unspecified
         val view = ComposeView(activity).apply {
             setContent {
-                NsTheme(dynamicColor = false) {
+                NsTheme(dynamicColor = false, window = activity.window) {
                     expectedColor = MaterialTheme.colorScheme.onBackground
+                    background = MaterialTheme.colorScheme.background
                     Scaffold {
                         Column {
                             Card {
@@ -187,6 +194,7 @@ class ColorPaletteFlowTest {
             settle(activity)
             assertEquals(expectedColor, iconTint)
             assertTrue(rendersColor(activity, expectedColor))
+            assertSystemBars(activity, background, darkIcons = true)
 
             val lightColor = expectedColor
             ThemePref.set(context, ThemePref.MODE_DARK)
@@ -195,11 +203,21 @@ class ColorPaletteFlowTest {
             assertNotEquals(lightColor, expectedColor)
             assertEquals(expectedColor, iconTint)
             assertTrue(rendersColor(activity, expectedColor))
+            assertSystemBars(activity, background, darkIcons = false)
         } finally {
             PreferenceManager.getDefaultSharedPreferences(context).edit().clear().commit()
             ThemePref.apply(context)
             controller.pause().stop().destroy()
         }
+    }
+
+    private fun assertSystemBars(activity: ComponentActivity, background: Color, darkIcons: Boolean) {
+        val window = activity.window
+        assertEquals(background.toArgb(), window.statusBarColor)
+        assertEquals(background.toArgb(), window.navigationBarColor)
+        val insets = WindowCompat.getInsetsController(window, window.decorView)
+        assertEquals(darkIcons, insets.isAppearanceLightStatusBars)
+        assertEquals(darkIcons, insets.isAppearanceLightNavigationBars)
     }
 
     private fun rendersColor(activity: ComponentActivity, color: Color): Boolean {

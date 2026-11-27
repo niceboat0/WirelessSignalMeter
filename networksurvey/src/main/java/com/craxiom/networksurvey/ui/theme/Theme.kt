@@ -1,5 +1,6 @@
 package com.craxiom.networksurvey.ui.theme
 
+import android.view.Window
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.LocalContentColor
@@ -12,8 +13,9 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.compositeOver
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalView
+import androidx.core.view.WindowCompat
 import com.craxiom.networksurvey.util.ThemePref
 import top.yukonga.miuix.kmp.squircle.LocalSquircleEnabled
 import top.yukonga.miuix.kmp.theme.ColorSchemeMode
@@ -40,6 +42,7 @@ internal fun themeSeedColor(seed: Int): Color = when (seed) {
 fun NsTheme(
     darkTheme: Boolean? = null,
     dynamicColor: Boolean? = null,
+    window: Window? = null,
     content: @Composable () -> Unit,
 ) {
     val context = LocalContext.current
@@ -104,15 +107,15 @@ fun NsTheme(
         miuixColors.toMaterialColorScheme(dark, pureBlack)
     }
 
-    val view = LocalView.current
     SideEffect {
         publishViewColors(materialColors)
-        if (!view.isInEditMode) {
-            val window = (view.context as? androidx.appcompat.app.AppCompatActivity)?.window
-            window?.apply {
-                val surfaceArgb = ActiveThemeColors.surface
-                statusBarColor = surfaceArgb
-                navigationBarColor = surfaceArgb
+        if (window != null) {
+            val background = materialColors.background.toArgb()
+            window.statusBarColor = background
+            window.navigationBarColor = background
+            WindowCompat.getInsetsController(window, window.decorView).apply {
+                isAppearanceLightStatusBars = !dark
+                isAppearanceLightNavigationBars = !dark
             }
         }
     }

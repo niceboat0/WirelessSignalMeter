@@ -14,6 +14,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import android.app.Application
+import android.view.Window
 import com.craxiom.networksurvey.ui.rootdiag.RootDiagViewModelStore
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
@@ -39,7 +40,8 @@ import timber.log.Timber
 fun MainCompose(
     mainNavController: NavHostController = rememberNavController(),
     appVersion: String,
-    deepLinkViewModel: DeepLinkViewModel = viewModel()
+    deepLinkViewModel: DeepLinkViewModel = viewModel(),
+    window: Window? = null,
 ) {
     val context = LocalContext.current
 
@@ -136,7 +138,7 @@ fun MainCompose(
         }
     }
 
-    NsTheme {
+    NsTheme(window = window) {
         val deepLinkDestination by deepLinkViewModel.navigationDestination.collectAsStateWithLifecycle()
         LaunchedEffect(deepLinkDestination) {
             deepLinkDestination?.let { destination ->
