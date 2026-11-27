@@ -113,6 +113,19 @@ __declspec(dllexport) int test_qmi_lock(void) {
     qp_mask_from_band_list(edge, 4, nr_edge, 64);
     CHECK(nr_edge[63] == 0x80);
 
+    /* Restore path (bands-restore): hardware-derived mask, duration only and
+       no mode TLV, so the modem's network mode preference is left untouched. */
+    n = qp_nas_ssp_set(out, 2, lte_m, NULL, -1);
+    CHECK(qp_read16(out + 3) == QMI_NAS_SET_SSP);
+    CHECK(n == QMI_HEADER + (3 + 1) + (3 + 8));
+    CHECK(qp_read16(out + 5) == n - QMI_HEADER);
+    at = 7;
+    CHECK(out[at] == QP_TLV_SSP_DURATION && qp_read16(out + at + 1) == 1 && out[at + 3] == 1);
+    at += 4;
+    CHECK(out[at] == QP_TLV_SSP_LTE_BANDS && qp_read16(out + at + 1) == 8 && out[at + 3] == 0x04);
+    at += 11;
+    CHECK(at == n);
+
     /* qp_find_tlv on a synthetic response: result TLV then an LTE mask. */
     uint8_t resp[64];
     size_t r = qp_req_hdr(resp, 16, QMI_NAS_GET_SSP);
