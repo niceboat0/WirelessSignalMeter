@@ -237,8 +237,8 @@ internal class BandLockViewModel(application: Application) : AndroidViewModel(ap
                     report("qmi_command", "command=$name mode=$requestedMode")
                     qmiRunner.run(args).also { step ->
                         report("qmi_result", "command=$name exit=${step.exit} verdict=${step.verdict} error=${step.errorCode}")
-                        step.output.lineSequence().filter { it.startsWith("QMI $name ") }
-                            .take(8).forEach { report("native", it.take(200)) }
+                        step.output.lineSequence().filter { it.startsWith("QMI $name ") || it.startsWith("QMI readback ") }
+                            .take(16).forEach { report("native", it.take(200)) }
                         qmiMutable.update { it.copy(log = (it.log + step.output).takeLast(8000)) }
                     }
                 }
