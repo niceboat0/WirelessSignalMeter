@@ -365,7 +365,7 @@ internal class BandLockViewModel(application: Application) : AndroidViewModel(ap
                                 onModemRestartRequested = {
                                     withContext(Dispatchers.Main) { onModemRestartRequested?.invoke() }
                                 },
-                                executeQmiMode = if (fromConsole || (preferDiag && command.standaloneMode() != null)) null else ::runQmiMode,
+                                executeQmiMode = if (fromConsole || preferDiag) null else ::runQmiMode,
                             ) { step -> execute(step, recordDiagnostics = !fromConsole) }
                             when {
                                 !execution.outcome.accepted || execution.outcome.channelUnavailable || execution.outcome.baselineUnverified ->

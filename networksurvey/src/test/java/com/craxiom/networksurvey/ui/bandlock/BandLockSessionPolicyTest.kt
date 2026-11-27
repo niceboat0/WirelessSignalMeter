@@ -355,6 +355,7 @@ class BandLockCollectorReuseTest {
         assertEquals(LockBackend.Qmi, model.qmi.value.backends[QmiLockSlot(LockRadio.Nr, LockTarget.Bands)])
 
         // Switching to DIAG must immediately run DIAG instead of sticking on QMI.
+        val qmiCallsBeforeDiag = qmi.calls.toList()
         qmi.responses.addLast(QmiLockOutcome(0, "QMI mode ok\nVERDICT ok\n", "ok", reachable = true))
         model.runPreferred(
             BandLockCommand.restore(LockRadio.Nr, LockTarget.Bands),
@@ -364,6 +365,7 @@ class BandLockCollectorReuseTest {
         )
         model.state.first { !it.busy }
         assertEquals(listOf("nr-band-restore"), runner.calls.map { it.second.first() })
+        assertEquals(qmiCallsBeforeDiag, qmi.calls)
 
         // Switching back to QMI must immediately run QMI again.
         qmi.responses.addLast(QmiLockOutcome(0, "QMI bands lte=0x0000000000000005\nVERDICT ok\n", "ok", reachable = true))
