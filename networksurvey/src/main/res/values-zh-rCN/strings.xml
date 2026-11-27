@@ -1172,6 +1172,7 @@
     <string name="lock_reason_kirin">不支持麒麟，没有实现锁频后端。</string>
     <string name="lock_reason_unverified">现场 DIAG 探测成功，但该机型不在已验证名单中。</string>
     <string name="lock_reason_no_channel">未发现受支持的高通 DIAG 通道。</string>
+    <string name="lock_reason_no_capability">基带未报告任何受支持的锁频能力。</string>
     <string name="lock_reason_unknown">在现场 DIAG 探测成功之前，该设备视为不支持。</string>
 
 
