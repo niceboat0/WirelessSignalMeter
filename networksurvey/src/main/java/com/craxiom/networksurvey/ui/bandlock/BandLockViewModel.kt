@@ -137,11 +137,22 @@ internal class BandLockViewModel(application: Application) : AndroidViewModel(ap
 
     private fun qmiRun(arguments: List<String>) {
         if (qmiMutable.value.busy) return
+        val started = SystemClock.elapsedRealtime()
+        val cmd = arguments.firstOrNull() ?: "?"
+        AppLogger.i(AppLogger.BAND_LOCK_TAG,
+            "run=$started backend=qmi cmd=$cmd stage=start model=${Build.MODEL} soc=${Build.SOC_MODEL} api=${Build.VERSION.SDK_INT}")
         qmiMutable.value = qmiMutable.value.copy(busy = true, result = null)
         viewModelScope.launch {
             val outcome = qmiRunner.run(arguments)
+            outcome.output.lineSequence().map { it.trim() }
+                .filter { it.startsWith("QMI ") || it.startsWith("VERDICT ") }
+                .take(16)
+                .forEach { line ->
+                    AppLogger.i(AppLogger.BAND_LOCK_TAG, "run=$started backend=qmi cmd=$cmd stage=native $line")
+                }
             AppLogger.i(AppLogger.BAND_LOCK_TAG,
-                "qmi ${arguments.firstOrNull() ?: "?"} exit=${outcome.exit} verdict=${outcome.verdict}")
+                "run=$started backend=qmi cmd=$cmd stage=finish exit=${outcome.exit} verdict=${outcome.verdict} " +
+                    "error=${outcome.errorCode} reachable=${outcome.reachable} elapsed_ms=${SystemClock.elapsedRealtime() - started}")
             val current = qmiMutable.value
             qmiMutable.value = current.copy(
                 busy = false,

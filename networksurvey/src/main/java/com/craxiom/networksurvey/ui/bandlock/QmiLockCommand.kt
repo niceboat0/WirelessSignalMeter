@@ -27,7 +27,9 @@ internal object QmiLockCommand {
             val hex = buildString {
                 for (i in bytes.indices.reversed()) append(String.format("%02x", bytes[i]))
             }
-            listOf("bands-set", "ffffffffffffffff", hex)
+            /* Pass "-" so NR-only locking leaves the LTE mask untouched instead
+               of sending an all-ones LTE mask that some modems reject (QMI 3). */
+            listOf("bands-set", "-", hex)
         }
     }
 
