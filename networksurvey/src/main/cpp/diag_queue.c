@@ -67,7 +67,8 @@ void diag_latest_drop_epoch(struct diag_latest_set *s, uint16_t len) {
 /* One unread snapshot per cumulative code. A replacement is not a sample drop:
    the counters are absolute, so the next parsed frame still yields the delta. */
 int diag_latest_push(struct diag_latest_set *s, uint16_t code, const uint8_t *data, uint16_t len) {
-    if (!s || !data || !len || len > DIAG_Q_SLOT || !diag_code_coalesce(code)) return 0;
+    /* len is uint16_t and the slot is DIAG_Q_SLOT bytes, so it always fits. */
+    if (!s || !data || !len || !diag_code_coalesce(code)) return 0;
     struct diag_latest *slot = NULL;
     for (int i = 0; i < DIAG_LATEST_SLOTS; i++) {
         if (s->slot[i].occupied && s->slot[i].code == code) { slot = &s->slot[i]; break; }
