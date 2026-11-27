@@ -51,7 +51,7 @@ class QmiLockCommandTest {
         val plan = requireNotNull(BandLockCommand.restore(LockRadio.Nr, LockTarget.Bands).qmi)
         assertEquals(LockNetworkMode.Auto, plan.mode)
         assertTrue(plan.switchModeAfterWrite)
-        assertFalse(plan.allowsDiagFallback(emptyMap()))
+        assertFalse(plan.allowsDiagFallback())
         val commands = mutableListOf<List<String>>()
         plan.execute(beforeWrite = {}) { commands.add(it); ok }
         assertEquals(listOf(listOf("bands-restore", "nr"), listOf("mode", "auto")), commands)
@@ -104,20 +104,20 @@ class QmiLockCommandTest {
     }
 
     @Test
-    fun defaultsToQmiWhereSupportedAndClearsThroughTheRecordedBackend() {
+    fun manualBackendSelectionFollowsPreferDiagEvenWhenAnotherBackendWasRecorded() {
         val nrClear = requireNotNull(BandLockCommand.restore(LockRadio.Nr, LockTarget.Cell).qmi)
         val nrFrequency = requireNotNull(BandLockCommand.apply(LockRadio.Nr, LockTarget.Frequency, "", "422000", "", 15).qmi)
         assertEquals(listOf("cellnr-set", "arfcn", "422000", "15"), nrFrequency.arguments)
         assertEquals(listOf("cellnr-clear"), nrClear.arguments)
         val frequencySlot = requireNotNull(nrFrequency.slot)
         val cellSlot = requireNotNull(nrClear.slot)
-        assertEquals(LockBackend.Qmi, preferredLockBackend(nrClear, emptyMap(), preferDiag = false))
-        assertEquals(LockBackend.Diag, preferredLockBackend(nrClear, emptyMap(), preferDiag = true))
-        assertEquals(LockBackend.Qmi, preferredLockBackend(nrClear, mapOf(frequencySlot to LockBackend.Qmi), preferDiag = true))
-        assertEquals(LockBackend.Diag, preferredLockBackend(nrClear, mapOf(cellSlot to LockBackend.Diag), preferDiag = false))
-        assertTrue(nrFrequency.allowsDiagFallback(emptyMap()))
-        assertFalse(nrFrequency.allowsDiagFallback(mapOf(cellSlot to LockBackend.Qmi)))
+        assertEquals(LockBackend.Qmi, preferredLockBackend(nrClear, preferDiag = false))
+        assertEquals(LockBackend.Diag, preferredLockBackend(nrClear, preferDiag = true))
+        assertEquals(LockBackend.Qmi, nrFrequency.savedBackend(mapOf(cellSlot to LockBackend.Qmi)))
+        assertEquals(LockBackend.Diag, nrClear.savedBackend(mapOf(cellSlot to LockBackend.Diag)))
+        assertTrue(nrFrequency.allowsDiagFallback())
+        assertFalse(nrClear.allowsDiagFallback())
         assertNull(BandLockCommand.restore(LockRadio.Lte, LockTarget.Frequency).qmi)
-        assertEquals(LockBackend.Diag, preferredLockBackend(null, emptyMap(), preferDiag = false))
+        assertEquals(LockBackend.Diag, preferredLockBackend(null, preferDiag = false))
     }
 }

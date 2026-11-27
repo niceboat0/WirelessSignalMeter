@@ -153,25 +153,32 @@ internal class BandLockViewModel(application: Application) : AndroidViewModel(ap
     ) {
         val plan = command.qmi
         val backends = qmiMutable.value.backends
-        val legacy = { run(command, collectorRunning = collectorRunning,
-            confirmOnDemand = true, onModemRestartRequested = onModemRestartRequested) }
-        if (plan == null || preferredLockBackend(plan, backends, preferDiag) == LockBackend.Diag) {
+        val legacy = {
+            run(
+                command,
+                collectorRunning = collectorRunning,
+                onModemRestartRequested = onModemRestartRequested,
+                confirmOnDemand = true,
+                preferDiag = preferDiag,
+            )
+        }
+        if (plan == null || preferredLockBackend(plan, preferDiag) == LockBackend.Diag) {
             legacy()
             return
         }
         val previous = plan.slot?.let(backends::get)
-        val fallback = legacy.takeIf { plan.allowsDiagFallback(backends) }
+        val fallback = legacy.takeIf { plan.allowsDiagFallback() }
         qmiRun(
             command.arguments.first(),
             plan.mode,
             R.string.lock_accepted,
             onUnavailable = fallback,
-            rejectedFallback = command.takeIf { plan.allowsDiagFallback(backends) },
+            rejectedFallback = command.takeIf { plan.allowsDiagFallback() },
         ) { step ->
             val result = plan.execute(beforeWrite = { rememberBackend(plan.slot, LockBackend.Qmi) }, run = step)
-            if (result.writeAttempted && result.mayFallbackToDiag) {
+            if (!result.outcome.accepted) {
                 rememberBackend(plan.slot, previous)
-            } else if (result.outcome.accepted && result.modeConfirmed && plan.restoring) {
+            } else if (result.modeConfirmed && plan.restoring) {
                 rememberBackend(plan.slot, null)
                 clearRelatedQmiSlots(plan.slot)
             }
@@ -207,6 +214,7 @@ internal class BandLockViewModel(application: Application) : AndroidViewModel(ap
             collectorRunning = collectorRunning,
             onModemRestartRequested = onModemRestartRequested,
             confirmOnDemand = true,
+            preferDiag = true,
         )
     }
 
@@ -305,6 +313,7 @@ internal class BandLockViewModel(application: Application) : AndroidViewModel(ap
         collectorRunning: Boolean = false,
         onModemRestartRequested: (() -> Unit)? = null,
         confirmOnDemand: Boolean = false,
+        preferDiag: Boolean = false,
     ) {
         val current = mutableState.value
         if (current.busy || qmiMutable.value.busy) return
@@ -356,10 +365,10 @@ internal class BandLockViewModel(application: Application) : AndroidViewModel(ap
                                 onModemRestartRequested = {
                                     withContext(Dispatchers.Main) { onModemRestartRequested?.invoke() }
                                 },
-                                executeQmiMode = if (fromConsole) null else ::runQmiMode,
+                                executeQmiMode = if (fromConsole || preferDiag) null else ::runQmiMode,
                             ) { step -> execute(step, recordDiagnostics = !fromConsole) }
                             when {
-                                execution.outcome.channelUnavailable || execution.outcome.baselineUnverified ->
+                                !execution.outcome.accepted || execution.outcome.channelUnavailable || execution.outcome.baselineUnverified ->
                                     rememberBackend(slot, previous)
                                 execution.outcome.accepted && execution.modeConfirmed == true &&
                                     command.qmi?.restoring == true -> rememberBackend(slot, null)

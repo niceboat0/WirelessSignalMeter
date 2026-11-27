@@ -216,6 +216,10 @@
     <string name="lock_scope">Qualcomm diag-router · primary modem stack. SIM selection is unavailable.</string>
     <string name="lock_refresh">Check device</string>
     <string name="lock_qmi_title">Instant lock (QMI)</string>
+    <string name="lock_backend_qmi">QMI (Instant)</string>
+    <string name="lock_backend_diag">DIAG (NV)</string>
+    <string name="lock_diag_only_hint">This target is only supported over DIAG (restarts modem).</string>
+    <string name="lock_confirm_cross_backend">Last lock used %1$s; executing with selected %2$s.</string>
     <string name="lock_prefer_diag">Prefer DIAG</string>
     <string name="lock_qmi_available">QMI NAS reachable</string>
     <string name="lock_qmi_unavailable">QMI NAS unreachable on this device</string>
