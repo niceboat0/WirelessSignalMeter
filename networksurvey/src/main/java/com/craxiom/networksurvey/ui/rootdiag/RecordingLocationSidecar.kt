@@ -94,7 +94,7 @@ internal class SurveyLocationModeMemory {
 internal fun sanitizeTaskId(taskId: String): String =
     taskId.replace(Regex("[^A-Za-z0-9._-]"), "_").ifEmpty { "task" }
 
-/** Stem shared by an air-interface file and its location sidecars. `.cqt.json` keeps both suffixes. */
+/** Drop one location suffix. `task.qmdl.cqt.json` stays `task.qmdl` so the plan file can use that air name. */
 internal fun committedStem(fileName: String): String = when {
     fileName.endsWith(".cqt.json") -> fileName.removeSuffix(".cqt.json")
     fileName.endsWith(".cqt-plan") -> fileName.removeSuffix(".cqt-plan")
@@ -104,11 +104,29 @@ internal fun committedStem(fileName: String): String = when {
     else -> fileName.substringBeforeLast('.')
 }
 
+/**
+ * Sidecars that belong to one air-interface file.
+ * QMDL and DLF of one task can both use the stem `task`, so each sidecar includes the
+ * air file name: `task.qmdl.gpx` versus `task.dlf.cqt.json`.
+ * The open segment still uses the active sidecar names.
+ */
+internal fun locationSidecarNames(airFileName: String): List<String> = when (airFileName) {
+    "active.qmdl", "active.dlf" -> listOf(
+        RecordingLocationSidecar.ACTIVE_GPX,
+        RecordingLocationSidecar.ACTIVE_CQT,
+        ACTIVE_CQT_PLAN,
+    )
+    else -> listOf("$airFileName.gpx", "$airFileName.cqt.json", "$airFileName.cqt-plan")
+}
+
 internal fun locationSidecarsFor(root: File, airFiles: List<File>): List<File> {
-    val suffixes = listOf(".gpx", ".cqt.json", ".cqt-plan")
-    return airFiles.map { committedStem(it.name) }.distinct().flatMap { stem ->
-        suffixes.map { File(root, stem + it) }
-    }.filter { file -> file.isFile && file.length() > 0L && airFiles.none { it.absolutePath == file.absolutePath } }
+    val active = airFiles.filter { it.name == "active.qmdl" || it.name == "active.dlf" }
+    return airFiles.flatMap { air ->
+        if (air.name.startsWith("active.") && active.size > 1 && air != active.first()) emptyList()
+        else locationSidecarNames(air.name)
+    }.map { File(root, it) }
+        .filter { it.isFile && it.length() > 0L }
+        .distinctBy { it.absolutePath }
         .sortedBy { it.name }
 }
 
@@ -246,7 +264,11 @@ internal class RecordingLocationSidecar(
         }
     }
 
-    fun finish(): File? = synchronized(lock) {
+    /**
+     * Archive this sidecar beside [airFileName] (`task.qmdl` or `task.dlf`).
+     * Without that name the file is still saved, but it is not paired to one format.
+     */
+    fun finish(airFileName: String? = null): File? = synchronized(lock) {
         val file = active ?: return null
         val id = taskId
         val currentMode = mode
@@ -278,7 +300,16 @@ internal class RecordingLocationSidecar(
             return null
         }
         val extension = if (currentMode == SurveyLocationMode.CQT) CQT_EXTENSION else GPX_EXTENSION
-        val dest = uniqueCommitted(id ?: "orphan", extension)
+        val paired = airFileName?.trim()?.takeIf { it.isNotEmpty() }
+        val dest = if (paired == null) uniqueCommitted(id ?: "orphan", extension) else {
+            val named = File(root, "$paired.$extension")
+            if (named.exists()) {
+                active = null
+                clearIdentity()
+                throw IOException("Location sidecar already exists for $paired")
+            }
+            named
+        }
         if (currentMode == SurveyLocationMode.CQT && id != null && currentClock != null) {
             val stem = committedStem(dest.name)
             val plan = File(root, ACTIVE_CQT_PLAN)
@@ -378,14 +409,15 @@ internal fun discardActiveLocationSidecars(root: File) {
     }
 }
 
-/** Move leftover sidecars next to the air file that was just archived under [stem]. */
-internal fun archiveActiveLocationSidecars(root: File, stem: String, rename: (File, File) -> Boolean) {
-    moveActiveSidecar(root, RecordingLocationSidecar.ACTIVE_GPX, stem, ".gpx", seal = true, rename)
-    moveActiveSidecar(root, RecordingLocationSidecar.ACTIVE_CQT, stem, ".cqt.json", seal = false, rename)
-    moveActiveSidecar(root, ACTIVE_CQT_PLAN, stem, ".cqt-plan", seal = false, rename)
+/** Move leftover sidecars onto [airFileName], for example `task.dlf.gpx` beside `task.dlf`. */
+internal fun archiveActiveLocationSidecars(root: File, airFileName: String, rename: (File, File) -> Boolean) {
+    moveActiveSidecar(root, RecordingLocationSidecar.ACTIVE_GPX, "$airFileName.gpx", seal = true, rename)
+    moveActiveSidecar(root, RecordingLocationSidecar.ACTIVE_CQT, "$airFileName.cqt.json", seal = false, rename)
+    moveActiveSidecar(root, ACTIVE_CQT_PLAN, "$airFileName.cqt-plan", seal = false, rename)
 }
 
-internal fun latestCommittedAirStem(root: File, taskId: String): String? {
+/** Latest air file for [taskId] that does not already have its own sidecar. */
+internal fun airFileNeedingSidecar(root: File, taskId: String): String? {
     val safe = sanitizeTaskId(taskId)
     return root.listFiles().orEmpty().mapNotNull { file ->
         if (!file.isFile || file.length() == 0L || file.name.startsWith("active.")) return@mapNotNull null
@@ -393,15 +425,16 @@ internal fun latestCommittedAirStem(root: File, taskId: String): String? {
         val stem = committedStem(file.name)
         if (stem != safe && !stem.startsWith("$safe-")) return@mapNotNull null
         val index = if (stem == safe) 1 else stem.removePrefix("$safe-").toIntOrNull() ?: return@mapNotNull null
-        stem to index
-    }.maxByOrNull { it.second }?.first
+        val owned = locationSidecarNames(file.name).any { File(root, it).isFile }
+        if (owned) return@mapNotNull null
+        index to file.name
+    }.maxByOrNull { it.first }?.second
 }
 
 private fun moveActiveSidecar(
     root: File,
     activeName: String,
-    stem: String,
-    suffix: String,
+    destName: String,
     seal: Boolean,
     rename: (File, File) -> Boolean,
 ) {
@@ -412,12 +445,8 @@ private fun moveActiveSidecar(
         return
     }
     if (seal) sealGpx(file)
-    var index = 1
-    var dest = File(root, stem + suffix)
-    while (dest.exists()) {
-        index++
-        dest = File(root, "$stem-$index$suffix")
-    }
+    val dest = File(root, destName)
+    if (dest.exists()) throw IOException("Location sidecar already exists")
     if (!rename(file, dest)) throw IOException("Unable to archive location sidecar")
 }
 

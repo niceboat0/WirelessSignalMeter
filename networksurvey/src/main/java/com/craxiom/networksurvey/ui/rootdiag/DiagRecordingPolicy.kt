@@ -142,12 +142,12 @@ internal class DiagRecordingSession(
         }
         when {
             archived.isNotEmpty() ->
-                archiveActiveLocationSidecars(root, committedStem(archived.first().name), rename)
+                archiveActiveLocationSidecars(root, archived.first().name, rename)
             sawAir -> discardActiveLocationSidecars(root)
             markerId != null -> {
-                val stem = latestCommittedAirStem(root, markerId)
-                if (stem == null) discardActiveLocationSidecars(root)
-                else archiveActiveLocationSidecars(root, stem, rename)
+                val airName = airFileNeedingSidecar(root, markerId)
+                if (airName == null) discardActiveLocationSidecars(root)
+                else archiveActiveLocationSidecars(root, airName, rename)
             }
         }
         if (taskMarker.exists() && !taskMarker.delete()) throw IOException("Unable to clear recording task marker")

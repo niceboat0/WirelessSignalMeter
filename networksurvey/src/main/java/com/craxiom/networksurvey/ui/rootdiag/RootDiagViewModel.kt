@@ -317,13 +317,20 @@ class RootDiagViewModel internal constructor(
             // An empty air segment is deleted; its sidecar is deleted with it.
             val open = recordingSession.isOpen()
             val bytes = if (open) recordingSession.activeFile.length() else 0L
-            try {
-                locationRecording.onSessionFinished(shouldRetainLocationSidecar(open, bytes))
-            } catch (error: Exception) {
-                timber.log.Timber.w(error, "Could not stop location sidecar")
+            val retain = shouldRetainLocationSidecar(open, bytes)
+            // Park first so the sidecar can take the air file's final name, including .qmdl versus .dlf.
+            runCatching { locationRecording.park() }.onFailure {
+                timber.log.Timber.w(it, "Could not stop location sidecar")
             }
             val retained = runCatching { recordingSession.finish() }.onFailure {
                 timber.log.Timber.w(it, "Could not archive recording file")
+            }
+            runCatching {
+                val airName = retained.getOrNull()?.name
+                if (retain && airName != null) locationRecording.archiveBeside(airName)
+                else locationRecording.discard()
+            }.onFailure {
+                timber.log.Timber.w(it, "Could not archive location sidecar")
             }
             val files = recordingSession.exportableRecordings()
             val outcome = when {

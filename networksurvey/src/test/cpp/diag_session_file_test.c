@@ -134,8 +134,8 @@ int main(void) {
     g_fd = -1;
     char saved_air[300], saved_side[300], saved_plan[300], orphan[300];
     snprintf(saved_air, sizeof(saved_air), "%s/keep-me.qmdl", g_dir);
-    snprintf(saved_side, sizeof(saved_side), "%s/keep-me.cqt.json", g_dir);
-    snprintf(saved_plan, sizeof(saved_plan), "%s/keep-me.cqt-plan", g_dir);
+    snprintf(saved_side, sizeof(saved_side), "%s/keep-me.qmdl.cqt.json", g_dir);
+    snprintf(saved_plan, sizeof(saved_plan), "%s/keep-me.qmdl.cqt-plan", g_dir);
     snprintf(orphan, sizeof(orphan), "%s/orphan.cqt.json", g_dir);
     if (rename(g_active, saved_air) != 0) fail("rename crash air");
     if (rename(side, saved_side) != 0) fail("rename crash sidecar");

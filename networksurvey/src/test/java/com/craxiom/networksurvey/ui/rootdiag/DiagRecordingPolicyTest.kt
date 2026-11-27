@@ -306,9 +306,9 @@ class DiagRecordingSessionTest {
         File(dir, RecordingLocationSidecar.ACTIVE_GPX).writeText("<gpx><trk><trkseg><trkpt lat=\"1\" lon=\"2\">")
         DiagRecordingSession(dir).recoverLeftoverActive()
         assertTrue(File(dir, "keep-me.qmdl").isFile)
-        assertTrue(File(dir, "keep-me.cqt.json").isFile)
-        assertTrue(File(dir, "keep-me.cqt-plan").isFile)
-        val track = File(dir, "keep-me.gpx").readText()
+        assertTrue(File(dir, "keep-me.qmdl.cqt.json").isFile)
+        assertTrue(File(dir, "keep-me.qmdl.cqt-plan").isFile)
+        val track = File(dir, "keep-me.qmdl.gpx").readText()
         assertTrue(track.contains("</gpx>"))
         assertFalse(dir.listFiles()!!.any { it.name.startsWith("orphan") || it.name.startsWith("active.") })
     }
@@ -343,16 +343,30 @@ class DiagRecordingSessionTest {
         val session = DiagRecordingSession(dir)
         session.start("task-1").writeBytes(byteArrayOf(1))
         session.finish()
-        File(dir, "task-1.gpx").writeText("<gpx></gpx>")
-        File(dir, "task-1.cqt.json").writeText("{}\n")
+        File(dir, "task-1.qmdl.gpx").writeText("<gpx></gpx>")
+        File(dir, "task-1.qmdl.cqt.json").writeText("{}\n")
+        File(dir, "task-1.gpx").writeText("<gpx>unpaired</gpx>")
         File(dir, "other.cqt.json").writeText("{}\n")
+        session.start("task-1", com.craxiom.networksurvey.ui.rootdiag.DiagLogFormat.Dlf).writeBytes(byteArrayOf(2))
+        val dlf = session.finish()!!
+        assertEquals("task-1.dlf", dlf.name)
+        File(dir, "task-1.dlf.cqt.json").writeText("{}\n")
         val air = session.exportableRecordings()
+        val qmdlSidecars = locationSidecarsFor(dir, listOf(File(dir, "task-1.qmdl"))).map { it.name }.toSet()
+        val dlfSidecars = locationSidecarsFor(dir, listOf(dlf)).map { it.name }.toSet()
+        assertEquals(setOf("task-1.qmdl.cqt.json", "task-1.qmdl.gpx"), qmdlSidecars)
+        assertEquals(setOf("task-1.dlf.cqt.json"), dlfSidecars)
+        assertFalse(qmdlSidecars.any { it.startsWith("task-1.dlf") })
+        assertFalse(dlfSidecars.any { it.startsWith("task-1.qmdl") || it == "task-1.gpx" })
         val plan = recordingExportPlan(air, locationSidecarsFor(dir, air), "20261127")!!
-        assertEquals(setOf("task-1.qmdl", "task-1.cqt.json", "task-1.gpx"), plan.files.map { it.name }.toSet())
+        assertEquals(
+            setOf("task-1.qmdl", "task-1.dlf", "task-1.qmdl.cqt.json", "task-1.qmdl.gpx", "task-1.dlf.cqt.json"),
+            plan.files.map { it.name }.toSet(),
+        )
         assertTrue(plan.zip)
-        assertEquals(1, plan.segments)
+        assertEquals(2, plan.segments)
         assertEquals("wireless-20261127-logs.zip", plan.suggestedName)
-        val alone = recordingExportPlan(air, emptyList(), "20261127")!!
+        val alone = recordingExportPlan(listOf(File(dir, "task-1.qmdl")), emptyList(), "20261127")!!
         assertFalse(alone.zip)
         assertEquals("wireless-20261127.qmdl", alone.suggestedName)
         assertNull(recordingExportPlan(emptyList(), listOf(File(dir, "other.cqt.json")), "20261127"))

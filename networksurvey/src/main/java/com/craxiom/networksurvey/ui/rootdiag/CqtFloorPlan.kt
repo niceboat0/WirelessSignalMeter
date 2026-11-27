@@ -1,14 +1,20 @@
 package com.craxiom.networksurvey.ui.rootdiag
 
 import kotlinx.coroutines.flow.MutableStateFlow
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.IOException
+import java.io.InputStream
 
 /** Logical pixel size of the blank sheet used when no floor-plan image is imported. */
 internal const val CQT_BLANK_WIDTH_PX = 1_000
 internal const val CQT_BLANK_HEIGHT_PX = 1_000
-internal const val CQT_FLOOR_IMAGE_MAX_BYTES = 12 * 1024 * 1024
-internal const val CQT_FLOOR_MAX_EDGE_PX = 8_192
+/** Compressed bytes kept for a plan. The import path never stores a larger original. */
+internal const val CQT_FLOOR_IMAGE_MAX_BYTES = 4 * 1024 * 1024
+/** Stop reading a content URI once it passes this, instead of buffering the rest. */
+internal const val CQT_FLOOR_IMPORT_MAX_BYTES = 32 * 1024 * 1024
+/** Longest edge of a decoded or stored floor plan. Full-resolution photos are sampled down to this. */
+internal const val CQT_FLOOR_MAX_EDGE_PX = 2_048
 internal const val ACTIVE_CQT_PLAN = "active.cqt-plan"
 
 internal enum class CqtFloorKind { BLANK, IMAGE }
@@ -105,6 +111,40 @@ private fun unescapeFloorName(value: String): String = buildString {
     }
 }
 
+/**
+ * Power-of-two sample size so a decoded bitmap stays within [maxEdge].
+ * Callers must pass this to the decoder. They must not allocate the source dimensions.
+ */
+internal fun floorPlanSampleSize(width: Int, height: Int, maxEdge: Int = CQT_FLOOR_MAX_EDGE_PX): Int {
+    if (width <= 0 || height <= 0 || maxEdge <= 0) return 1
+    var sample = 1
+    val largest = maxOf(width, height)
+    while (largest / sample > maxEdge) {
+        val next = sample shl 1
+        if (next <= sample) break
+        sample = next
+    }
+    return sample
+}
+
+/**
+ * Read [input] only while it stays within [maxBytes].
+ * A longer stream returns null and is not copied further.
+ */
+internal fun readAtMost(input: InputStream, maxBytes: Int): ByteArray? {
+    if (maxBytes < 0) return null
+    val out = ByteArrayOutputStream()
+    val buffer = ByteArray(8_192)
+    var total = 0
+    while (true) {
+        val count = input.read(buffer)
+        if (count < 0) return out.toByteArray()
+        if (count > maxBytes - total) return null
+        out.write(buffer, 0, count)
+        total += count
+    }
+}
+
 internal fun floorSourceName(raw: String?): String? {
     val base = raw?.substringAfterLast('/')?.substringAfterLast('\\')?.trim().orEmpty()
     val clean = base.filter { it.code >= 0x20 && it != '"' && it != '\\' }.take(80)
@@ -119,8 +159,11 @@ internal class CqtFloorPlanLibrary(private val directory: File) {
     fun recall(taskId: String): StoredCqtFloor {
         val meta = readMeta(taskId) ?: return StoredCqtFloor(CqtFloorPlan.blank(), null)
         if (meta.kind != CqtFloorKind.IMAGE) return StoredCqtFloor(CqtFloorPlan.blank(), null)
-        val bytes = imageFile(taskId).takeIf { it.isFile && it.length() > 0L }?.readBytes()
-            ?: return StoredCqtFloor(CqtFloorPlan.blank(), null)
+        val image = imageFile(taskId)
+        if (!image.isFile || image.length() <= 0L || image.length() > CQT_FLOOR_IMAGE_MAX_BYTES) {
+            return StoredCqtFloor(CqtFloorPlan.blank(), null)
+        }
+        val bytes = image.readBytes()
         return StoredCqtFloor(meta, bytes)
     }
 

@@ -160,14 +160,18 @@ internal class RecordingLocationCoordinator(
         )
     }
 
-    suspend fun onSessionFinished(retainSidecar: Boolean) {
+    /** Stop new fixes before the air file is renamed, without archiving the sidecar yet. */
+    fun park() {
         sidecar.stopAccepting()
         feed.stop()
         CqtFloorMarks.clear()
-        if (!retainSidecar) {
-            runCatching { sidecar.discard() }.onFailure { Timber.w(it, "Could not discard location sidecar") }
-            return
-        }
-        runCatching { sidecar.finish() }.onFailure { Timber.w(it, "Could not archive location sidecar") }
+    }
+
+    fun archiveBeside(airFileName: String) {
+        sidecar.finish(airFileName)
+    }
+
+    fun discard() {
+        sidecar.discard()
     }
 }

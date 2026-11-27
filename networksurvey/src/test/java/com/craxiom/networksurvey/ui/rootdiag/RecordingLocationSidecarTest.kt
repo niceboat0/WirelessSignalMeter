@@ -108,11 +108,38 @@ class RecordingLocationSidecarTest {
         val side = RecordingLocationSidecar(dir)
         side.open("task-1", SurveyLocationMode.DT, "clock-a")
         side.accept(fix())
-        val qmdl = session.finish()
-        val gpx = side.finish()
-        assertEquals("task-1.qmdl", qmdl?.name)
-        assertEquals("task-1.gpx", gpx?.name)
+        val qmdl = session.finish()!!
+        val gpx = side.finish(qmdl.name)!!
+        assertEquals("task-1.qmdl", qmdl.name)
+        assertEquals("task-1.qmdl.gpx", gpx.name)
         assertEquals(listOf("task-1.qmdl"), session.recordings().map { it.name })
+        assertEquals(listOf("task-1.qmdl.gpx"), locationSidecarsFor(dir, listOf(qmdl)).map { it.name })
+    }
+
+    @Test fun dlfSegmentDoesNotTakeTheQmdlSidecar() {
+        val dir = temp()
+        val session = DiagRecordingSession(dir)
+        session.start("task-1").writeBytes(byteArrayOf(1))
+        val drive = RecordingLocationSidecar(dir)
+        drive.open("task-1", SurveyLocationMode.DT, "clock-a")
+        drive.accept(fix())
+        val qmdl = session.finish()!!
+        drive.finish(qmdl.name)
+        session.start("task-1", DiagLogFormat.Dlf).writeBytes(byteArrayOf(2))
+        val point = RecordingLocationSidecar(dir)
+        point.open("task-1", SurveyLocationMode.CQT, "clock-a", CqtFloorPlan(CqtFloorKind.IMAGE, 20, 10, "plan"), byteArrayOf(4, 5))
+        assertTrue(point.mark(tap(x = 1.0, y = 2.0, width = 20, height = 10)))
+        val dlf = session.finish()!!
+        val json = point.finish(dlf.name)!!
+        assertEquals("task-1.dlf", dlf.name)
+        assertEquals("task-1.dlf.cqt.json", json.name)
+        assertTrue(File(dir, "task-1.dlf.cqt-plan").readBytes().contentEquals(byteArrayOf(4, 5)))
+        assertEquals(listOf("task-1.qmdl.gpx"), locationSidecarsFor(dir, listOf(qmdl)).map { it.name })
+        assertEquals(
+            setOf("task-1.dlf.cqt.json", "task-1.dlf.cqt-plan"),
+            locationSidecarsFor(dir, listOf(dlf)).map { it.name }.toSet(),
+        )
+        assertFalse(json.readText().contains("task-1.qmdl"))
     }
 
     @Test fun cqtStoresFloorTapsAndUndoWithoutSplittingTheAirFile() {

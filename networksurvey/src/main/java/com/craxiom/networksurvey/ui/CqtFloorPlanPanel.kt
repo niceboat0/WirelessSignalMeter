@@ -1,5 +1,6 @@
 package com.craxiom.networksurvey.ui
 
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.SystemClock
@@ -31,6 +32,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
@@ -41,6 +43,10 @@ import androidx.compose.ui.unit.dp
 import com.craxiom.networksurvey.R
 import com.craxiom.networksurvey.db.SurveyTaskStore
 import com.craxiom.networksurvey.ui.rootdiag.CQT_FLOOR_IMAGE_MAX_BYTES
+import com.craxiom.networksurvey.ui.rootdiag.CQT_FLOOR_IMPORT_MAX_BYTES
+import com.craxiom.networksurvey.ui.rootdiag.CQT_FLOOR_MAX_EDGE_PX
+import com.craxiom.networksurvey.ui.rootdiag.floorPlanSampleSize
+import com.craxiom.networksurvey.ui.rootdiag.readAtMost
 import com.craxiom.networksurvey.ui.rootdiag.CqtCanvasPoint
 import com.craxiom.networksurvey.ui.rootdiag.CqtFloorKind
 import com.craxiom.networksurvey.ui.rootdiag.CqtFloorMarks
@@ -225,18 +231,14 @@ private fun importFloorPlan(
     taskId: String,
     uri: Uri,
 ): Pair<CqtFloorPlan, ImageBitmap?> {
-    val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-        ?: throw IllegalArgumentException("image")
-    if (bytes.size > CQT_FLOOR_IMAGE_MAX_BYTES) {
-        throw IllegalArgumentException("large")
-    }
-    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) throw IllegalArgumentException("image")
+    val stream = context.contentResolver.openInputStream(uri) ?: throw IllegalArgumentException("image")
+    val raw = stream.use { readAtMost(it, CQT_FLOOR_IMPORT_MAX_BYTES) } ?: throw IllegalArgumentException("large")
+    val image = decodeFloorImage(raw) ?: throw IllegalArgumentException("image")
+    val bytes = encodeFloorImage(image)
     val plan = CqtFloorPlan(
         CqtFloorKind.IMAGE,
-        bounds.outWidth,
-        bounds.outHeight,
+        image.width,
+        image.height,
         floorSourceName(displayName(context, uri)),
     )
     if (CqtFloorMarks.sessionActive.value) {
@@ -245,7 +247,7 @@ private fun importFloorPlan(
         CqtFloorMarks.noteFloorEdited()
     }
     val stored = library.saveImage(taskId, plan.sourceName, plan.widthPx, plan.heightPx, bytes)
-    return stored to decodeFloorImage(bytes)
+    return stored to image
 }
 
 private fun displayName(context: android.content.Context, uri: Uri): String? =
@@ -256,12 +258,41 @@ private fun displayName(context: android.content.Context, uri: Uri): String? =
     }.getOrNull()
 
 internal fun decodeFloorImage(bytes: ByteArray): ImageBitmap? {
+    if (bytes.isEmpty() || bytes.size > CQT_FLOOR_IMPORT_MAX_BYTES) return null
     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
     BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
     if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
-    var sample = 1
-    val largest = maxOf(bounds.outWidth, bounds.outHeight)
-    while (largest / sample > 2_048) sample *= 2
-    val options = BitmapFactory.Options().apply { inSampleSize = sample }
-    return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)?.asImageBitmap()
+    val sample = floorPlanSampleSize(bounds.outWidth, bounds.outHeight, CQT_FLOOR_MAX_EDGE_PX)
+    val options = BitmapFactory.Options().apply {
+        inSampleSize = sample
+        inPreferredConfig = Bitmap.Config.ARGB_8888
+    }
+    val decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options) ?: return null
+    if (decoded.width <= CQT_FLOOR_MAX_EDGE_PX && decoded.height <= CQT_FLOOR_MAX_EDGE_PX) {
+        return decoded.asImageBitmap()
+    }
+    // inSampleSize can round up. Do not scale a bitmap that is still a full-resolution photo.
+    if (decoded.width > CQT_FLOOR_MAX_EDGE_PX * 2 || decoded.height > CQT_FLOOR_MAX_EDGE_PX * 2) {
+        decoded.recycle()
+        return null
+    }
+    val scale = CQT_FLOOR_MAX_EDGE_PX.toFloat() / maxOf(decoded.width, decoded.height)
+    val scaled = Bitmap.createScaledBitmap(
+        decoded,
+        (decoded.width * scale).toInt().coerceAtLeast(1),
+        (decoded.height * scale).toInt().coerceAtLeast(1),
+        true,
+    )
+    if (scaled != decoded) decoded.recycle()
+    return scaled.asImageBitmap()
+}
+
+private fun encodeFloorImage(image: ImageBitmap): ByteArray {
+    val stream = java.io.ByteArrayOutputStream()
+    if (!image.asAndroidBitmap().compress(Bitmap.CompressFormat.JPEG, 80, stream)) {
+        throw IllegalArgumentException("image")
+    }
+    val bytes = stream.toByteArray()
+    if (bytes.isEmpty() || bytes.size > CQT_FLOOR_IMAGE_MAX_BYTES) throw IllegalArgumentException("large")
+    return bytes
 }

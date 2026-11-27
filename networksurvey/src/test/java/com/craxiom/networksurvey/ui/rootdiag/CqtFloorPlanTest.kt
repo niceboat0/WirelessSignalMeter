@@ -8,6 +8,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.ByteArrayInputStream
 import java.io.File
 import kotlin.io.path.createTempDirectory
 
@@ -37,10 +38,27 @@ class CqtFloorPlanTest {
         assertNull(library.recall("task").image)
     }
 
+    @Test fun sampleSizeKeepsTheDecodedEdgeInsideTheCap() {
+        assertEquals(1, floorPlanSampleSize(1000, 800, 2048))
+        assertEquals(2, floorPlanSampleSize(4096, 3000, 2048))
+        assertEquals(4, floorPlanSampleSize(8000, 6000, 2048))
+        assertEquals(16, floorPlanSampleSize(20_000, 10_000, 2048))
+        assertEquals(1, floorPlanSampleSize(0, 100, 2048))
+        assertTrue(20_000 / floorPlanSampleSize(20_000, 10_000) <= CQT_FLOOR_MAX_EDGE_PX)
+    }
+
+    @Test fun readAtMostStopsBeforeBufferingTheRestOfALargeStream() {
+        val small = byteArrayOf(1, 2, 3)
+        assertTrue(readAtMost(ByteArrayInputStream(small), 4)!!.contentEquals(small))
+        assertNull(readAtMost(ByteArrayInputStream(ByteArray(10) { it.toByte() }), 4))
+        assertNull(readAtMost(ByteArrayInputStream(byteArrayOf(1)), -1))
+    }
+
     @Test fun imageLimitsAndSourceNameAreChecked() {
         val library = CqtFloorPlanLibrary(temp())
         assertTrue(runCatching { library.saveImage("task", "a.png", 0, 10, byteArrayOf(1)) }.isFailure)
         assertTrue(runCatching { library.saveImage("task", "a.png", 10, 10, ByteArray(0)) }.isFailure)
+        assertTrue(runCatching { library.saveImage("task", "a.png", 8_000, 6_000, byteArrayOf(1)) }.isFailure)
         assertEquals("plan.png", floorSourceName("C:\\maps\\plan.png"))
         assertNull(floorSourceName("   "))
         assertEquals(CqtFloorKind.BLANK, CqtFloorPlan.blank().kind)
