@@ -1,6 +1,7 @@
 package com.craxiom.networksurvey.ui.rootdiag
 
 import android.app.Application
+import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -81,13 +82,11 @@ class SignalPageReadingTest {
     @Test fun antennaMaskKeepsNonContiguousChainsOnTheSameSample() {
         val sample = JSONObject()
             .put("sinr", 12.5)
-            .put("sinr_agg", "max_rx")
             .put("sinr_src", "B193")
             .put("sinr_rx0", -20.0)
             .put("sinr_rx2", 12.5)
         val chains = antennaSinr(sample)
         assertEquals(listOf(0, 2), chains.map { it.index })
-        assertTrue(maxRxMatchesChains(sample.optDouble("sinr"), chains))
         assertEquals("SINR Rx2", antennaSinrText(chains[1]).first)
         assertEquals("12.5 dB", antennaSinrText(chains[1]).second)
     }
@@ -95,8 +94,17 @@ class SignalPageReadingTest {
     @Test fun maskWithoutRx0DoesNotInventRx0() {
         val chains = antennaSinr(JSONObject().put("sinr_rx1", 1.0).put("sinr_rx3", 4.0))
         assertEquals(listOf(1, 3), chains.map { it.index })
-        assertTrue(maxRxMatchesChains(4.0, chains))
-        assertFalse(maxRxMatchesChains(1.0, chains))
+        assertEquals(4.0, readHeadlineSinr(JSONObject().put("sinr", 4.0), 1.0))
+        assertEquals(1.0, readHeadlineSinr(JSONObject(), 1.0))
+    }
+
+    @Test fun headlineUsesReportedSinrInsteadOfMaximumAntennaChain() {
+        val sample = JSONObject()
+            .put("sinr", 4.0)
+            .put("sinr_agg", "max_rx")
+            .put("sinr_rx0", -12.0)
+            .put("sinr_rx3", 18.0)
+        assertEquals(4.0, readHeadlineSinr(sample, 1.0))
     }
 
     @Test fun bandwidthKeepsAgreedMhzAndShowsDisagreement() {
@@ -104,5 +112,26 @@ class SignalPageReadingTest {
         assertEquals("1.4 MHz", bandwidthMhzText(listOf(1.4, null)))
         assertEquals("40 MHz · 100 MHz", bandwidthMhzText(listOf(40.0, 100.0)))
         assertNull(bandwidthMhzText(listOf(0.0, 5000.0, null)))
+    }
+
+    @Test fun nrQualityUsesDistinctValuesFromLatestFlowReport() {
+        fun report(id: Long, vararg flows: Pair<Int, Int>): DiagRecord {
+            val entries = JSONArray()
+            flows.forEach { (qfi, quality) -> entries.put(JSONObject().put("qfi", qfi).put("5qi", quality)) }
+            return DiagRecord(id, id, JSONObject().put("flows", entries))
+        }
+
+        val latest = report(2, 4 to 9, 2 to 7, 1 to 7, 0 to 6, 5 to 0)
+        val earlier = report(1, 1 to 8)
+        assertEquals(listOf(7, 9), nasQualityValues(nr = true, session = null, reports = listOf(latest, earlier)))
+    }
+
+    @Test fun lteQualityUsesLatestValuePerBearerAndHidesDuplicates() {
+        fun bearer(id: Long, ebi: Int, quality: Int) =
+            DiagRecord(id, id, JSONObject().put("ebi", ebi).put("qci", quality))
+
+        val session = bearer(1, 5, 6)
+        val reports = listOf(bearer(4, 5, 9), bearer(3, 7, 1), bearer(2, 6, 9))
+        assertEquals(listOf(9, 1), nasQualityValues(nr = false, session = session, reports = reports))
     }
 }

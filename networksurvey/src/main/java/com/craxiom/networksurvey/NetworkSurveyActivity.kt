@@ -13,6 +13,8 @@ import android.location.LocationManager
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
+import android.os.Handler
+import android.os.HandlerThread
 import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.compose.setContent
@@ -38,6 +40,7 @@ import com.craxiom.networksurvey.ui.watchlist.WatchlistImportHolder
 import com.craxiom.networksurvey.util.NsUtils
 import com.craxiom.networksurvey.util.ThemePref
 import com.craxiom.networksurvey.util.PreferenceUtils
+import com.craxiom.networksurvey.util.FramePerformanceDiagnostics
 import com.craxiom.networksurvey.util.WatchlistDeepLinkHandler
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.Dispatchers
@@ -66,6 +69,11 @@ class NetworkSurveyActivity : AppCompatActivity(), StartupDialogActions {
     private var turnOnCdrLoggingOnNextServiceConnection = false
     private var gnssFailureListener: IGnssFailureListener? = null
     private var hasRequestedPermissions = false
+    private var frameMetricsThread: HandlerThread? = null
+    private var frameMetricsListening = false
+    private val frameMetricsListener = android.view.Window.OnFrameMetricsAvailableListener { _, metrics, dropped ->
+        FramePerformanceDiagnostics.record(metrics, dropped)
+    }
 
     /** 壁纸更换后重建界面的防抖时间戳 */
     private var lastWallpaperRefresh = 0L
@@ -187,6 +195,7 @@ class NetworkSurveyActivity : AppCompatActivity(), StartupDialogActions {
     override fun onResume() {
         super.onResume()
         isForeground = true
+        startFrameMetrics()
 
         if (missingAnyRegularPermissions()) showPermissionRationaleAndRequestPermissions()
 
@@ -209,6 +218,7 @@ class NetworkSurveyActivity : AppCompatActivity(), StartupDialogActions {
 
     override fun onPause() {
         isForeground = false
+        stopFrameMetrics()
         runCatching { unregisterReceiver(wallpaperChangedReceiver) }
         mapTrack.detach()
 
@@ -245,10 +255,28 @@ class NetworkSurveyActivity : AppCompatActivity(), StartupDialogActions {
     }
 
     override fun onDestroy() {
+        stopFrameMetrics()
         // Clear the GNSS failure listener to prevent callbacks to a destroyed activity
         networkSurveyService?.clearGnssFailureListener()
         networkSurveyService = null
         super.onDestroy()
+    }
+
+    private fun startFrameMetrics() {
+        if (frameMetricsListening) return
+        val thread = HandlerThread("frame-metrics").apply { start() }
+        frameMetricsThread = thread
+        window.addOnFrameMetricsAvailableListener(frameMetricsListener, Handler(thread.looper))
+        frameMetricsListening = true
+    }
+
+    private fun stopFrameMetrics() {
+        if (frameMetricsListening) {
+            window.removeOnFrameMetricsAvailableListener(frameMetricsListener)
+            frameMetricsListening = false
+        }
+        frameMetricsThread?.quitSafely()
+        frameMetricsThread = null
     }
 
     override fun onRequestPermissionsResult(

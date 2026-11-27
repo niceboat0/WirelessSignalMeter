@@ -3,11 +3,13 @@ package com.craxiom.networksurvey.ui.bandlock
 import android.app.Application
 import android.os.Build
 import android.os.SystemClock
+import androidx.annotation.StringRes
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.craxiom.networksurvey.BuildConfig
 import com.craxiom.networksurvey.R
 import com.craxiom.networksurvey.util.AppLogger
+import com.craxiom.networksurvey.util.DiagJournal
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -15,18 +17,20 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 import java.io.File
 import java.io.IOException
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
 
 internal enum class LockAvailability { Unchecked, Cached, Checking, Ready, Unavailable }
-/* QMI instant lock: a separate backend from the NV/EFS route, so its own state. */
 internal data class QmiLockState(
     val availability: LockAvailability = LockAvailability.Unchecked,
     val busy: Boolean = false,
     val log: String = "",
     val result: String? = null,
+    val backends: Map<QmiLockSlot, LockBackend> = emptyMap(),
+    val pendingDiagFallback: BandLockCommand? = null,
 )
 internal data class BandLockState(
     val availability: LockAvailability = LockAvailability.Unchecked,
@@ -54,7 +58,8 @@ internal class BandLockViewModel(application: Application) : AndroidViewModel(ap
         BuildConfig.VERSION_CODE, Build.FINGERPRINT, Build.SOC_MODEL,
     )
     private var collectorProved = false
-    private val qmiMutable = MutableStateFlow(QmiLockState())
+    private val backendPreferences = app.getSharedPreferences("band_lock_backend", 0)
+    private val qmiMutable = MutableStateFlow(QmiLockState(backends = loadBackends()))
     val qmi = qmiMutable.asStateFlow()
     internal var qmiRunner: QmiLockRunner = QmiLockRunner {
         File(app.applicationInfo.nativeLibraryDir, "libwireless_qmi_probe.so")
@@ -107,59 +112,174 @@ internal class BandLockViewModel(application: Application) : AndroidViewModel(ap
 
     fun clearLog() { if (!mutableState.value.busy) mutableState.value = mutableState.value.copy(log = "") }
 
-    /* ---- QMI instant lock (independent of the NV/EFS backend) ---- */
-
-    fun qmiCheck() = qmiRun(QmiLockCommand.probe())
-
-    fun qmiApplyBands(radio: LockRadio, bands: String) {
-        val arguments = runCatching { QmiLockCommand.applyBands(radio, bands) }.getOrNull()
-        if (arguments == null) {
-            qmiMutable.value = qmiMutable.value.copy(result = app.getString(R.string.lock_qmi_failed))
-            return
+    private fun loadBackends(): Map<QmiLockSlot, LockBackend> = buildMap {
+        for (radio in LockRadio.entries) for (target in LockTarget.entries) {
+            val slot = QmiLockSlot(radio, target)
+            val backend = backendPreferences.getString(slot.preferenceKey, null)
+            LockBackend.entries.firstOrNull { it.name == backend }?.let { put(slot, it) }
         }
-        qmiRun(arguments)
     }
 
-    fun qmiRestoreBands() = qmiRun(QmiLockCommand.restoreBands())
-
-    fun qmiLockCell(radio: LockRadio, channel: String, pci: String, scs: Int) {
-        val arguments = runCatching { QmiLockCommand.lockCell(radio, channel, pci, scs) }.getOrNull()
-        if (arguments == null) {
-            qmiMutable.value = qmiMutable.value.copy(result = app.getString(R.string.lock_qmi_failed))
-            return
+    private suspend fun rememberBackend(slot: QmiLockSlot?, backend: LockBackend?) {
+        if (slot == null || qmiMutable.value.backends[slot] == backend) return
+        withContext(Dispatchers.IO) {
+            val editor = backendPreferences.edit()
+            if (backend == null) editor.remove(slot.preferenceKey)
+            else editor.putString(slot.preferenceKey, backend.name)
+            // Persist before sending so that an unconfirmed write can still be cleared after a crash.
+            check(editor.commit()) { "Could not save lock backend" }
         }
-        qmiRun(arguments)
+        qmiMutable.update {
+            val backends = if (backend == null) it.backends - slot else it.backends + (slot to backend)
+            it.copy(backends = backends)
+        }
     }
 
-    fun qmiClearCell(radio: LockRadio) = qmiRun(QmiLockCommand.clearCell(radio))
+    fun checkPreferred(preferDiag: Boolean, collectorRunning: Boolean) {
+        if (preferDiag) {
+            refresh(collectorRunning)
+        } else {
+            qmiRun("probe", onUnavailable = { refresh(collectorRunning) }) { step ->
+                QmiLockExecution(step(QmiLockCommand.probe()))
+            }
+        }
+    }
+
+    fun runPreferred(
+        command: BandLockCommand,
+        preferDiag: Boolean,
+        collectorRunning: Boolean,
+        onModemRestartRequested: () -> Unit,
+    ) {
+        val plan = command.qmi
+        val backends = qmiMutable.value.backends
+        val legacy = { run(command, collectorRunning = collectorRunning,
+            confirmOnDemand = true, onModemRestartRequested = onModemRestartRequested) }
+        if (plan == null || preferredLockBackend(plan, backends, preferDiag) == LockBackend.Diag) {
+            legacy()
+            return
+        }
+        val previous = plan.slot?.let(backends::get)
+        val fallback = legacy.takeIf { plan.allowsDiagFallback(backends) }
+        qmiRun(
+            command.arguments.first(),
+            plan.mode,
+            R.string.lock_accepted,
+            onUnavailable = fallback,
+            rejectedFallback = command.takeIf { plan.allowsDiagFallback(backends) },
+        ) { step ->
+            val result = plan.execute(beforeWrite = { rememberBackend(plan.slot, LockBackend.Qmi) }, run = step)
+            if (result.writeAttempted && result.mayFallbackToDiag) {
+                rememberBackend(plan.slot, previous)
+            } else if (result.outcome.accepted && result.modeConfirmed && plan.restoring) {
+                rememberBackend(plan.slot, null)
+                clearRelatedQmiSlots(plan.slot)
+            }
+            result
+        }
+    }
+
+    private suspend fun clearRelatedQmiSlots(slot: QmiLockSlot?) {
+        if (slot == null) return
+        // bands-restore applies the modem's full hardware masks for both technologies.
+        val related = if (slot.target == LockTarget.Bands) {
+            QmiLockSlot(if (slot.radio == LockRadio.Nr) LockRadio.Lte else LockRadio.Nr, LockTarget.Bands)
+        } else slot.relatedQmiSlot()
+        if (related != null && qmiMutable.value.backends[related] == LockBackend.Qmi) {
+            rememberBackend(related, null)
+        }
+    }
 
     fun qmiClearLog() { if (!qmiMutable.value.busy) qmiMutable.value = qmiMutable.value.copy(log = "") }
 
-    private fun qmiRun(arguments: List<String>) {
-        if (qmiMutable.value.busy) return
+    internal fun dismissDiagFallback() {
+        qmiMutable.update { it.copy(pendingDiagFallback = null) }
+    }
+
+    internal fun retryPendingWithDiag(
+        collectorRunning: Boolean,
+        onModemRestartRequested: () -> Unit,
+    ) {
+        val command = qmiMutable.value.pendingDiagFallback ?: return
+        qmiMutable.update { it.copy(pendingDiagFallback = null, result = null) }
+        run(
+            command = command,
+            collectorRunning = collectorRunning,
+            onModemRestartRequested = onModemRestartRequested,
+            confirmOnDemand = true,
+        )
+    }
+
+    private fun qmiRun(
+        operation: String,
+        mode: LockNetworkMode? = null,
+        @StringRes success: Int? = null,
+        onUnavailable: (() -> Unit)? = null,
+        rejectedFallback: BandLockCommand? = null,
+        action: suspend (suspend (List<String>) -> QmiLockOutcome) -> QmiLockExecution,
+    ) {
+        if (qmiMutable.value.busy || mutableState.value.busy) return
         val started = SystemClock.elapsedRealtime()
-        val cmd = arguments.firstOrNull() ?: "?"
-        AppLogger.i(AppLogger.BAND_LOCK_TAG,
-            "run=$started backend=qmi cmd=$cmd stage=start model=${Build.MODEL} soc=${Build.SOC_MODEL} api=${Build.VERSION.SDK_INT}")
-        qmiMutable.value = qmiMutable.value.copy(busy = true, result = null)
+        fun report(stage: String, detail: String) {
+            DiagJournal.append(app, JSONObject().put("type", "band_lock").put("source", "qmi")
+                .put("run_id", started).put("operation", operation).put("stage", stage)
+                .put("detail", detail).put("t", System.currentTimeMillis()))
+        }
+        report("start", "model=${Build.MODEL} soc=${Build.SOC_MODEL} api=${Build.VERSION.SDK_INT}")
+        mutableState.update { it.copy(result = null) }
+        qmiMutable.update { it.copy(busy = true, result = null, pendingDiagFallback = null) }
         viewModelScope.launch {
-            val outcome = qmiRunner.run(arguments)
-            outcome.output.lineSequence().map { it.trim() }
-                .filter { it.startsWith("QMI ") || it.startsWith("VERDICT ") }
-                .take(16)
-                .forEach { line ->
-                    AppLogger.i(AppLogger.BAND_LOCK_TAG, "run=$started backend=qmi cmd=$cmd stage=native $line")
+            var fallback = false
+            try {
+                val execution = action { args ->
+                    val name = args.first()
+                    val requestedMode = if (name == "mode" || "--mode" in args) args.last() else null
+                    report("qmi_command", "command=$name mode=$requestedMode")
+                    qmiRunner.run(args).also { step ->
+                        report("qmi_result", "command=$name exit=${step.exit} verdict=${step.verdict} error=${step.errorCode}")
+                        step.output.lineSequence().filter { it.startsWith("QMI $name ") }
+                            .take(8).forEach { report("native", it.take(200)) }
+                        qmiMutable.update { it.copy(log = (it.log + step.output).takeLast(8000)) }
+                    }
                 }
-            AppLogger.i(AppLogger.BAND_LOCK_TAG,
-                "run=$started backend=qmi cmd=$cmd stage=finish exit=${outcome.exit} verdict=${outcome.verdict} " +
-                    "error=${outcome.errorCode} reachable=${outcome.reachable} elapsed_ms=${SystemClock.elapsedRealtime() - started}")
-            val current = qmiMutable.value
-            qmiMutable.value = current.copy(
-                busy = false,
-                availability = if (outcome.reachable) LockAvailability.Ready else LockAvailability.Unavailable,
-                log = (current.log + outcome.output).takeLast(8000),
-                result = qmiResultMessage(outcome),
-            )
+                val outcome = execution.outcome
+                fallback = onUnavailable != null && execution.mayFallbackToDiag
+                if (fallback) report("fallback", "QMI unavailable before write")
+                report("finish", "exit=${outcome.exit} verdict=${outcome.verdict} error=${outcome.errorCode} " +
+                    "reachable=${outcome.reachable} mode=${mode?.argument} " +
+                    "mode_confirmed=${execution.modeConfirmed.takeIf { mode != null }} " +
+                    "elapsed_ms=${SystemClock.elapsedRealtime() - started}")
+                if (mode != null && execution.modeConfirmed) mutableState.update { it.copy(appliedMode = mode) }
+                qmiMutable.update {
+                    it.copy(
+                        availability = when {
+                            outcome.reachable -> LockAvailability.Ready
+                            execution.mayFallbackToDiag -> LockAvailability.Unavailable
+                            else -> it.availability
+                        },
+                        result = when {
+                            fallback -> null
+                            execution.modeOutcome?.accepted == false -> app.getString(R.string.lock_mode_unconfirmed)
+                            mode != null && execution.modeConfirmed && operation != "mode" ->
+                                app.getString(R.string.lock_and_mode_accepted)
+                            outcome.accepted -> success?.let(app::getString)
+                            else -> qmiResultMessage(outcome)
+                        },
+                        pendingDiagFallback = rejectedFallback?.takeIf {
+                            execution.requiresDiagFallbackConfirmation
+                        } ?: it.pendingDiagFallback,
+                    )
+                }
+            } catch (cancelled: CancellationException) {
+                report("cancelled", "elapsed_ms=${SystemClock.elapsedRealtime() - started}")
+                throw cancelled
+            } catch (error: Exception) {
+                report("exception", "class=${error.javaClass.simpleName}")
+                qmiMutable.update { it.copy(result = app.getString(R.string.lock_qmi_failed)) }
+            } finally {
+                qmiMutable.update { it.copy(busy = false) }
+            }
+            if (fallback) onUnavailable?.invoke()
         }
     }
 
@@ -184,12 +304,14 @@ internal class BandLockViewModel(application: Application) : AndroidViewModel(ap
         fromConsole: Boolean = false,
         collectorRunning: Boolean = false,
         onModemRestartRequested: (() -> Unit)? = null,
+        confirmOnDemand: Boolean = false,
     ) {
         val current = mutableState.value
-        if (current.busy) return
+        if (current.busy || qmiMutable.value.busy) return
         val kind = BandLockVerification.writeKind(command)
-        val confirmCached = current.availability == LockAvailability.Cached && kind != LockWriteKind.Probe
-        if (!confirmCached) {
+        val needsConfirmation = kind != LockWriteKind.Probe && current.availability != LockAvailability.Ready &&
+            (current.availability == LockAvailability.Cached || confirmOnDemand)
+        if (!needsConfirmation) {
             val decision = writeDecision(command, current)
             if (decision != WriteDecision.Allowed) {
                 rejectWrite(kind, decision)
@@ -200,19 +322,20 @@ internal class BandLockViewModel(application: Application) : AndroidViewModel(ap
         collectorProved = collectorRunning
         val proof = BandLockSessionPolicy.plan(
             collectorRunning, commandRunner.helperConnected, current.channel,
-            if (probe || confirmCached) LockWriteKind.Probe else kind,
+            if (probe || needsConfirmation) LockWriteKind.Probe else kind,
         )
+        qmiMutable.update { it.copy(result = null) }
         mutableState.update {
             it.copy(
                 busy = true, result = null,
-                availability = if ((probe || confirmCached) && proof.announceRootDiagCheck)
+                availability = if ((probe || needsConfirmation) && proof.announceRootDiagCheck)
                     LockAvailability.Checking else it.availability,
             )
         }
         viewModelScope.launch {
             try {
                 BandLockVerification.executeWhenConfirmed(
-                    current.availability, kind,
+                    if (needsConfirmation) LockAvailability.Cached else current.availability, kind,
                     confirm = {
                         val check = BandLockCommand.probe(Build.MODEL, Build.SOC_MODEL)
                         val checked = BandLockExecution(execute(check, recordDiagnostics = !fromConsole))
@@ -226,12 +349,21 @@ internal class BandLockViewModel(application: Application) : AndroidViewModel(ap
                     execute = {
                         val decision = writeDecision(command, mutableState.value.copy(busy = false))
                         if (decision == WriteDecision.Allowed) {
+                            val slot = command.qmi?.slot
+                            val previous = slot?.let { qmiMutable.value.backends[it] }
+                            rememberBackend(slot, LockBackend.Diag)
                             val execution = command.executeWithMode(
                                 onModemRestartRequested = {
                                     withContext(Dispatchers.Main) { onModemRestartRequested?.invoke() }
                                 },
                                 executeQmiMode = if (fromConsole) null else ::runQmiMode,
                             ) { step -> execute(step, recordDiagnostics = !fromConsole) }
+                            when {
+                                execution.outcome.channelUnavailable || execution.outcome.baselineUnverified ->
+                                    rememberBackend(slot, previous)
+                                execution.outcome.accepted && execution.modeConfirmed == true &&
+                                    command.qmi?.restoring == true -> rememberBackend(slot, null)
+                            }
                             updateExecution(command, execution, fromConsole)
                         } else {
                             rejectWrite(kind, decision)

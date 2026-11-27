@@ -22,11 +22,9 @@ internal fun antennaSinr(data: JSONObject?): List<AntennaSinr> {
 internal fun antennaSinrText(chain: AntennaSinr): Pair<String, String> =
     "SINR Rx${chain.index}" to String.format(Locale.ROOT, "%.1f dB", chain.db)
 
-/** True when the headline is the max of the chains carried beside it. */
-internal fun maxRxMatchesChains(combined: Double?, chains: List<AntennaSinr>): Boolean {
-    if (combined == null || !combined.isFinite() || chains.isEmpty()) return false
-    return abs(combined - chains.maxOf { it.db }) < 0.051
-}
+internal fun readHeadlineSinr(data: JSONObject?, lteRrcSinr: Double?): Double? =
+    data?.optDouble("sinr", Double.NaN)?.takeIf { it.isFinite() }
+        ?: lteRrcSinr?.takeIf { it.isFinite() }
 
 /**
  * Bandwidths already decoded as MHz. Values outside 1.4..400 are not shown.

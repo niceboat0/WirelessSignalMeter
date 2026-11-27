@@ -17,14 +17,14 @@ internal open class QmiLockRunner(private val helper: () -> File) {
         withContext(Dispatchers.IO) {
             val binary = helper()
             if (!binary.isFile) {
-                return@withContext QmiLockOutcome(1, "", "unavailable", false)
+                return@withContext QmiLockOutcome.unavailable()
             }
             val command = "exec " + (listOf(binary.absolutePath) + arguments).joinToString(" ", transform = ::quote)
             val started = SystemClock.elapsedRealtime()
             val process = try {
                 ProcessBuilder("su", "-c", command).redirectErrorStream(true).start()
             } catch (error: IOException) {
-                return@withContext QmiLockOutcome(1, "", "unavailable", false)
+                return@withContext QmiLockOutcome.unavailable()
             }
             val output = StringBuilder()
             try {
@@ -56,20 +56,7 @@ internal open class QmiLockRunner(private val helper: () -> File) {
                 val exit = runCatching {
                     if (process.waitFor(2, java.util.concurrent.TimeUnit.SECONDS)) process.exitValue() else 1
                 }.getOrDefault(1)
-                val lines = output.lineSequence().map { it.trim() }.toList()
-                val verdictLine = lines.lastOrNull { it.startsWith("VERDICT ") }
-                val verdict = when {
-                    verdictLine != null -> verdictLine.removePrefix("VERDICT ").substringBefore(' ')
-                    lines.any { it.contains("fail=lookup") || it.contains("fail=connect") } -> "unavailable"
-                    else -> "fail"
-                }
-                val reachable = verdict in setOf("ok", "rejected")
-                /* A rejected command prints "QMI <cmd> qmi_error=N"; surface the
-                   code so the UI can explain it instead of saying "failed". */
-                val errorCode = lines.asSequence()
-                    .mapNotNull { ERROR_CODE.find(it)?.groupValues?.get(1)?.toIntOrNull() }
-                    .lastOrNull()
-                QmiLockOutcome(exit, output.toString(), verdict, reachable, errorCode)
+                QmiLockOutcome.read(exit, output.toString(), arguments.first())
             } finally {
                 runCatching { process.destroy() }
             }
@@ -77,7 +64,4 @@ internal open class QmiLockRunner(private val helper: () -> File) {
 
     private fun quote(text: String) = "'" + text.replace("'", "'\\''") + "'"
 
-    private companion object {
-        val ERROR_CODE = Regex("qmi_error=(\\d+)")
-    }
 }

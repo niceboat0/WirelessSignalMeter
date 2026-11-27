@@ -21,6 +21,7 @@ kotlin = "2.4.21"
 # (older KSP cannot handle Kotlin 2.4's default module names containing ':').
 ksp = "2.3.10"
 licenseReport = "3.1.4"
+dexlib2 = "3.0.3"
 
 # Library version groups (shared across multiple library entries)
 hilt = "2.60.1"
@@ -64,6 +65,7 @@ barista = "4.3.0"
 truth = "1.4.5"
 
 [libraries]
+android-tools-dexlib2 = { module = "com.android.tools.smali:smali-dexlib2", version.ref = "dexlib2" }
 miuix-ui = { module = "top.yukonga.miuix.kmp:miuix-ui-android", version.ref = "miuix" }
 miuix-preference = { module = "top.yukonga.miuix.kmp:miuix-preference-android", version.ref = "miuix" }
 miuix-blur = { module = "top.yukonga.miuix.kmp:miuix-blur-android", version.ref = "miuix" }

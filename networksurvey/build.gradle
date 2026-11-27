@@ -9,12 +9,14 @@ plugins {
 
 import com.github.jk1.license.filter.LicenseBundleNormalizer
 import com.github.jk1.license.render.SimpleHtmlReportRenderer
+import com.android.build.api.artifact.SingleArtifact
+import com.android.build.api.variant.BuiltArtifactsLoader
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.gradle.process.ExecOperations
 import org.gradle.api.file.ConfigurableFileCollection
 import javax.inject.Inject
 
-def appVersion = "1.2.0"
+def appVersion = "1.2.1"
 base {
     archivesName = "$applicationName-$appVersion"
 }
@@ -47,7 +49,7 @@ android {
         applicationId "com.wireless.signalmeter.new"
         minSdkVersion 33
         targetSdkVersion 37
-        versionCode 120
+        versionCode 121
         versionName appVersion
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         testInstrumentationRunnerArguments clearPackageData: 'true'
@@ -211,6 +213,61 @@ android.applicationVariants.configureEach { variant ->
     }
 }
 
+abstract class VerifyApkDexMethodSizes extends DefaultTask {
+    @InputDirectory
+    @PathSensitive(PathSensitivity.RELATIVE)
+    abstract DirectoryProperty getApkDirectory()
+
+    @Internal
+    abstract Property<BuiltArtifactsLoader> getBuiltArtifactsLoader()
+
+    @InputFile
+    @PathSensitive(PathSensitivity.RELATIVE)
+    abstract RegularFileProperty getCheckerSource()
+
+    @Classpath
+    abstract ConfigurableFileCollection getCheckerClasspath()
+
+    @Inject
+    abstract ExecOperations getExecOperations()
+
+    @TaskAction
+    void verify() {
+        def apks = builtArtifactsLoader.get().load(apkDirectory.get())?.elements?.collect { it.outputFile }
+        if (!apks) {
+            throw new GradleException("No APK outputs found in ${apkDirectory.get().asFile}")
+        }
+        def javaExecutable = new File(
+            System.getProperty("java.home"),
+            "bin/java${System.getProperty("os.name").toLowerCase(Locale.ROOT).contains("windows") ? ".exe" : ""}",
+        )
+        execOperations.exec {
+            commandLine javaExecutable.absolutePath,
+                "--class-path", checkerClasspath.asPath, checkerSource.get().asFile.absolutePath
+            args(apks)
+        }
+    }
+}
+
+def dexSizeChecker = configurations.create("dexSizeChecker") {
+    canBeConsumed = false
+}
+
+androidComponents.onVariants(androidComponents.selector().all()) { variant ->
+    def variantName = variant.name.capitalize()
+    def verify = tasks.register("verify${variantName}DexMethodSizes", VerifyApkDexMethodSizes) {
+        group = "verification"
+        description = "Checks all packaged DEX methods against the ART compiler size limit."
+        apkDirectory.set(variant.artifacts.get(SingleArtifact.APK.INSTANCE))
+        builtArtifactsLoader.set(variant.artifacts.builtArtifactsLoader)
+        checkerSource.set(rootProject.layout.projectDirectory.file("tools/CheckApkDexMethodSizes.java"))
+        checkerClasspath.from(dexSizeChecker)
+    }
+    tasks.configureEach { task ->
+        if (task.name == "assemble${variantName}") task.finalizedBy(verify)
+    }
+}
+
 configurations.configureEach {
     exclude group: 'com.google.android.gms', module: 'play-services-ads'
     exclude group: 'com.google.android.gms', module: 'play-services-ads-identifier'
@@ -219,6 +276,8 @@ configurations.configureEach {
 }
 
 dependencies {
+    add(dexSizeChecker.name, libs.android.tools.dexlib2)
+
     implementation(libs.androidx.appcompat)
     implementation(libs.timber)
     implementation(libs.material)

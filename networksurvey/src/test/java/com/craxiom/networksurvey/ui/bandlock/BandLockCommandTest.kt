@@ -114,7 +114,6 @@ class BandLockCommandTest {
         val lock = BandLockCommand.apply(LockRadio.Nr, LockTarget.Bands, "78", "", "", 30)
         val scenarios = listOf(
             lock to BandLockOutcome(1, "RESULT restart_sent\n"),
-            BandLockCommand.restore(LockRadio.Nr, LockTarget.Bands) to BandLockOutcome(0, "RESULT restart_sent\n"),
             BandLockCommand.console("nr-band 78") to BandLockOutcome(0, "RESULT restart_sent\n"),
         )
         for ((command, outcome) in scenarios) {
@@ -126,6 +125,35 @@ class BandLockCommandTest {
             assertEquals(listOf(command), commands)
             assertEquals(null, result.modeConfirmed)
         }
+    }
+
+    @Test
+    fun restoreReturnsToAutomaticModeAfterTheModemRestart() = runBlocking {
+        val restore = BandLockCommand.restore(LockRadio.Nr, LockTarget.Bands)
+        val commands = mutableListOf<List<String>>()
+        val result = restore.executeWithMode(
+            pause = { if (it != 5_000L) error("Unexpected wait $it") },
+            onModemRestartRequested = {},
+        ) {
+            commands += it.arguments
+            if (it == restore) BandLockOutcome(0, "RESULT restart_sent\n")
+            else BandLockOutcome(0, "RESULT accepted\n")
+        }
+        assertEquals(listOf(listOf("nr-band-restore"), listOf("mode", "auto")), commands)
+        assertEquals(true, result.modeConfirmed)
+    }
+
+    @Test
+    fun restoreDoesNotConfirmWhenAutomaticModeIsRejected() = runBlocking {
+        val restore = BandLockCommand.restore(LockRadio.Nr, LockTarget.Bands)
+        val result = restore.executeWithMode(
+            pause = {},
+            onModemRestartRequested = {},
+        ) {
+            if (it == restore) BandLockOutcome(0, "RESULT accepted\n")
+            else BandLockOutcome(7, "No recognized modem acknowledgement.\n")
+        }
+        assertEquals(false, result.modeConfirmed)
     }
 
     @Test
