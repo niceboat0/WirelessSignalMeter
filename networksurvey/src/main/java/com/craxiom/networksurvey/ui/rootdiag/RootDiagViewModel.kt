@@ -1627,8 +1627,12 @@ private fun AndroidLteSinrReader.Sample.toDiagnosticJson() = JSONObject().apply 
     put("selected_source", selectedSource())
 }
 
+/* "head" is the unknown-layout byte dump (see root_diag.c unknown_layout).
+   It holds layout bytes only, no subscriber identity, so excluding it made
+   every layout question unanswerable offline -- the dump was decoded and
+   then discarded at export time. */
 private val excludedDiagnosticKeys = setOf(
-    "ncgi", "nci", "nci_hex", "cid", "ci", "tac", "call_id", "raw", "head", "access",
+    "ncgi", "nci", "nci_hex", "cid", "ci", "tac", "call_id", "raw", "access",
     "reason_hdr", "reason", "dnn", "apn", "imsi", "imei", "tmsi", "ue_identity", "uper_hex", "decoded_tree",
     "from", "to", "contact", "via", "uri", "ip", "impu", "impi", "msisdn", "phone", "user", "p_asserted",
 )
