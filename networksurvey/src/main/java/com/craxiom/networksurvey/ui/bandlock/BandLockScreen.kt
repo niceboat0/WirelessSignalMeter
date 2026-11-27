@@ -189,6 +189,7 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
                             "kirin_unsupported" -> R.string.lock_reason_kirin
                             "unverified_model" -> R.string.lock_reason_unverified
                             "no_diag_channel" -> R.string.lock_reason_no_channel
+                            "no_lock_capability" -> R.string.lock_reason_no_capability
                             else -> R.string.lock_reason_unknown
                         }), style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant)

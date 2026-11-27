@@ -1,6 +1,7 @@
 package com.craxiom.networksurvey.ui.bandlock
 
 import android.os.SystemClock
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -19,6 +20,13 @@ internal class BandLockHelperSession(
     private val helper: () -> File,
     private val directory: () -> File,
     private val identityText: () -> String?,
+    private val startProcess: (List<String>) -> Process = { arguments ->
+        ProcessBuilder(
+            "su",
+            "-c",
+            "exec " + arguments.joinToString(" ", transform = ::quoteArgument),
+        ).redirectErrorStream(true).start()
+    },
 ) : BandLockCommandRunner {
     private val gate = Any()
     private var held: Process? = null
@@ -77,9 +85,7 @@ internal class BandLockHelperSession(
         val arguments = mutableListOf(binary.absolutePath, "--state-dir", stateDir.absolutePath, "--session")
         plan.knownChannel?.let { arguments += listOf("--channel", it) }
         val running = try {
-            ProcessBuilder("su", "-c", "exec " + arguments.joinToString(" ", transform = ::quote))
-                .redirectErrorStream(true)
-                .start()
+            startProcess(arguments)
         } catch (error: IOException) {
             diagnostic("helper_launch_failed")
             sessionFile.delete()
@@ -88,6 +94,11 @@ internal class BandLockHelperSession(
         synchronized(gate) { held = running }
         val startup = try {
             readUntil(running, started, onLine, diagnostic, waitForConnect = true)
+        } catch (cancelled: CancellationException) {
+            diagnostic("helper_cancelled")
+            close()
+            sessionFile.delete()
+            throw cancelled
         } catch (error: IOException) {
             diagnostic("helper_io_error")
             close()
@@ -128,6 +139,10 @@ internal class BandLockHelperSession(
         }
         val read = try {
             readUntil(running, started, onLine, diagnostic, waitForConnect = false)
+        } catch (cancelled: CancellationException) {
+            diagnostic("helper_cancelled")
+            close()
+            throw cancelled
         } catch (error: IOException) {
             diagnostic("helper_io_error")
             close()
@@ -201,8 +216,6 @@ internal class BandLockHelperSession(
         return frame
     }
 
-    private fun quote(text: String) = "'" + text.replace("'", "'\\''") + "'"
-
     private class ReadFrame {
         val output = StringBuilder()
         var connected = false
@@ -210,3 +223,5 @@ internal class BandLockHelperSession(
         var processExit: Int? = null
     }
 }
+
+private fun quoteArgument(text: String) = "'" + text.replace("'", "'\\''") + "'"

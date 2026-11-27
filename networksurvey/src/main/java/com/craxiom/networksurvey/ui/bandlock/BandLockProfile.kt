@@ -51,7 +51,10 @@ internal object BandLockProfiles {
 
         val verified = model.uppercase() in verifiedModels || socKey in verifiedSocs
         val adapter = "qualcomm-diag"
-        return if (verified && capsPositive >= 0) {
+        if (capsPositive <= 0) {
+            return BandLockProfile(LockSupportLevel.Unsupported, adapter, channelName, "no_lock_capability")
+        }
+        return if (verified) {
             BandLockProfile(LockSupportLevel.Verified, adapter, channelName)
         } else {
             BandLockProfile(LockSupportLevel.ProbeOnly, adapter, channelName, "unverified_model")
