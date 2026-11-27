@@ -332,7 +332,7 @@ static void jb_i(struct jb *j, const char *k, long long v) {
 static void jb_emit(struct jb *j) { jb_add(j, "}"); emit_locked(j->b); }
 
 #define QMDL_LIMIT (128LL * 1024 * 1024)
-static int g_qmdl_fd = -1, g_qmdl_error, g_qmdl_limit;
+static int g_qmdl_fd = -1, g_qmdl_error, g_qmdl_limit, g_qmdl_raw;
 static long long g_qmdl_bytes, g_qmdl_packets;
 static uint8_t g_qmdl_buffer[256 * 1024];
 static size_t g_qmdl_pending_bytes;
@@ -386,15 +386,40 @@ static void qmdl_flush(int fd) {
     g_qmdl_pending_packets = 0;
 }
 
+/* DLF keeps the DCI log item unchanged: little-endian total length, log code,
+   8-byte timestamp, payload, concatenated back to back. No HDLC, no CRC, and
+   no 0x10 0x00 command header. 0x7D and 0x7E stay literal. This is the record
+   sequence described by QCSuper --dlf-dump/--dlf-read (GPLv3) and SCAT
+   parse_dlf (GPL-2.0-or-later). The writer below is independent of those
+   programs and does not include their code. */
+static int dlf_record_ok(const uint8_t *rec, uint16_t len) {
+    if (!rec || len < 12) return 0;
+    uint16_t declared = (uint16_t)rec[0] | ((uint16_t)rec[1] << 8);
+    return declared == len;
+}
+
 static void qmdl_write_locked(const uint8_t *rec, uint16_t len) {
     if (g_qmdl_fd < 0 || g_qmdl_limit || g_qmdl_error) return;
-    size_t max_size = 2 * ((size_t)len + 6) + 1;
-    if (max_size > sizeof(g_qmdl_buffer) - g_qmdl_pending_bytes) {
-        qmdl_flush(g_qmdl_fd);
-        if (g_qmdl_error) return;
+    size_t size;
+    if (g_qmdl_raw) {
+        /* A mismatched length would make the next record unreadable. Drop it. */
+        if (!dlf_record_ok(rec, len)) return;
+        size = len;
+        if (size > sizeof(g_qmdl_buffer) - g_qmdl_pending_bytes) {
+            qmdl_flush(g_qmdl_fd);
+            if (g_qmdl_error) return;
+        }
+        if (g_qmdl_bytes + (long long)size > QMDL_LIMIT) { g_qmdl_limit = 1; return; }
+        for (size_t i = 0; i < size; i++) g_qmdl_buffer[g_qmdl_pending_bytes + i] = rec[i];
+    } else {
+        size_t max_size = 2 * ((size_t)len + 6) + 1;
+        if (max_size > sizeof(g_qmdl_buffer) - g_qmdl_pending_bytes) {
+            qmdl_flush(g_qmdl_fd);
+            if (g_qmdl_error) return;
+        }
+        size = qmdl_frame(rec, len, g_qmdl_buffer + g_qmdl_pending_bytes);
+        if (g_qmdl_bytes + (long long)size > QMDL_LIMIT) { g_qmdl_limit = 1; return; }
     }
-    size_t size = qmdl_frame(rec, len, g_qmdl_buffer + g_qmdl_pending_bytes);
-    if (g_qmdl_bytes + (long long)size > QMDL_LIMIT) { g_qmdl_limit = 1; return; }
     g_qmdl_pending_bytes += size;
     g_qmdl_pending_packets++;
     g_qmdl_bytes += (long long)size;
@@ -6193,10 +6218,14 @@ static void qmdl_stop_mask_worker(void) {
 
 static void qmdl_start(const char *path) {
     if (!path || g_qmdl_fd >= 0) return;
+    const char *end = path;
+    while (*end) end++;
+    int raw = end - path >= 4 && end[-4] == '.' && end[-3] == 'd' && end[-2] == 'l' && end[-1] == 'f';
     pthread_mutex_lock(&g_mu);
     g_qmdl_packets = g_qmdl_bytes = 0;
     g_qmdl_pending_bytes = g_qmdl_pending_packets = 0;
     g_qmdl_limit = g_qmdl_error = 0;
+    g_qmdl_raw = raw;
     int fd = open(path, O_WRONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK);
     struct stat info;
     if (fd < 0 || fstat(fd, &info) != 0) g_qmdl_error = errno;
@@ -6225,7 +6254,7 @@ static void qmdl_stop(int requested) {
 }
 
 int main(int argc, char **argv) {
-    const char *qmdl_path = argc == 2 ? argv[1] : NULL;
+    const char *record_dir = argc == 2 ? argv[1] : NULL;
     setvbuf(stdout, NULL, _IOLBF, 0);
     signal(SIGPIPE, SIG_IGN);
     struct sigaction stop = { .sa_handler = on_sig };
@@ -6266,8 +6295,13 @@ int main(int argc, char **argv) {
             ssize_t n = read(STDIN_FILENO, cmd, sizeof(cmd));
             if (n <= 0) break;
             for (ssize_t i = 0; i < n; i++) {
-                if (cmd[i] == 'Q') qmdl_start(qmdl_path);
-                else if (cmd[i] == 'S') qmdl_stop(1);
+                if (cmd[i] == 'Q' || cmd[i] == 'D') {
+                    char path[1024];
+                    if (!record_dir || !record_dir[0]) continue;
+                    int n = snprintf(path, sizeof path, "%s/active.%s", record_dir,
+                                     cmd[i] == 'D' ? "dlf" : "qmdl");
+                    if (n > 0 && n < (int)sizeof path) qmdl_start(path);
+                } else if (cmd[i] == 'S') qmdl_stop(1);
             }
         } else if (ready > 0 && input.revents != 0) break;
         if (ready < 0 && errno != EINTR) break;
