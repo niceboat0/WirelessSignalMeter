@@ -410,13 +410,14 @@ static void unknown_layout(uint16_t code, uint32_t ver, const uint8_t *body, int
         for (int i = 0; i < s->nwarned; i++) if (s->warned_vers[i] == ver) return;
         if (s->nwarned < 8) s->warned_vers[s->nwarned++] = ver;
     }
-    /* The first 16 body bytes are enough to settle layout questions offline
-       (count-byte position, header stride, version field) without exporting
-       the whole payload; full frames are already preserved by QMDL capture.
-       Layout failures are deduplicated per (code, ver), so this stays a
-       handful of one-line records per session. */
-    char head[16 * 3 + 1] = {0};
-    int hn = (blen > 16) ? 16 : blen;
+    /* The first 64 body bytes settle layout questions offline: header, the
+       version field, and at least the first record of a 24-byte-stride carrier
+       table (0xB9A7 header 24 + carrier 24). A 16-byte head was not enough to
+       tell which carrier field a v0x30002 table failed on. Full frames are
+       already preserved by QMDL capture. Layout failures are deduplicated per
+       (code, ver), so this stays a handful of one-line records per session. */
+    char head[64 * 3 + 1] = {0};
+    int hn = (blen > 64) ? 64 : blen;
     if (hn < 0 || !body) hn = 0;
     static const char hex[] = "0123456789abcdef";
     for (int i = 0; i < hn; i++) {

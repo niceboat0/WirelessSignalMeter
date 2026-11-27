@@ -733,6 +733,20 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
         var overlong = false
         var lastFlush = 0L
         var lastHeartbeat = SystemClock.elapsedRealtime()
+        /* Liveness diagnostics. A 2026-11-27 export showed a run that stayed
+           "running" for 223 s while its last status was at 29 s: the loop ran
+           but the heartbeat path never fired. These markers make the stall
+           point identifiable offline instead of guessed. */
+        var loopBeatAt = SystemClock.elapsedRealtime()
+        var phaseMarker = "start"
+        var linesSinceStatus = 0L
+        var lastLineType = ""
+        var slowLines = 0
+        var slowestLineMs = 0L
+        var slowestLineType = ""
+        var slowPublishes = 0
+        var slowestPublishMs = 0L
+        var exitReason = "loop"
         val lastChartRecords = mutableMapOf<String, Long>()
         val lastEventStates = mutableMapOf<String, String>()
         val recentRrc = mutableMapOf<String, JSONObject>()
@@ -970,6 +984,7 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
                     status = next
                     errorCode = value.optInt("rc").takeIf { it != 0 }
                     lastCollectorStatusAtElapsed = now
+                    linesSinceStatus = 0L
                     hasModemPackets = value.optLong("pkts") > 0
                     lastHeartbeat = now
                     overlayDropped = value.optLong("decode_dropped")
@@ -1404,11 +1419,29 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
                                 if (startupLog.size == 5) startupLog.removeFirst()
                                 startupLog.addLast(text.removePrefix(DIAG_LOG_PREFIX).take(512))
                             } else if (text.startsWith("{")) {
-                                try {
-                                    receive(JSONObject(text))
-                                } catch (_: org.json.JSONException) {
-                                    invalidLineCount++
-                                }
+                                val lineEntered = SystemClock.elapsedRealtime()
+                                phaseMarker = "decode"
+                                val parsed = try { JSONObject(text) } catch (_: org.json.JSONException) { null }
+                                if (parsed != null) {
+                                    val lineType = parsed.optString("type")
+                                    try {
+                                        receive(parsed)
+                                    } catch (_: org.json.JSONException) {
+                                        invalidLineCount++
+                                    }
+                                    val lineCost = SystemClock.elapsedRealtime() - lineEntered
+                                    linesSinceStatus++
+                                    if (lineType.isNotEmpty()) lastLineType = lineType
+                                    if (lineType == "status") linesSinceStatus = 0
+                                    if (lineCost >= SLOW_LINE_MS) {
+                                        slowLines++
+                                        if (lineCost > slowestLineMs) {
+                                            slowestLineMs = lineCost
+                                            slowestLineType = lineType
+                                        }
+                                    }
+                                } else invalidLineCount++
+                                phaseMarker = "read"
                             }
                         }
                         if (overlong) invalidLineCount++
@@ -1419,18 +1452,27 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
                     } else overlong = true
                 }
                 val now = SystemClock.elapsedRealtime()
+                loopBeatAt = now
+                phaseMarker = "publish"
                 if (now - lastFlush >= 400) {
                     publish(now)
                     lastFlush = now
+                    val publishCost = SystemClock.elapsedRealtime() - now
+                    if (publishCost >= SLOW_LINE_MS) {
+                        slowPublishes++
+                        if (publishCost > slowestPublishMs) slowestPublishMs = publishCost
+                    }
                 }
-                if (!running.isAlive && size == 0) break
+                phaseMarker = "read"
+                if (!running.isAlive && size == 0) { exitReason = "eof"; break }
                 if (qmdlDeadline?.let { now >= it } == true) {
+                    exitReason = "qmdl_deadline"
                     blockQmdlAutoStart()
                     restartAfterStop = DiagRecordingPolicy.shouldListen(currentMode()) && !pausedByUser
                     break
                 }
                 val timeout = if (status == RootDiagStatus.Checking) 25_000 else 16_000
-                if (now - lastHeartbeat >= timeout) break
+                if (now - lastHeartbeat >= timeout) { exitReason = "heartbeat_timeout"; break }
                 if (size < buffer.size) delay(40) else yield()
             } while (true)
             status = when (status) {
@@ -1447,6 +1489,22 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
             publish(SystemClock.elapsedRealtime())
             throw cancelled
         } finally {
+            runCatching {
+                val exitedAt = SystemClock.elapsedRealtime()
+                run.put("end_detail", JSONObject()
+                    .put("reason", exitReason)
+                    .put("phase", phaseMarker)
+                    .put("since_beat_ms", exitedAt - loopBeatAt)
+                    .put("since_status_ms", if (lastCollectorStatusAtElapsed > 0) exitedAt - lastCollectorStatusAtElapsed else -1L)
+                    .put("lines_since_status", linesSinceStatus)
+                    .put("last_type", lastLineType)
+                    .put("slow_lines", slowLines)
+                    .put("slowest_line_ms", slowestLineMs)
+                    .put("slowest_line_type", slowestLineType)
+                    .put("slow_publishes", slowPublishes)
+                    .put("slowest_publish_ms", slowestPublishMs)
+                    .put("invalid_lines", invalidLineCount))
+            }
             run.put("ended_ms", System.currentTimeMillis()).put("end_state", status.name)
             withContext(NonCancellable + Dispatchers.IO) {
                 process?.let {
@@ -1516,6 +1574,9 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
         const val MAX_NEIGHBOR_SAMPLES_PER_CODE = 6
         val neighborProbeSampleCodes = setOf("0xB119", "0xB123", "0xB96A", "0xB96D", "0xB96E", "0xB96F", "0xB992")
         const val MAX_LINE_BYTES = 540_672
+        /* A decoded line that takes longer than this is recorded as a slow line;
+           the count and the worst type pin a stall to a message class. */
+        const val SLOW_LINE_MS = 200L
         const val MAX_DETAIL_CHARS = 12_000_000
         const val MAX_BROADCAST_CELLS = 12
         val measurementContextReset = setOf(
@@ -1566,8 +1627,12 @@ private fun AndroidLteSinrReader.Sample.toDiagnosticJson() = JSONObject().apply 
     put("selected_source", selectedSource())
 }
 
+/* "head" is the unknown-layout byte dump (see root_diag.c unknown_layout).
+   It holds layout bytes only, no subscriber identity, so excluding it made
+   every layout question unanswerable offline -- the dump was decoded and
+   then discarded at export time. */
 private val excludedDiagnosticKeys = setOf(
-    "ncgi", "nci", "nci_hex", "cid", "ci", "tac", "call_id", "raw", "head", "access",
+    "ncgi", "nci", "nci_hex", "cid", "ci", "tac", "call_id", "raw", "access",
     "reason_hdr", "reason", "dnn", "apn", "imsi", "imei", "tmsi", "ue_identity", "uper_hex", "decoded_tree",
     "from", "to", "contact", "via", "uri", "ip", "impu", "impi", "msisdn", "phone", "user", "p_asserted",
 )
