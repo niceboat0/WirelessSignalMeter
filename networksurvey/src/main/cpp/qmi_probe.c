@@ -245,13 +245,15 @@ static void print_ssp_state(const char *tag, const uint8_t *buf, size_t len) {
 
 /* Best-effort independent NR-SA (0x2F) / NR-NSA (0x30) SSP writes. Some
  * modems read only 0x2B; others evaluate 0x2F/0x30 and reject or accept them
- * separately from 0x2B. Never fails a command whose 0x2B write succeeded. */
-static void apply_nr_domains(int sd, uint32_t txn_base, const char *cmd, const uint8_t nr_mask[64]) {
+ * separately from 0x2B. Returns the number of domains that succeeded. */
+static int apply_nr_domains(int sd, uint32_t txn_base, const char *cmd, const uint8_t nr_mask[64],
+        enum qp_result *last_fail_result, uint16_t *last_fail_error) {
     static const struct { const char *name; uint8_t tag; } domains[] = {
         { "nr_sa", QP_TLV_SSP_NR_SA_SET },
         { "nr_nsa", QP_TLV_SSP_NR_NSA_SET },
     };
     static uint8_t msg[QMI_MAX];
+    int ok = 0;
     for (int i = 0; i < 2; i++) {
         int qn = (int)qp_nas_ssp_set_nr_tag(msg, txn_base + (uint32_t)i, NULL, nr_mask, domains[i].tag, -1);
         int qreply = 0;
@@ -262,10 +264,42 @@ static void apply_nr_domains(int sd, uint32_t txn_base, const char *cmd, const u
         }
         uint16_t err = 0;
         enum qp_result r = qp_read_result(msg, (size_t)qreply, &err);
-        if (r == QP_SUCCESS) printf("QMI %s %s=ok\n", cmd, domains[i].name);
-        else if (r == QP_REJECTED) printf("QMI %s %s=rejected(qmi_error=%u)\n", cmd, domains[i].name, (unsigned)err);
-        else printf("QMI %s %s=malformed\n", cmd, domains[i].name);
+        if (r == QP_SUCCESS) {
+            printf("QMI %s %s=ok\n", cmd, domains[i].name);
+            ok++;
+        } else {
+            if (r == QP_REJECTED) printf("QMI %s %s=rejected(qmi_error=%u)\n", cmd, domains[i].name, (unsigned)err);
+            else printf("QMI %s %s=malformed\n", cmd, domains[i].name);
+            if (last_fail_result) *last_fail_result = r;
+            if (last_fail_error) *last_fail_error = err;
+        }
     }
+    return ok;
+}
+
+static int apply_nr_combined(int sd, uint32_t txn, const char *cmd, const uint8_t nr_mask[64],
+        enum qp_result *out_result, uint16_t *out_error) {
+    static uint8_t msg[QMI_MAX];
+    int qn = (int)qp_nas_ssp_set(msg, txn, NULL, nr_mask, -1);
+    int qreply = 0;
+    int te = nas_exchange(sd, msg, qn, &qreply);
+    if (te) {
+        printf("QMI %s nr_combined=transport_error:%s\n", cmd, strerror(te));
+        if (out_result) *out_result = QP_MALFORMED;
+        if (out_error) *out_error = 0;
+        return 0;
+    }
+    uint16_t err = 0;
+    enum qp_result r = qp_read_result(msg, (size_t)qreply, &err);
+    if (r == QP_SUCCESS) {
+        printf("QMI %s nr_combined=ok\n", cmd);
+        return 1;
+    }
+    if (r == QP_REJECTED) printf("QMI %s nr_combined=rejected(qmi_error=%u)\n", cmd, (unsigned)err);
+    else printf("QMI %s nr_combined=malformed\n", cmd);
+    if (out_result) *out_result = r;
+    if (out_error) *out_error = err;
+    return 0;
 }
 
 /* Read back 0x0034 immediately after a band write so logs verify what the
@@ -282,7 +316,8 @@ static void readback_ssp(int sd, uint32_t txn) {
     uint16_t err = 0;
     enum qp_result r = qp_read_result(msg, (size_t)qreply, &err);
     if (r != QP_SUCCESS) {
-        printf("QMI readback fail=%s qmi_error=%u\n", verdict_of(r, err), (unsigned)err);
+        if (r == QP_REJECTED) printf("QMI readback fail=rejected qmi_error=%u\n", (unsigned)err);
+        else printf("QMI readback fail=malformed\n");
         return;
     }
     print_ssp_state("readback", msg, (size_t)qreply);
@@ -306,43 +341,57 @@ static int run_lock_command(int argc, char **argv) {
 
     uint8_t buf[QMI_MAX];
     int n = 0, reply = 0;
-    uint8_t lte_mask[8] = {0}, nr_mask[64] = {0};
-    int use_lte = 0, use_nr = 0;
+    uint8_t lte_mask[8] = {0}, lte_ext_mask[32] = {0}, nr_mask[64] = {0};
+    int use_lte = 0, use_lte_ext = 0, use_nr = 0;
 
     /* Hardware capability (DMS): the modem's own supported bands. Needed for
        bands-hw and for bands-restore, whose masks must stay inside it: an
        all-ones restore is rejected by the modem (qmi_error=3 INTERNAL). */
     if (need_dms) {
-        uint8_t req[16], dms_reply[2048];
+        /* nas_exchange receives into the same buffer it sends from, so it
+           must be QMI_MAX bytes (using a 16B req buffer overflows the stack). */
+        static uint8_t dms_buf[QMI_MAX];
         int dms_len = 0;
-        int qn = (int)qp_dms_get_bands(req, 1);
-        int transport = nas_exchange(dms, req, qn, &dms_len);
+        int qn = (int)qp_dms_get_bands(dms_buf, 1);
+        int transport = nas_exchange(dms, dms_buf, qn, &dms_len);
         if (transport) {
-            printf("QMI %s fail=hw_capability transport\n", cmd);
+            printf("QMI %s fail=hw_capability transport=%s\n", cmd, strerror(transport));
+            printf("VERDICT fail\n");
             if (sd >= 0) close(sd);
             close(dms);
             return 9;
         }
         uint16_t qerr = 0;
-        if (qp_read_result(dms_reply, (size_t)dms_len, &qerr) != QP_SUCCESS) {
-            printf("QMI %s fail=hw_capability qmi_error=%u\n", cmd, (unsigned)qerr);
+        enum qp_result dms_res = qp_read_result(dms_buf, (size_t)dms_len, &qerr);
+        if (dms_res != QP_SUCCESS) {
+            if (dms_res == QP_REJECTED)
+                printf("QMI %s fail=hw_capability qmi_error=%u\n", cmd, (unsigned)qerr);
+            else
+                printf("QMI %s fail=hw_capability malformed reply=%d\n", cmd, dms_len);
+            printf("VERDICT %s\n", dms_res == QP_REJECTED ? "rejected" : "fail");
             if (sd >= 0) close(sd);
             close(dms);
             return 9;
         }
         const uint8_t *v = NULL;
         uint16_t len = 0;
-        if (qp_find_tlv(dms_reply, (size_t)dms_len, QP_DMS_TLV_LTE, &v, &len) && len >= 8) {
-            for (int i = 0; i < 8; i++) lte_mask[i] = v[i];
-        } else if (qp_find_tlv(dms_reply, (size_t)dms_len, QP_DMS_TLV_LTE_LIST, &v, &len)) {
-            qp_mask_from_band_list(v, len, lte_mask, 8);
+        if (qp_find_tlv(dms_buf, (size_t)dms_len, QP_DMS_TLV_LTE, &v, &len) && len >= 8) {
+            for (int i = 0; i < 8; i++) {
+                lte_mask[i] = v[i];
+                lte_ext_mask[i] = v[i];
+            }
         }
-        if (qp_find_tlv(dms_reply, (size_t)dms_len, QP_DMS_TLV_NR_LIST, &v, &len)) {
+        if (qp_find_tlv(dms_buf, (size_t)dms_len, QP_DMS_TLV_LTE_LIST, &v, &len)) {
+            qp_mask_from_band_list(v, len, lte_ext_mask, 32);
+            for (int i = 0; i < 8; i++) lte_mask[i] |= lte_ext_mask[i];
+        }
+        for (int i = 8; i < 32; i++) if (lte_ext_mask[i]) { use_lte_ext = 1; break; }
+        if (qp_find_tlv(dms_buf, (size_t)dms_len, QP_DMS_TLV_NR_LIST, &v, &len)) {
             qp_mask_from_band_list(v, len, nr_mask, 64);
             for (int i = 0; i < 64; i++) if (nr_mask[i]) use_nr = 1;
         }
         char lte_csv[256], nr_csv[1024];
-        qp_format_band_list(lte_mask, 8, lte_csv, sizeof lte_csv);
+        qp_format_band_list(use_lte_ext ? lte_ext_mask : lte_mask, use_lte_ext ? 32 : 8, lte_csv, sizeof lte_csv);
         qp_format_band_list(nr_mask, 64, nr_csv, sizeof nr_csv);
         if (!strcmp(cmd, "bands-hw")) {
             printf("QMI hw lte=0x%016llx\n", (unsigned long long)mask64(lte_mask));
@@ -361,14 +410,20 @@ static int run_lock_command(int argc, char **argv) {
     }
 
     if (!strcmp(cmd, "bands-restore")) {
-        if (!mask64(lte_mask)) {
+        if (!mask64(lte_mask) && !use_lte_ext) {
             printf("QMI bands-restore fail=hw_capability empty_lte\n");
+            printf("VERDICT fail\n");
             if (sd >= 0) close(sd);
             close(dms);
             return 9;
         }
         use_lte = 1;
-        n = (int)qp_nas_ssp_set(buf, 2, lte_mask, use_nr ? nr_mask : NULL, -1);
+        /* Restore LTE first (no NR TLV here), then NR combined/SA/NSA separately
+         * so a firmware rejection on one NR domain never blocks LTE or the other
+         * NR domains. Never send 0x15 and 0x24 together. */
+        n = use_lte_ext
+            ? (int)qp_nas_ssp_set_ext_lte(buf, 2, lte_ext_mask, NULL, -1)
+            : (int)qp_nas_ssp_set(buf, 2, lte_mask, NULL, -1);
     } else if (!strcmp(cmd, "bands-set")) {
         if (argc < 3) {
             printf("QMI bands-set fail=usage\n"); close(sd); return 5;
@@ -491,8 +546,21 @@ static int run_lock_command(int argc, char **argv) {
                     (unsigned)qp_read16(v), (unsigned)qp_read32(v + 6), (unsigned)qp_read32(v + 2));
         }
     }
-    if (result == QP_SUCCESS && (!strcmp(cmd, "bands-set") || !strcmp(cmd, "bands-restore"))) {
-        if (use_nr) apply_nr_domains(sd, 10, cmd, nr_mask);
+    if (result == QP_SUCCESS && !strcmp(cmd, "bands-set")) {
+        if (use_nr) apply_nr_domains(sd, 10, cmd, nr_mask, NULL, NULL);
+        readback_ssp(sd, 20);
+    } else if (result == QP_SUCCESS && !strcmp(cmd, "bands-restore")) {
+        printf("QMI bands-restore lte=ok\n");
+        if (use_nr) {
+            enum qp_result nr_res = QP_MALFORMED;
+            uint16_t nr_err = 0;
+            int nr_ok = apply_nr_combined(sd, 3, cmd, nr_mask, &nr_res, &nr_err);
+            nr_ok += apply_nr_domains(sd, 10, cmd, nr_mask, &nr_res, &nr_err);
+            if (nr_ok == 0) {
+                result = nr_res;
+                error = nr_err;
+            }
+        }
         readback_ssp(sd, 20);
     }
     printf("VERDICT %s%s\n", verdict_of(result, error),

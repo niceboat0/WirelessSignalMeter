@@ -10,6 +10,8 @@ import androidx.lifecycle.viewModelScope
 import com.craxiom.networksurvey.BuildConfig
 import com.craxiom.networksurvey.db.SurveyTaskStore
 import com.craxiom.networksurvey.db.recallSurveyLocationMode
+import com.craxiom.networksurvey.db.recallSurveyRecordingFormat
+import com.craxiom.networksurvey.db.rememberSurveyRecordingFormat
 import com.craxiom.networksurvey.db.toJson
 import com.craxiom.networksurvey.model.SurveyEvent
 import com.craxiom.networksurvey.model.SurveyTask
@@ -279,6 +281,9 @@ class RootDiagViewModel internal constructor(
 
     internal fun startQmdl(format: DiagLogFormat = DiagLogFormat.Qmdl) {
         recordingFormat = format
+        activeTask?.id?.let { id ->
+            runCatching { rememberSurveyRecordingFormat(app, id, format.name) }
+        }
         requestQmdlStart(manual = true)
     }
 
@@ -286,6 +291,15 @@ class RootDiagViewModel internal constructor(
         DiagRecordingPolicy.recordingTaskId(currentMode(), activeTask, manual = true, blockedTaskId = null)
 
     private fun requestQmdlStart(manual: Boolean) {
+        if (!manual) {
+            val task = activeTask
+            if (task == null || !task.needLog) return
+            val chosen = DiagRecordingPolicy.automaticRecordingFormat(
+                true,
+                recallSurveyRecordingFormat(app, task.id),
+            ) ?: return
+            recordingFormat = chosen
+        }
         val taskId = DiagRecordingPolicy.recordingTaskId(currentMode(), activeTask, manual, qmdlAutoStartBlockedTask)
             ?: return
         if (capture?.isStopping != false || signalState.value.status != RootDiagStatus.Running ||

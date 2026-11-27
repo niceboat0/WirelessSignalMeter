@@ -217,7 +217,7 @@
     <string name="lock_mode_unconfirmed">锁定配置已确认，但未确认制式切换。请查看执行记录或手动切换制式。</string>
     <string name="lock_and_mode_accepted">锁定和制式切换均获基带确认，请核对实际驻留小区。</string>
     <string name="tool_road_coverage_title">测试任务</string>
-    <string name="tool_road_coverage_description">管理测试任务，回放路测轨迹与事件。</string>
+    <string name="tool_road_coverage_description">管理测试任务，回放本机打点与事件。</string>
     <string name="road_import">导入 CSV</string>
     <string name="road_reload">加载本机打点</string>
     <string name="road_export">导出路线</string>
@@ -225,16 +225,29 @@
     <string name="road_import_failed">请选择含 WGS84 经纬度、时间和信号值的 UTF‑8 CSV，最多 50,000 行。</string>
     <string name="road_export_failed">无法导出路线</string>
     <string name="road_exported">路线已保存</string>
-    <string name="road_empty">在基站地图授权定位并开启自动打点，或导入已有的信号 CSV。</string>
+    <string name="road_empty">在基站地图授权定位并开启地图自动打点（保存在本机供回放，不是 GPX），或导入已有的信号 CSV。</string>
     <string name="road_track_picker">路线 %1$d/%2$d ▾</string>
     <string name="road_recent_limit">显示最近的 50,000 个打点</string>
     <string name="road_play">播放 10×</string>
-    <string name="road_pause">暂停</string>
+    <string name="road_pause">暂停回放</string>
     <string name="road_summary">%1$d 个采样点 · %2$s 公里</string>
     <string name="road_weak_summary">平均 RSRP %1$s · 低于 −110 dBm 占 %2$s</string>
     <string name="road_weak_sections">弱覆盖路段（%1$d）</string>
-    <string name="road_start_recording">继续自动打点</string>
-    <string name="road_stop_recording">暂停打点并加载路线</string>
+    <string name="road_start_recording">继续地图自动打点</string>
+    <string name="road_stop_recording">停止地图自动打点并加载回放</string>
+    <string name="road_map_mark_hint">本页菜单里的地图自动打点写入本机打点库，供回放使用。它不是 GPX 路测轨迹，也不是空口录制。</string>
+    <string name="road_task_active_hint">「结束任务」会停止正在进行的空口录制。</string>
+    <string name="road_task_create_title">新建测试任务</string>
+    <string name="road_task_create_confirm">创建任务</string>
+    <string name="road_task_create_and_record">创建并开始录制</string>
+    <string name="road_task_name">任务名称</string>
+    <string name="road_task_log_title">此任务录制空口</string>
+    <string name="road_task_log_on_hint">创建后按下面所选的 QMDL 或 DLF 写空口文件。基带监听已在运行时才会开始；监听停着时不会写文件。这不是地图打点。结束任务会停掉这段录制。信令页可以停止当前段，或在停止后再选格式开始下一段。</string>
+    <string name="road_task_log_off_hint">不会自动写空口文件。之后仍可在信令页选择 QMDL 或 DLF，再开始录制。</string>
+    <string name="road_task_format">空口格式</string>
+    <string name="road_task_status_log_on">将录制空口</string>
+    <string name="road_task_status_log_off">不自动录制空口</string>
+    <string name="road_task_status_log_format">空口 %1$s</string>
     <string name="road_options">回放选项</string>
     <string name="road_statistics">统计</string>
     <string name="road_task_idle">无进行中的任务</string>
@@ -946,10 +959,10 @@
     <string name="diag_denied">Root 未授权或授权超时</string>
     <string name="diag_starting">正在连接高通诊断</string>
     <string name="diag_root_active">高通 DIAG · Root 已连接</string>
-    <string name="diag_stopped">Root 采集已暂停</string>
+    <string name="diag_stopped">基带监听已停止</string>
     <string name="diag_start_failed">高通诊断启动失败</string>
     <string name="diag_error_code">诊断错误码 %1$d</string>
-    <string name="diag_pause">暂停采集</string>
+    <string name="diag_pause">停止基带监听</string>
     <string name="diag_retry">重新检测 Root</string>
     <string name="diag_clear">清空列表</string>
     <string name="diag_root_source">Root · DIAG</string>
@@ -1147,6 +1160,10 @@
     <string name="diag_qmdl_exported">已导出原始记录</string>
     <string name="diag_qmdl_exporting">正在导出原始记录 · %1$d%%</string>
     <string name="diag_qmdl_export_failed">原始记录导出失败</string>
+    <string name="diag_air_starting">正在开始录制 %1$s…</string>
+    <string name="diag_air_stopping">正在结束 %1$s 录制…</string>
+    <string name="diag_control_hint">「开始录制」和「停止录制」只开关空口文件，开始前要选择 QMDL 或 DLF。「停止基带监听」会停掉整个 DIAG，不是只暂停写文件。</string>
+    <string name="diag_record_needs_task">没有进行中的测试任务时不能开始录制。实时查看也不会新建空口文件。</string>
     <string name="diag_export_subtitle">近期信令和解析状态</string>
     <string name="diag_export_explanation">将近期诊断记录保存为 JSONL 文件。常规导出已省略用户及小区标识。原始 QMDL 不会脱敏。</string>
     <string name="diag_export_include_mr">包含少量测量原始样本（MR、DIAG 邻区包，可能含小区标识）</string>
@@ -1164,9 +1181,9 @@
 
     <string name="diag_bg_notification_title">正在采集 DIAG</string>
     <string name="diag_bg_notification_text">熄屏或切到其他应用后仍会继续采集。强制停止应用后采集会结束。</string>
-    <string name="diag_bg_stop">停止采集</string>
+    <string name="diag_bg_stop">停止基带监听</string>
     <string name="diag_bg_title">后台采集</string>
-    <string name="diag_bg_subtitle">切到后台或熄屏后继续 DIAG 实时监听。仅测试任务可录制 QMDL。</string>
+    <string name="diag_bg_subtitle">切到后台或熄屏后继续基带监听。这项设置不会开始空口录制。</string>
     <string name="diag_overlay_title">采集悬浮窗</string>
     <string name="diag_overlay_subtitle">显示可拖动的小型状态窗。需要系统“显示在其他应用上层”权限，应用不会自动跳转设置页。</string>
     <string name="diag_overlay_need_permission">在系统设置中允许“显示在其他应用上层”之前，悬浮窗不会开启。本应用不会自动打开该页面。</string>
@@ -1244,10 +1261,12 @@
     <string name="diag_overlay_recording">正在录制原始记录</string>
     <string name="diag_overlay_listening">实时查看</string>
     <string name="diag_overlay_standby">待机</string>
-    <string name="diag_bg_notification_title_task">测试任务采集中</string>
-    <string name="diag_bg_notification_text_task">正在为测试任务采集 DIAG 数据。</string>
-    <string name="diag_bg_notification_title_listen">DIAG 实时监听</string>
-    <string name="diag_bg_notification_text_listen">正在监听基带数据，未录制测试任务。</string>
+    <string name="diag_bg_notification_title_task">任务进行中</string>
+    <string name="diag_bg_notification_text_task">测试任务已开始，尚未写入空口文件。基带监听仍在进行。</string>
+    <string name="diag_bg_notification_title_listen">实时查看</string>
+    <string name="diag_bg_notification_text_listen">正在监听基带数据。没有进行中的测试任务，也没有写入空口文件。</string>
+    <string name="diag_bg_notification_text_recording">正在把基带数据写入 QMDL 或 DLF。</string>
+    <string name="diag_bg_notification_text_standby">基带监听已停止，没有在写空口文件。</string>
 
 
     <string name="update_install_permission">请允许此应用安装未知来源应用，返回后再次点击更新。</string>

@@ -38,14 +38,14 @@ class CaptureServiceNotificationTest {
             CaptureServiceNotification.startSurvey(survey, ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION, "Recording")
             assertEquals(survey.getString(R.string.network_survey_notification_title), title())
 
-            CaptureServiceNotification.startDiag(diag, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE, false)
+            CaptureServiceNotification.startDiag(diag, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE, "listening")
             assertEquals(shadowOf(survey).lastForegroundNotificationId, shadowOf(diag).lastForegroundNotificationId)
-            assertEquals(diag.getString(R.string.diag_bg_notification_title_listen), title())
+            assertEquals(diag.getString(R.string.diag_overlay_listening), title())
 
             CaptureServiceNotification.stopSurvey(survey)
             assertTrue(shadowOf(survey).isForegroundStopped)
             assertFalse(shadowOf(diag).isForegroundStopped)
-            assertEquals(diag.getString(R.string.diag_bg_notification_title_listen), title())
+            assertEquals(diag.getString(R.string.diag_overlay_listening), title())
 
             CaptureServiceNotification.startSurvey(survey, ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION, "Recording")
             CaptureServiceNotification.stopDiag(diag)
@@ -57,5 +57,37 @@ class CaptureServiceNotificationTest {
             CaptureServiceNotification.stopDiag(diag)
         }
         assertEquals(0, manager.activeNotifications.size)
+    }
+
+    @Test
+    fun notificationUsesTheSamePresenceWordsAsTheOverlay() {
+        val diag = Robolectric.buildService(DiagService::class.java).create().get()
+        val manager = diag.getSystemService(NotificationManager::class.java)!!
+        fun title() = manager.activeNotifications.single().notification.extras.getCharSequence(Notification.EXTRA_TITLE).toString()
+        fun text() = manager.activeNotifications.single().notification.extras.getCharSequence(Notification.EXTRA_TEXT).toString()
+        try {
+            CaptureServiceNotification.startDiag(diag, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE, "recording")
+            assertEquals(diag.getString(R.string.diag_overlay_recording), title())
+            assertEquals(diag.getString(R.string.diag_bg_notification_text_recording), text())
+
+            CaptureServiceNotification.updateDiag(diag, "task")
+            assertEquals(diag.getString(R.string.diag_overlay_task_open), title())
+            assertEquals(diag.getString(R.string.diag_bg_notification_text_task), text())
+
+            CaptureServiceNotification.updateDiag(diag, "listening")
+            assertEquals(diag.getString(R.string.diag_overlay_listening), title())
+            assertEquals(diag.getString(R.string.diag_bg_notification_text_listen), text())
+
+            CaptureServiceNotification.updateDiag(diag, "standby")
+            assertEquals(diag.getString(R.string.diag_overlay_standby), title())
+            assertEquals(diag.getString(R.string.diag_bg_notification_text_standby), text())
+
+            CaptureServiceNotification.updateDiag(diag, "task")
+            assertEquals(diag.getString(R.string.diag_overlay_task_open), title())
+            assertEquals(diag.getString(R.string.diag_bg_notification_title_task), diag.getString(R.string.diag_overlay_task_open))
+            assertEquals(diag.getString(R.string.diag_bg_notification_title_listen), diag.getString(R.string.diag_overlay_listening))
+        } finally {
+            CaptureServiceNotification.stopDiag(diag)
+        }
     }
 }

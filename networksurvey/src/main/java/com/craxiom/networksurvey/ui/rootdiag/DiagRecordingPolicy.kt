@@ -40,6 +40,33 @@ internal object DiagRecordingPolicy {
         mode == Mode.LiveView -> "listening"
         else -> "standby"
     }
+
+    /** Overlay headline and the foreground notification use this same value. */
+    fun presence(overlayStatus: String, recording: Boolean): String = when {
+        recording || overlayStatus == "recording" -> "recording"
+        overlayStatus == "task" -> "task"
+        overlayStatus == "listening" -> "listening"
+        else -> "standby"
+    }
+
+    /**
+     * A needLog task opens a file only after QMDL or DLF was chosen for that task.
+     * An unknown name does not fall back to QMDL.
+     */
+    fun automaticRecordingFormat(needLog: Boolean, savedName: String?): DiagLogFormat? {
+        if (!needLog) return null
+        return when (savedName) {
+            DiagLogFormat.Qmdl.name -> DiagLogFormat.Qmdl
+            DiagLogFormat.Dlf.name -> DiagLogFormat.Dlf
+            else -> null
+        }
+    }
+
+    fun recordingFormatLabel(savedName: String?): String? = when (savedName) {
+        DiagLogFormat.Dlf.name -> "DLF"
+        DiagLogFormat.Qmdl.name -> "QMDL"
+        else -> null
+    }
 }
 
 /** One recording per task. QMDL is the default; DLF is the same log items without HDLC. */

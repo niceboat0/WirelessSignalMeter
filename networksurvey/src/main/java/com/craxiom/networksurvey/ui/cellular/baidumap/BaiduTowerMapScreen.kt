@@ -393,10 +393,10 @@ fun BaiduTowerMapScreen(
         else -> "已匹配服务小区"
     }
     val trackingLabel = when {
-        !autoTrack -> "打点已暂停"
+        !autoTrack -> "地图打点已关"
         !permissions -> "授予定位权限"
         coordinate == null || servingStation == null -> "等待打点"
-        else -> "自动打点"
+        else -> "地图自动打点"
     }
     fun toggleTracking() {
         if (permissions || !autoTrack) {
