@@ -298,6 +298,105 @@ class DiagRecordingSessionTest {
     }
 
     @Test
+    fun leftoverSidecarUsesTheAirTaskIdInsteadOfOrphan() {
+        val dir = temp()
+        DiagRecordingSession(dir).start("keep-me").writeBytes(byteArrayOf(9))
+        File(dir, RecordingLocationSidecar.ACTIVE_CQT).writeText("{\"task_id\":\"keep-me\"}")
+        File(dir, ACTIVE_CQT_PLAN).writeBytes(byteArrayOf(1, 2))
+        File(dir, RecordingLocationSidecar.ACTIVE_GPX).writeText("<gpx><trk><trkseg><trkpt lat=\"1\" lon=\"2\">")
+        DiagRecordingSession(dir).recoverLeftoverActive()
+        assertTrue(File(dir, "keep-me.qmdl").isFile)
+        assertTrue(File(dir, "keep-me.qmdl.cqt.json").isFile)
+        assertTrue(File(dir, "keep-me.qmdl.cqt-plan").isFile)
+        val track = File(dir, "keep-me.qmdl.gpx").readText()
+        assertTrue(track.contains("</gpx>"))
+        assertFalse(dir.listFiles()!!.any { it.name.startsWith("orphan") || it.name.startsWith("active.") })
+    }
+
+    @Test
+    fun crashArchivePointsFloorPlanFileAtTheRenamedPlan() {
+        val dir = temp()
+        val document = """{"mode":"CQT","task_id":"keep-me","clock_id":"c","floor_plan":{"kind":"image","width_px":20,"height_px":10,"source_name":"plan","file":"active.cqt-plan"},"points":[{"x_px":1}]}"""
+        DiagRecordingSession(dir).start("keep-me", DiagLogFormat.Dlf).writeBytes(byteArrayOf(9))
+        File(dir, RecordingLocationSidecar.ACTIVE_CQT).writeText(document)
+        File(dir, ACTIVE_CQT_PLAN).writeBytes(byteArrayOf(7, 8))
+        DiagRecordingSession(dir).recoverLeftoverActive()
+        val text = File(dir, "keep-me.dlf.cqt.json").readText()
+        assertTrue(text.contains("\"file\":\"keep-me.dlf.cqt-plan\""))
+        assertFalse(text.contains("active.cqt-plan"))
+        assertTrue(text.contains("\"x_px\":1"))
+        assertTrue(File(dir, "keep-me.dlf.cqt-plan").readBytes().contentEquals(byteArrayOf(7, 8)))
+        assertFalse(File(dir, ACTIVE_CQT_PLAN).exists())
+
+        DiagRecordingSession(dir).start("keep-me").writeBytes(byteArrayOf(3))
+        File(dir, RecordingLocationSidecar.ACTIVE_CQT).writeText(document)
+        File(dir, ACTIVE_CQT_PLAN).writeBytes(byteArrayOf(1))
+        DiagRecordingSession(dir).recoverLeftoverActive()
+        val qmdlText = File(dir, "keep-me.qmdl.cqt.json").readText()
+        assertTrue(qmdlText.contains("\"file\":\"keep-me.qmdl.cqt-plan\""))
+        assertFalse(qmdlText.contains("active.cqt-plan"))
+    }
+
+    @Test
+    fun emptyAirSegmentDeletesTheSidecar() {
+        val dir = temp()
+        val session = DiagRecordingSession(dir)
+        session.start("task-1")
+        File(dir, RecordingLocationSidecar.ACTIVE_CQT).writeText("{\"points\":[]}")
+        File(dir, RecordingLocationSidecar.ACTIVE_GPX).writeText("<gpx>")
+        assertFalse(shouldRetainLocationSidecar(session.isOpen(), session.activeFile.length()))
+        discardActiveLocationSidecars(dir)
+        assertNull(session.finish())
+        assertTrue(dir.listFiles().orEmpty().isEmpty())
+    }
+
+    @Test
+    fun crashOfAnEmptyAirSegmentDoesNotLeaveASidecar() {
+        val dir = temp()
+        DiagRecordingSession(dir).start("task-1")
+        File(dir, RecordingLocationSidecar.ACTIVE_CQT).writeText("{}")
+        DiagRecordingSession(dir).recoverLeftoverActive()
+        assertTrue(dir.listFiles().orEmpty().none {
+            it.name.contains("cqt") || it.name.endsWith(".qmdl") || it.name == "active.task"
+        })
+    }
+
+    @Test
+    fun exportIncludesSidecarsForTheSameAirStemOnly() {
+        val dir = temp()
+        val session = DiagRecordingSession(dir)
+        session.start("task-1").writeBytes(byteArrayOf(1))
+        session.finish()
+        File(dir, "task-1.qmdl.gpx").writeText("<gpx></gpx>")
+        File(dir, "task-1.qmdl.cqt.json").writeText("{}\n")
+        File(dir, "task-1.gpx").writeText("<gpx>unpaired</gpx>")
+        File(dir, "other.cqt.json").writeText("{}\n")
+        session.start("task-1", com.craxiom.networksurvey.ui.rootdiag.DiagLogFormat.Dlf).writeBytes(byteArrayOf(2))
+        val dlf = session.finish()!!
+        assertEquals("task-1.dlf", dlf.name)
+        File(dir, "task-1.dlf.cqt.json").writeText("{}\n")
+        val air = session.exportableRecordings()
+        val qmdlSidecars = locationSidecarsFor(dir, listOf(File(dir, "task-1.qmdl"))).map { it.name }.toSet()
+        val dlfSidecars = locationSidecarsFor(dir, listOf(dlf)).map { it.name }.toSet()
+        assertEquals(setOf("task-1.qmdl.cqt.json", "task-1.qmdl.gpx"), qmdlSidecars)
+        assertEquals(setOf("task-1.dlf.cqt.json"), dlfSidecars)
+        assertFalse(qmdlSidecars.any { it.startsWith("task-1.dlf") })
+        assertFalse(dlfSidecars.any { it.startsWith("task-1.qmdl") || it == "task-1.gpx" })
+        val plan = recordingExportPlan(air, locationSidecarsFor(dir, air), "20261127")!!
+        assertEquals(
+            setOf("task-1.qmdl", "task-1.dlf", "task-1.qmdl.cqt.json", "task-1.qmdl.gpx", "task-1.dlf.cqt.json"),
+            plan.files.map { it.name }.toSet(),
+        )
+        assertTrue(plan.zip)
+        assertEquals(2, plan.segments)
+        assertEquals("wireless-20261127-logs.zip", plan.suggestedName)
+        val alone = recordingExportPlan(listOf(File(dir, "task-1.qmdl")), emptyList(), "20261127")!!
+        assertFalse(alone.zip)
+        assertEquals("wireless-20261127.qmdl", alone.suggestedName)
+        assertNull(recordingExportPlan(emptyList(), listOf(File(dir, "other.cqt.json")), "20261127"))
+    }
+
+    @Test
     fun configChangeDoesNotStartASessionByItself() {
         val dir = temp()
         val session = DiagRecordingSession(dir)

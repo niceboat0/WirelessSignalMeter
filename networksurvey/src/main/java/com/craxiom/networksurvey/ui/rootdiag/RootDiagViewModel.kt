@@ -117,7 +117,18 @@ internal data class RecordingExportPlan(
     val files: List<File>,
     val suggestedName: String,
     val zip: Boolean,
+    val segments: Int = files.size,
 )
+
+/** Air files plus the location sidecars that share their names. No air file means nothing to export. */
+internal fun recordingExportPlan(airFiles: List<File>, sidecars: List<File>, stamp: String): RecordingExportPlan? {
+    if (airFiles.isEmpty()) return null
+    val extra = sidecars.filter { side -> airFiles.none { it.absolutePath == side.absolutePath } }
+    val files = airFiles + extra
+    val zip = files.size > 1
+    val name = if (zip) "wireless-$stamp-logs.zip" else "wireless-$stamp.${files[0].extension}"
+    return RecordingExportPlan(files, name, zip, airFiles.size)
+}
 
 class RootDiagViewModel internal constructor(
     application: Application,
@@ -131,14 +142,16 @@ class RootDiagViewModel internal constructor(
     internal val signal = signalState.asStateFlow()
     private val signalingState = MutableStateFlow<List<DiagRecord>>(emptyList())
     internal val signaling = signalingState.asStateFlow()
-    private val recordingSession by lazy { DiagRecordingSession(File(app.noBackupFilesDir, "qmdl")) }
+    private val recordingDirectory by lazy { File(app.noBackupFilesDir, "qmdl") }
+    private val recordingSession by lazy { DiagRecordingSession(recordingDirectory) }
+    private val floorPlans by lazy { CqtFloorPlanLibrary(File(recordingDirectory, "floor-plans")) }
     private val locationRecording by lazy {
         RecordingLocationCoordinator(
-            sidecar = RecordingLocationSidecar(File(app.noBackupFilesDir, "qmdl")),
+            sidecar = RecordingLocationSidecar(recordingDirectory),
             feed = RecordingLocationFeed(app),
-            scope = viewModelScope,
             recallMode = { recallSurveyLocationMode(app, it) },
             clockId = { SurveyTaskStore.CLOCK_ID },
+            floorPlans = floorPlans,
         )
     }
     private var qmdlTaskId: String? = null
@@ -315,14 +328,23 @@ class RootDiagViewModel internal constructor(
     private suspend fun finishQmdl(result: QmdlResult) {
         val saved = withContext(captureIo) {
             // Saved, empty, error, interrupt, and the 128 MB limit all end here, so the sidecar stops too.
-            try {
-                locationRecording.onSessionFinished()
-            } catch (error: Exception) {
-                timber.log.Timber.w(error, "Could not stop location sidecar")
+            // An empty air segment is deleted; its sidecar is deleted with it.
+            val open = recordingSession.isOpen()
+            val bytes = if (open) recordingSession.activeFile.length() else 0L
+            val retain = shouldRetainLocationSidecar(open, bytes)
+            // Park first so the sidecar can take the air file's final name, including .qmdl versus .dlf.
+            runCatching { locationRecording.park() }.onFailure {
+                timber.log.Timber.w(it, "Could not stop location sidecar")
             }
-            val bytes = if (recordingSession.isOpen()) recordingSession.activeFile.length() else 0L
             val retained = runCatching { recordingSession.finish() }.onFailure {
                 timber.log.Timber.w(it, "Could not archive recording file")
+            }
+            runCatching {
+                val airName = retained.getOrNull()?.name
+                if (retain && airName != null) locationRecording.archiveBeside(airName)
+                else locationRecording.discard()
+            }.onFailure {
+                timber.log.Timber.w(it, "Could not archive location sidecar")
             }
             val files = recordingSession.exportableRecordings()
             val outcome = when {
@@ -345,13 +367,12 @@ class RootDiagViewModel internal constructor(
         viewModelScope.launch {
             val plan = withContext(Dispatchers.IO) {
                 runCatching { recordingSession.recoverLeftoverActive() }
-                val files = recordingSession.exportableRecordings()
-                if (files.isEmpty()) null
-                else if (files.size == 1) RecordingExportPlan(files, "wireless-$stamp.${files[0].extension}", false)
-                else RecordingExportPlan(files, "wireless-$stamp-logs.zip", true)
+                val air = recordingSession.exportableRecordings()
+                val sidecars = locationSidecarsFor(recordingSession.directory, air)
+                recordingExportPlan(air, sidecars, stamp)
             } ?: return@launch
             pendingExport = plan
-            qmdlState.value = qmdlState.value.copy(hasRecording = true, segments = plan.files.size)
+            qmdlState.value = qmdlState.value.copy(hasRecording = true, segments = plan.segments)
             onReady(plan.suggestedName)
         }
     }

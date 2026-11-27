@@ -79,8 +79,79 @@ int main(void) {
     if (stat(g_committed, &st) != 0 || st.st_size != 4) fail("first file overwritten");
     if (stat(second, &st) != 0 || st.st_size != 4) fail("second file missing");
 
+    /* Another floor-plan mark rewrites the sidecar and leaves the open air file in place. */
+    start_session();
+    write_bytes("AIR", 3);
+    char side[300], plan[300], marker[300];
+    snprintf(side, sizeof(side), "%s/active.cqt.json", g_dir);
+    snprintf(plan, sizeof(plan), "%s/active.cqt-plan", g_dir);
+    snprintf(marker, sizeof(marker), "%s/active.task", g_dir);
+    FILE *points = fopen(side, "w");
+    if (!points) fail("sidecar");
+    fputs("{\"points\":[{\"x_px\":1}]}", points);
+    fclose(points);
+    struct stat air_before;
+    if (stat(g_active, &air_before) != 0 || air_before.st_size != 3) fail("air before mark");
+    points = fopen(side, "w");
+    if (!points) fail("sidecar rewrite");
+    fputs("{\"points\":[{\"x_px\":1},{\"x_px\":2}]}", points);
+    fclose(points);
+    struct stat air_after;
+    if (stat(g_active, &air_after) != 0) fail("air after mark");
+    if (air_before.st_ino != air_after.st_ino || air_after.st_size != 3) fail("mark split the air file");
+    if (close(g_fd) != 0) fail("close marked");
+    g_fd = -1;
+    char marked[300];
+    snprintf(marked, sizeof(marked), "%s/task-3.qmdl", g_dir);
+    if (rename(g_active, marked) != 0) fail("rename marked air");
+
+    /* An empty air segment is removed together with the sidecar. */
+    start_session();
+    points = fopen(side, "w");
+    if (!points) fail("empty sidecar");
+    fputs("{\"points\":[]}", points);
+    fclose(points);
+    stop_session(0);
+    if (unlink(side) != 0) fail("empty air must drop sidecar");
+    if (stat(side, &st) == 0) fail("sidecar remained after empty air");
+
+    /* Crash recovery names the sidecar with the task id stored beside the air file. */
+    start_session();
+    write_bytes("LOG", 3);
+    points = fopen(marker, "w");
+    if (!points) fail("marker");
+    fputs("keep-me", points);
+    fclose(points);
+    points = fopen(side, "w");
+    if (!points) fail("crash sidecar");
+    fputs("{\"task_id\":\"keep-me\"}", points);
+    fclose(points);
+    points = fopen(plan, "w");
+    if (!points) fail("plan");
+    fputs("plan", points);
+    fclose(points);
+    if (close(g_fd) != 0) fail("close crash");
+    g_fd = -1;
+    char saved_air[300], saved_side[300], saved_plan[300], orphan[300];
+    snprintf(saved_air, sizeof(saved_air), "%s/keep-me.qmdl", g_dir);
+    snprintf(saved_side, sizeof(saved_side), "%s/keep-me.qmdl.cqt.json", g_dir);
+    snprintf(saved_plan, sizeof(saved_plan), "%s/keep-me.qmdl.cqt-plan", g_dir);
+    snprintf(orphan, sizeof(orphan), "%s/orphan.cqt.json", g_dir);
+    if (rename(g_active, saved_air) != 0) fail("rename crash air");
+    if (rename(side, saved_side) != 0) fail("rename crash sidecar");
+    if (rename(plan, saved_plan) != 0) fail("rename crash plan");
+    if (stat(orphan, &st) == 0) fail("sidecar renamed orphan");
+    if (stat(saved_air, &st) != 0 || stat(saved_side, &st) != 0 || stat(saved_plan, &st) != 0) {
+        fail("task sidecar missing");
+    }
+
     unlink(g_committed);
     unlink(second);
+    unlink(marked);
+    unlink(saved_air);
+    unlink(saved_side);
+    unlink(saved_plan);
+    unlink(marker);
     rmdir(g_dir);
     puts("diag_session_file_test ok");
     return 0;

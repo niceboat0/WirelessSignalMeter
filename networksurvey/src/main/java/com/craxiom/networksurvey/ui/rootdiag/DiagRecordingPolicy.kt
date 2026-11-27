@@ -150,12 +150,34 @@ internal class DiagRecordingSession(
 
     fun cannotWrite(): Boolean = openTaskId == null || !activeFile.isFile
 
-    /** Name a leftover active file with the task id recorded when it was opened. */
+    /**
+     * Name a leftover active file with the task id recorded when it was opened.
+     * Location sidecars from that same segment use the archived air-file stem.
+     * An empty air file is removed together with its sidecar so export is not left a file it cannot take.
+     */
     fun recoverLeftoverActive() {
         if (openTaskId != null) return
-        val remembered = rememberedTaskId() ?: "orphan"
-        for (item in DiagLogFormat.entries) archiveFile(File(root, item.activeName), remembered, item)
-        if (taskMarker.exists()) taskMarker.delete()
+        val markerId = rememberedTaskId()
+        val nameId = markerId ?: "orphan"
+        val archived = mutableListOf<File>()
+        var sawAir = false
+        for (item in DiagLogFormat.entries) {
+            val file = File(root, item.activeName)
+            if (!file.exists()) continue
+            sawAir = true
+            archiveFile(file, nameId, item)?.let { archived += it }
+        }
+        when {
+            archived.isNotEmpty() ->
+                archiveActiveLocationSidecars(root, archived.first().name, rename)
+            sawAir -> discardActiveLocationSidecars(root)
+            markerId != null -> {
+                val airName = airFileNeedingSidecar(root, markerId)
+                if (airName == null) discardActiveLocationSidecars(root)
+                else archiveActiveLocationSidecars(root, airName, rename)
+            }
+        }
+        if (taskMarker.exists() && !taskMarker.delete()) throw IOException("Unable to clear recording task marker")
     }
 
     private fun committedFiles(): List<File> = root.listFiles()

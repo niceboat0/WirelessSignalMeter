@@ -71,8 +71,12 @@ import com.craxiom.networksurvey.ui.common.AppMenuItem
 import top.yukonga.miuix.kmp.basic.Scaffold
 import com.craxiom.networksurvey.db.MapPointDbHelper
 import com.craxiom.networksurvey.db.SurveyTaskStore
+import com.craxiom.networksurvey.db.existingTaskForMapTracking
+import com.craxiom.networksurvey.db.recallSurveyLocationMode
 import com.craxiom.networksurvey.db.toJson
+import com.craxiom.networksurvey.model.SurveyLocationMode
 import com.craxiom.networksurvey.model.SurveyTask
+import com.craxiom.networksurvey.ui.CqtFloorPlanPanel
 import com.craxiom.networksurvey.ui.SurveyTaskBar
 import com.craxiom.networksurvey.ui.main.appbar.TitleBar
 import com.craxiom.networksurvey.util.CoordConverter
@@ -108,6 +112,8 @@ internal fun RoadCoverageScreen(onBack: () -> Unit) {
     var imported by remember { mutableStateOf(false) }
     var limited by remember { mutableStateOf(false) }
     var tracking by remember { mutableStateOf(MapTrack.isEnabled(context)) }
+    var locationMode by remember { mutableStateOf<SurveyLocationMode?>(null) }
+    var floorPlanVisible by remember { mutableStateOf(true) }
     var replayTaskId by remember { mutableStateOf<String?>(null) }
     var taskHistory by remember { mutableStateOf<List<SurveyTask>>(emptyList()) }
     var chooseTask by remember { mutableStateOf(false) }
@@ -163,6 +169,12 @@ internal fun RoadCoverageScreen(onBack: () -> Unit) {
         eventRefresh++
     }
     LaunchedEffect(points) { loadSaved() }
+    LaunchedEffect(context) {
+        val repository = withContext(Dispatchers.IO) { SurveyTaskStore.get(context) }
+        repository.active.collect { next ->
+            locationMode = next?.let { withContext(Dispatchers.IO) { recallSurveyLocationMode(context, it.id) } }
+        }
+    }
     LaunchedEffect(timeline, replayTaskId, imported) {
         if (!timeline || imported) return@LaunchedEffect
         try {
@@ -293,6 +305,14 @@ internal fun RoadCoverageScreen(onBack: () -> Unit) {
         Column(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding)) {
             SurveyTaskBar()
             HorizontalDivider()
+            if (locationMode == SurveyLocationMode.CQT && floorPlanVisible) {
+                CqtFloorPlanPanel(Modifier.weight(1f).fillMaxWidth(), onShowReplay = { floorPlanVisible = false })
+            } else {
+            if (locationMode == SurveyLocationMode.CQT) {
+                TextButton(onClick = { floorPlanVisible = true }, modifier = Modifier.padding(horizontal = 8.dp)) {
+                    Text(stringResource(R.string.cqt_show_floor))
+                }
+            }
             Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                 TextButton(enabled = !imported, modifier = Modifier.weight(1f), onClick = {
                     scope.launch {
@@ -334,7 +354,13 @@ internal fun RoadCoverageScreen(onBack: () -> Unit) {
                                     tracking = false
                                     loadSaved()
                                 } else launchIo(R.string.road_read_failed) {
-                                    withContext(Dispatchers.IO) { SurveyTaskStore.get(context).ensure() }
+                                    val taskId = withContext(Dispatchers.IO) {
+                                        SurveyTaskStore.get(context).observationTask()?.id
+                                    }
+                                    if (existingTaskForMapTracking(taskId) == null) {
+                                        Toast.makeText(context, R.string.road_task_required, Toast.LENGTH_LONG).show()
+                                        return@launchIo
+                                    }
                                     MapTrack.setEnabled(context, true)
                                     tracking = true
                                 }
@@ -424,6 +450,7 @@ internal fun RoadCoverageScreen(onBack: () -> Unit) {
                         }
                     }
                 }
+            }
             }
         }
     }
