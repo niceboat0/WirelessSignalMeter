@@ -32,6 +32,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -340,12 +341,13 @@ internal fun SignalingScreen(viewModel: RootDiagViewModel, onBack: () -> Unit) {
     val exportProgress by viewModel.qmdlExportProgress.collectAsStateWithLifecycle()
     val context = LocalContext.current
     var confirmQmdl by rememberSaveable { mutableStateOf(false) }
+    var confirmExport by rememberSaveable { mutableStateOf(false) }
+    var recordDlf by rememberSaveable { mutableStateOf(false) }
     val qmdlExporter = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri ->
-        if (uri != null) viewModel.exportQmdl(uri)
+        if (uri != null) viewModel.exportRecordings(uri)
     }
     fun chooseQmdlDestination() {
-        val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.ROOT).format(Date())
-        qmdlExporter.launch("wireless-$stamp.qmdl")
+        confirmExport = true
     }
     var filter by rememberSaveable { mutableStateOf(ProtocolFilter.All) }
     var search by rememberSaveable { mutableStateOf("") }
@@ -412,9 +414,31 @@ internal fun SignalingScreen(viewModel: RootDiagViewModel, onBack: () -> Unit) {
         dismissText = stringResource(android.R.string.cancel),
         onConfirm = {
             confirmQmdl = false
-            viewModel.startQmdl()
+            viewModel.startQmdl(if (recordDlf) DiagLogFormat.Dlf else DiagLogFormat.Qmdl)
         },
-    ) { Text(stringResource(R.string.diag_qmdl_description)) }
+    ) {
+        Text(stringResource(R.string.diag_qmdl_description))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            RadioButton(selected = !recordDlf, onClick = { recordDlf = false })
+            Text(stringResource(R.string.diag_qmdl_format_qmdl))
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            RadioButton(selected = recordDlf, onClick = { recordDlf = true })
+            Text(stringResource(R.string.diag_qmdl_format_dlf))
+        }
+    }
+    AppDialog(
+        show = confirmExport,
+        onDismissRequest = { confirmExport = false },
+        title = stringResource(R.string.diag_export_privacy_title),
+        confirmText = stringResource(R.string.diag_qmdl_export),
+        dismissText = stringResource(android.R.string.cancel),
+        onConfirm = {
+            confirmExport = false
+            val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.ROOT).format(Date())
+            viewModel.prepareRecordingExport(stamp) { name -> qmdlExporter.launch(name) }
+        },
+    ) { Text(stringResource(R.string.diag_export_privacy_body)) }
 
     Scaffold(
         topBar = {
@@ -448,7 +472,7 @@ internal fun SignalingScreen(viewModel: RootDiagViewModel, onBack: () -> Unit) {
                         HorizontalDivider()
                         AppMenuItem(
                             title = stringResource(if (qmdl.phase == QmdlPhase.Idle) R.string.diag_qmdl_start else R.string.diag_qmdl_stop),
-                            enabled = qmdl.phase == QmdlPhase.Recording ||
+                            enabled = qmdl.phase == QmdlPhase.Recording || qmdl.phase == QmdlPhase.Starting ||
                                 qmdl.phase == QmdlPhase.Idle && !qmdl.recovering &&
                                     status.status == RootDiagStatus.Running &&
                                     collectionMode == DiagRecordingPolicy.Mode.TaskRecording && exportProgress == null,
@@ -459,7 +483,8 @@ internal fun SignalingScreen(viewModel: RootDiagViewModel, onBack: () -> Unit) {
                         )
                         if (qmdl.hasRecording) {
                             AppMenuItem(
-                                title = stringResource(R.string.diag_qmdl_export),
+                                title = if (qmdl.segments > 1) stringResource(R.string.diag_qmdl_export_count, qmdl.segments)
+                                    else stringResource(R.string.diag_qmdl_export),
                                 enabled = qmdl.phase == QmdlPhase.Idle && !qmdl.recovering && exportProgress == null,
                                 onClick = {
                                     menuOpen = false
@@ -502,7 +527,8 @@ internal fun SignalingScreen(viewModel: RootDiagViewModel, onBack: () -> Unit) {
                     val error = qmdl.errorCode
                     val label = when {
                         progress != null -> stringResource(R.string.diag_qmdl_exporting, progress)
-                        qmdl.phase == QmdlPhase.Recording -> stringResource(R.string.diag_qmdl_recording, qmdl.packets,
+                        qmdl.phase == QmdlPhase.Recording -> stringResource(R.string.diag_qmdl_recording,
+                            if (qmdl.format == DiagLogFormat.Dlf) "DLF" else "QMDL", qmdl.packets,
                             android.text.format.Formatter.formatShortFileSize(context, qmdl.bytes))
                         qmdlLabel != null && error != null ->
                             "${stringResource(qmdlLabel)} (${stringResource(R.string.diag_error_code, error)})"
@@ -513,10 +539,13 @@ internal fun SignalingScreen(viewModel: RootDiagViewModel, onBack: () -> Unit) {
                     }
                     Text(label, Modifier.weight(1f).padding(vertical = 6.dp), style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    if (qmdl.phase == QmdlPhase.Recording) {
+                    if (qmdl.phase == QmdlPhase.Recording || qmdl.phase == QmdlPhase.Starting) {
                         TextButton(onClick = viewModel::stopQmdl) { Text(stringResource(R.string.diag_qmdl_stop)) }
                     } else if (qmdl.phase == QmdlPhase.Idle && qmdl.hasRecording && !qmdl.recovering && progress == null) {
-                        TextButton(onClick = { chooseQmdlDestination() }) { Text(stringResource(R.string.diag_qmdl_export_short)) }
+                        TextButton(onClick = { chooseQmdlDestination() }) {
+                            Text(if (qmdl.segments > 1) stringResource(R.string.diag_qmdl_export_count, qmdl.segments)
+                                else stringResource(R.string.diag_qmdl_export_short))
+                        }
                     }
                 }
             }

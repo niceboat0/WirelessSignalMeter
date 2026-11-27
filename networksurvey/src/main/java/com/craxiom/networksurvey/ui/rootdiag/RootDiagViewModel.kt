@@ -47,6 +47,8 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.IOException
 import java.util.concurrent.TimeUnit
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 
 internal enum class RootDiagStatus {
     Checking, Unavailable, Denied, Starting, Unsupported, Running, Stopped,
@@ -97,9 +99,17 @@ internal data class QmdlState(
     val packets: Long = 0,
     val bytes: Long = 0,
     val hasRecording: Boolean = false,
+    val segments: Int = 0,
+    val format: DiagLogFormat = DiagLogFormat.Qmdl,
     val result: QmdlResult? = null,
     val recovering: Boolean = false,
     val errorCode: Int? = null,
+)
+
+internal data class RecordingExportPlan(
+    val files: List<File>,
+    val suggestedName: String,
+    val zip: Boolean,
 )
 
 class RootDiagViewModel(application: Application) : AndroidViewModel(application) {
@@ -111,10 +121,13 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
     private val recordingSession by lazy { DiagRecordingSession(File(app.noBackupFilesDir, "qmdl")) }
     private var qmdlTaskId: String? = null
     private var qmdlAutoStartBlockedTask: String? = null
+    private var recordingFormat = DiagLogFormat.Qmdl
+    private var resumeRecordingTask: String? = null
+    private var resumeRecordingFormat = DiagLogFormat.Qmdl
+    private var pendingExport: RecordingExportPlan? = null
     private val qmdlState = MutableStateFlow(QmdlState())
     internal val qmdl = qmdlState.asStateFlow()
     private val qmdlExport = MutableStateFlow<Int?>(null)
-    private var qmdlStopWatchdog: Job? = null
     private var lastQmdlStatus: JSONObject? = null
     internal val qmdlExportProgress = qmdlExport.asStateFlow()
     private val nrChart = CellularChartViewModel()
@@ -175,8 +188,11 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
 
     init {
         viewModelScope.launch {
-            val hasRecording = withContext(Dispatchers.IO) { recordingSession.latestRecording() != null }
-            if (hasRecording) qmdlState.value = qmdlState.value.copy(hasRecording = true)
+            val segments = withContext(Dispatchers.IO) {
+                runCatching { recordingSession.recoverLeftoverActive() }
+                recordingSession.exportableRecordings().size
+            }
+            if (segments > 0) qmdlState.value = qmdlState.value.copy(hasRecording = true, segments = segments)
         }
         viewModelScope.launch {
             RootDiagCollectorService.stopRequested.collect { requested ->
@@ -206,7 +222,8 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    internal fun startQmdl() {
+    internal fun startQmdl(format: DiagLogFormat = DiagLogFormat.Qmdl) {
+        recordingFormat = format
         requestQmdlStart(manual = true)
     }
 
@@ -221,11 +238,11 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
         qmdlTaskId = taskId
         lastQmdlStatus = null
         qmdlState.value = qmdlState.value.copy(phase = QmdlPhase.Starting, packets = 0, bytes = 0,
-            result = null, errorCode = null)
+            result = null, errorCode = null, format = recordingFormat)
     }
 
     internal fun stopQmdl() {
-        if (qmdlState.value.phase != QmdlPhase.Recording) return
+        if (qmdlState.value.phase != QmdlPhase.Recording && qmdlState.value.phase != QmdlPhase.Starting) return
         blockQmdlAutoStart()
         requestQmdlStop()
     }
@@ -237,63 +254,71 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
     private fun requestQmdlStop() {
         if (qmdlState.value.phase != QmdlPhase.Recording && qmdlState.value.phase != QmdlPhase.Starting) return
         qmdlState.value = qmdlState.value.copy(phase = QmdlPhase.Stopping)
-        qmdlStopWatchdog = viewModelScope.launch {
-            delay(QMDL_ACK_TIMEOUT)
-            if (qmdlState.value.phase != QmdlPhase.Stopping) return@launch
-            blockQmdlAutoStart()
-            qmdlState.value = qmdlState.value.copy(
-                phase = QmdlPhase.Idle, result = QmdlResult.Interrupted, recovering = true,
-            )
-            restartAfterStop = DiagRecordingPolicy.shouldListen(currentMode())
-            capture?.cancel()
-        }
     }
 
     private suspend fun finishQmdl(result: QmdlResult) {
-        qmdlStopWatchdog?.cancel()
-        qmdlStopWatchdog = null
         val saved = withContext(Dispatchers.IO) {
             val bytes = if (recordingSession.isOpen()) recordingSession.activeFile.length() else 0L
             val retained = runCatching { recordingSession.finish() }.onFailure {
-                timber.log.Timber.w(it, "Could not archive QMDL file")
+                timber.log.Timber.w(it, "Could not archive recording file")
             }
+            val files = recordingSession.exportableRecordings()
             val outcome = when {
                 retained.isFailure -> QmdlResult.Error
                 bytes == 0L && result == QmdlResult.Saved -> QmdlResult.Empty
                 else -> result
             }
-            Triple(outcome, recordingSession.latestRecording() != null, bytes)
+            Triple(outcome, files, bytes)
         }
         if (saved.first in setOf(QmdlResult.Empty, QmdlResult.Limited, QmdlResult.Error)) blockQmdlAutoStart()
         qmdlTaskId = null
         qmdlState.value = qmdlState.value.copy(
-            phase = QmdlPhase.Idle, result = saved.first, hasRecording = saved.second, recovering = false,
-            bytes = saved.third,
+            phase = QmdlPhase.Idle, result = saved.first, hasRecording = saved.second.isNotEmpty(),
+            segments = saved.second.size, recovering = false, bytes = saved.third,
         )
     }
 
-    internal fun exportQmdl(uri: Uri) {
+    internal fun prepareRecordingExport(stamp: String, onReady: (String) -> Unit) {
         if (qmdlExport.value != null || qmdlState.value.phase != QmdlPhase.Idle || qmdlState.value.recovering) return
+        viewModelScope.launch {
+            val plan = withContext(Dispatchers.IO) {
+                runCatching { recordingSession.recoverLeftoverActive() }
+                val files = recordingSession.exportableRecordings()
+                if (files.isEmpty()) null
+                else if (files.size == 1) RecordingExportPlan(files, "wireless-$stamp.${files[0].extension}", false)
+                else RecordingExportPlan(files, "wireless-$stamp-logs.zip", true)
+            } ?: return@launch
+            pendingExport = plan
+            qmdlState.value = qmdlState.value.copy(hasRecording = true, segments = plan.files.size)
+            onReady(plan.suggestedName)
+        }
+    }
+
+    internal fun exportRecordings(uri: Uri) {
+        val plan = pendingExport ?: return
+        if (qmdlExport.value != null || qmdlState.value.phase != QmdlPhase.Idle || qmdlState.value.recovering) return
+        pendingExport = null
         qmdlExport.value = 0
         viewModelScope.launch {
             try {
                 withContext(Dispatchers.IO) {
-                    val file = recordingSession.latestRecording() ?: throw IOException("No QMDL data")
-                    val total = file.length()
-                    if (total <= 0) throw IOException("No QMDL data")
-                    file.inputStream().use { input ->
-                        val output = app.contentResolver.openOutputStream(uri, "wt") ?: throw IOException("No output stream")
-                        output.use {
-                            val buffer = ByteArray(256 * 1024)
-                            var written = 0L
-                            while (true) {
-                                ensureActive()
-                                val count = input.read(buffer)
-                                if (count < 0) break
-                                output.write(buffer, 0, count)
-                                written += count
-                                // Leave completion pending until the destination provider closes the stream.
-                                qmdlExport.value = (100 * written / total).toInt().coerceIn(0, 99)
+                    val output = app.contentResolver.openOutputStream(uri, "wt") ?: throw IOException("No output stream")
+                    val buffer = ByteArray(256 * 1024)
+                    if (!plan.zip) {
+                        output.use { copyRecording(plan.files.single(), it, buffer, plan.files.single().length()) }
+                    } else {
+                        ZipOutputStream(output).use { zip ->
+                            for (file in plan.files) {
+                                zip.putNextEntry(ZipEntry(file.name))
+                                file.inputStream().use { input ->
+                                    while (true) {
+                                        ensureActive()
+                                        val count = input.read(buffer)
+                                        if (count < 0) break
+                                        zip.write(buffer, 0, count)
+                                    }
+                                }
+                                zip.closeEntry()
                             }
                         }
                     }
@@ -302,10 +327,23 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
-                timber.log.Timber.w(error, "Could not export QMDL")
+                timber.log.Timber.w(error, "Could not export recording")
                 Toast.makeText(app, R.string.diag_qmdl_export_failed, Toast.LENGTH_SHORT).show()
             } finally {
                 qmdlExport.value = null
+            }
+        }
+    }
+
+    private fun copyRecording(file: File, output: java.io.OutputStream, buffer: ByteArray, total: Long) {
+        file.inputStream().use { input ->
+            var written = 0L
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                output.write(buffer, 0, count)
+                written += count
+                if (total > 0) qmdlExport.value = (100 * written / total).toInt().coerceIn(0, 99)
             }
         }
     }
@@ -512,17 +550,17 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
                 val stale = CollectorRestartPolicy.needsModemRecovery(
                     signal.status == RootDiagStatus.Running, statusAge ?: Long.MAX_VALUE, packetAge, now - requestedAt,
                 )
-                val phase = when {
-                    !stale -> "packets_resumed"
-                    qmdlState.value.phase != QmdlPhase.Idle || qmdlState.value.recovering -> "deferred_qmdl_active"
-                    check == CollectorRestartPolicy.MODEM_RECOVERY_CHECKS -> "still_stalled"
-                    restarts >= CollectorRestartPolicy.MAX_MODEM_RECOVERY_RESTARTS -> "waiting_after_restarts"
-                    else -> "restarting_collector"
-                }
+                val phase = CollectorRestartPolicy.modemRecoveryPhase(stale, check, restarts)
                 recordCollectorRecovery(phase, packetAge, statusAge, check)
                 if (phase == "restarting_collector") {
                     restarts++
                     restartAttempt = 0
+                    val recordingOpen = qmdlState.value.phase == QmdlPhase.Recording ||
+                        qmdlState.value.phase == QmdlPhase.Starting
+                    if (recordingOpen) {
+                        resumeRecordingTask = qmdlTaskId
+                        resumeRecordingFormat = recordingFormat
+                    }
                     val job = capture
                     if (job == null) start()
                     else {
@@ -691,10 +729,12 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
         val serving = records.filter { it.type == "serving" }.maxByOrNull { it.receivedAt }?.data
         val ims = currentCapability().imsStatus
         val mode = if (status == RootDiagStatus.Running) currentMode() else DiagRecordingPolicy.Mode.Idle
+        val recording = qmdlState.value.phase == QmdlPhase.Recording || qmdlState.value.phase == QmdlPhase.Starting
         DiagOverlayState.publish(
             DiagOverlaySnapshot(
-                collecting = DiagRecordingPolicy.shouldRecord(mode),
-                status = DiagRecordingPolicy.overlayStatus(mode),
+                collecting = recording,
+                recording = recording,
+                status = DiagRecordingPolicy.overlayStatus(mode, recording),
                 rat = serving?.optString("rat").orEmpty(),
                 pci = serving?.optInt("pci", -1)?.takeIf { it >= 0 },
                 rsrp = serving?.optDouble("rsrp")?.takeIf { it.isFinite() },
@@ -885,13 +925,15 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
             val type = value.optString("type")
             // Task ownership is metadata for replay; it never gates the live stream.
             val tasks = taskStore
-            val task = tasks?.active?.value?.takeIf {
+            val fileTask = qmdlTaskId?.takeIf { qmdlState.value.phase != QmdlPhase.Idle }
+            val task = if (fileTask != null) null else tasks?.active?.value?.takeIf {
                 it.ownsDiagnostic(value.optLong("t"), receivedTime, now, SurveyTaskStore.CLOCK_ID)
             }
-            value.put("task_id", task?.id ?: JSONObject.NULL).put("received_time_ms", receivedTime)
+            val taskId = fileTask ?: task?.id
+            value.put("task_id", taskId ?: JSONObject.NULL).put("received_time_ms", receivedTime)
                 .put("received_elapsed_ms", now).put("clock_id", SurveyTaskStore.CLOCK_ID)
                 .put("collector_run", run.optLong("id"))
-            if (task != null && runTaskIds.add(task.id)) run.put("task_ids", JSONArray(runTaskIds.toList()))
+            if (taskId != null && runTaskIds.add(taskId)) run.put("task_ids", JSONArray(runTaskIds.toList()))
             val messageRat = value.optString("rat")
             if (type == "rrc") {
                 value.put("message_id", nextId)
@@ -1020,7 +1062,7 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
                         "error" -> QmdlResult.Error
                         else -> null
                     }
-                    if (qmdlCommand == 'Q' || result != null) qmdlDeadline = null
+                    if (qmdlCommand == 'Q' || qmdlCommand == 'D' || result != null) qmdlDeadline = null
                     if (result != null) {
                         qmdlCommand = null
                         withContext(NonCancellable) { finishQmdl(result) }
@@ -1356,21 +1398,29 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
             do {
                 when {
                     status == RootDiagStatus.Running && qmdlState.value.phase == QmdlPhase.Idle && qmdlCommand == null -> {
-                        requestQmdlStart(manual = false)
+                        val resume = resumeRecordingTask
+                        if (resume != null) {
+                            resumeRecordingTask = null
+                            if (resume == activeTask?.id && !pausedByUser) {
+                                recordingFormat = resumeRecordingFormat
+                                requestQmdlStart(manual = true)
+                            } else requestQmdlStart(manual = false)
+                        } else requestQmdlStart(manual = false)
                     }
                     status == RootDiagStatus.Running && qmdlState.value.phase == QmdlPhase.Starting && qmdlCommand == null -> {
                         val taskId = qmdlTaskId
+                        val format = recordingFormat
                         val prepared = taskId != null && taskId == eligibleQmdlTask() &&
                             withContext(Dispatchers.IO) {
-                                runCatching { recordingSession.start(taskId) }.onFailure {
-                                    timber.log.Timber.w(it, "Could not prepare QMDL file")
+                                runCatching { recordingSession.start(taskId, format) }.onFailure {
+                                    timber.log.Timber.w(it, "Could not prepare recording file")
                                 }.isSuccess
                             }
                         if (prepared && taskId == eligibleQmdlTask() && qmdlState.value.phase == QmdlPhase.Starting) {
-                            qmdlCommand = 'Q'
+                            qmdlCommand = format.command
                             qmdlDeadline = SystemClock.elapsedRealtime() + QMDL_ACK_TIMEOUT
                             withContext(Dispatchers.IO) {
-                                running.outputStream.write('Q'.code)
+                                running.outputStream.write(format.command.code)
                                 running.outputStream.flush()
                             }
                         } else {
@@ -1380,9 +1430,9 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
                         }
                     }
                     qmdlState.value.phase == QmdlPhase.Stopping && qmdlCommand == null -> {
-                        withContext(NonCancellable) { finishQmdl(QmdlResult.Interrupted) }
+                        withContext(NonCancellable) { finishQmdl(QmdlResult.Saved) }
                     }
-                    qmdlState.value.phase == QmdlPhase.Stopping && qmdlCommand == 'Q' -> {
+                    qmdlState.value.phase == QmdlPhase.Stopping && (qmdlCommand == 'Q' || qmdlCommand == 'D') -> {
                         qmdlCommand = 'S'
                         qmdlDeadline = SystemClock.elapsedRealtime() + QMDL_ACK_TIMEOUT
                         withContext(Dispatchers.IO) {
@@ -1425,9 +1475,29 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
                 }
                 if (!running.isAlive && size == 0) break
                 if (qmdlDeadline?.let { now >= it } == true) {
-                    blockQmdlAutoStart()
-                    restartAfterStop = DiagRecordingPolicy.shouldListen(currentMode()) && !pausedByUser
-                    break
+                    qmdlDeadline = null
+                    val phase = qmdlState.value.phase
+                    val command = qmdlCommand
+                    when {
+                        phase == QmdlPhase.Stopping && command == 'S' -> {
+                            qmdlCommand = null
+                            withContext(NonCancellable) { finishQmdl(QmdlResult.Error) }
+                        }
+                        command == 'Q' || command == 'D' -> {
+                            qmdlState.value = qmdlState.value.copy(phase = QmdlPhase.Stopping)
+                            qmdlCommand = 'S'
+                            qmdlDeadline = now + QMDL_ACK_TIMEOUT
+                            runCatching {
+                                running.outputStream.write('S'.code)
+                                running.outputStream.flush()
+                            }
+                        }
+                        phase == QmdlPhase.Starting || phase == QmdlPhase.Stopping -> {
+                            qmdlCommand = null
+                            withContext(NonCancellable) { finishQmdl(QmdlResult.Error) }
+                        }
+                        else -> qmdlCommand = null
+                    }
                 }
                 val timeout = if (status == RootDiagStatus.Checking) 25_000 else 16_000
                 if (now - lastHeartbeat >= timeout) break
@@ -1465,7 +1535,7 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
             if (collectorProcess === process) collectorProcess = null
             if (qmdlState.value.phase != QmdlPhase.Idle || qmdlState.value.recovering) {
                 withContext(NonCancellable) {
-                    finishQmdl(QmdlResult.Interrupted)
+                    finishQmdl(if (pausedByUser) QmdlResult.Saved else QmdlResult.Interrupted)
                 }
             }
         }
@@ -1480,7 +1550,7 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
         // Match DiagCap's executable location so Android uses the same linker configuration.
         // The fresh 0700 directory is owned by root and the child keeps the app's stdin pipe.
         val quotedPath = "'" + helper.absolutePath.replace("'", "'\\''") + "'"
-        val quotedQmdl = "'" + recordingSession.activeFile.absolutePath.replace("'", "'\\''") + "'"
+        val quotedQmdl = "'" + recordingSession.directory.absolutePath.replace("'", "'\\''") + "'"
         return """
             PATH=/system/bin
             export PATH

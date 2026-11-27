@@ -201,5 +201,24 @@ __declspec(dllexport) int test_qmdl_stop(void) {
     trace = 0;
     qmdl_start("active.qmdl");
     if (g_qmdl_error != EINVAL || g_qmdl_fd != -1 || file_size != sizeof(expected_frame)) return __LINE__;
+
+    /* Same DCI record as the QMDL frame above, stored without HDLC, CRC, or 0x10. */
+    file_size = 0;
+    write_mode = 0;
+    write_calls = 0;
+    qmdl_start("active.dlf");
+    qmdl_write_locked(record, sizeof(record));
+    qmdl_stop(1);
+    if (g_qmdl_error || g_qmdl_packets != 1 || file_size != sizeof(record)) return __LINE__;
+    for (size_t i = 0; i < sizeof(record); i++) if (file_bytes[i] != record[i]) return __LINE__;
+
+    file_size = 0;
+    static const uint8_t bad_length[] = { 13, 0, 0x7d, 0x7e, 0, 1, 2, 3, 4, 5, 6, 7 };
+    qmdl_start("active.dlf");
+    qmdl_write_locked(bad_length, sizeof(bad_length));
+    qmdl_write_locked(record, sizeof(record));
+    qmdl_stop(1);
+    if (g_qmdl_packets != 1 || file_size != sizeof(record)) return __LINE__;
+    for (size_t i = 0; i < sizeof(record); i++) if (file_bytes[i] != record[i]) return __LINE__;
     return 0;
 }
