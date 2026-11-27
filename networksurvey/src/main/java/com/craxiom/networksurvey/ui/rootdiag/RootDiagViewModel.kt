@@ -9,6 +9,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.craxiom.networksurvey.BuildConfig
 import com.craxiom.networksurvey.db.SurveyTaskStore
+import com.craxiom.networksurvey.db.recallSurveyLocationMode
 import com.craxiom.networksurvey.db.toJson
 import com.craxiom.networksurvey.model.SurveyEvent
 import com.craxiom.networksurvey.model.SurveyTask
@@ -109,6 +110,15 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
     private val signalingState = MutableStateFlow<List<DiagRecord>>(emptyList())
     internal val signaling = signalingState.asStateFlow()
     private val recordingSession by lazy { DiagRecordingSession(File(app.noBackupFilesDir, "qmdl")) }
+    private val locationRecording by lazy {
+        RecordingLocationCoordinator(
+            sidecar = RecordingLocationSidecar(File(app.noBackupFilesDir, "qmdl")),
+            feed = RecordingLocationFeed(app),
+            scope = viewModelScope,
+            recallMode = { recallSurveyLocationMode(app, it) },
+            clockId = { SurveyTaskStore.CLOCK_ID },
+        )
+    }
     private var qmdlTaskId: String? = null
     private var qmdlAutoStartBlockedTask: String? = null
     private val qmdlState = MutableStateFlow(QmdlState())
@@ -253,6 +263,12 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
         qmdlStopWatchdog?.cancel()
         qmdlStopWatchdog = null
         val saved = withContext(Dispatchers.IO) {
+            // Saved, empty, error, interrupt, and the 128 MB limit all end here, so the sidecar stops too.
+            try {
+                locationRecording.onSessionFinished()
+            } catch (error: Exception) {
+                timber.log.Timber.w(error, "Could not stop location sidecar")
+            }
             val bytes = if (recordingSession.isOpen()) recordingSession.activeFile.length() else 0L
             val retained = runCatching { recordingSession.finish() }.onFailure {
                 timber.log.Timber.w(it, "Could not archive QMDL file")
@@ -1362,7 +1378,11 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
                         val taskId = qmdlTaskId
                         val prepared = taskId != null && taskId == eligibleQmdlTask() &&
                             withContext(Dispatchers.IO) {
-                                runCatching { recordingSession.start(taskId) }.onFailure {
+                                runCatching { recordingSession.start(taskId) }.onSuccess {
+                                    runCatching { locationRecording.onSessionStarted(taskId) }.onFailure {
+                                        timber.log.Timber.w(it, "Could not open location sidecar")
+                                    }
+                                }.onFailure {
                                     timber.log.Timber.w(it, "Could not prepare QMDL file")
                                 }.isSuccess
                             }

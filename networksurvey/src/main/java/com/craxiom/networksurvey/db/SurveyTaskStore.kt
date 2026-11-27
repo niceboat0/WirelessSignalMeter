@@ -6,6 +6,7 @@ import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import android.os.SystemClock
 import com.craxiom.networksurvey.model.SurveyEvent
+import com.craxiom.networksurvey.model.SurveyLocationMode
 import com.craxiom.networksurvey.model.SurveyTask
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -18,6 +19,7 @@ import java.util.UUID
 /** Tasks survive navigation and process restarts; only explicit finish/new closes them. */
 internal class SurveyTaskStore private constructor(context: Context) :
     SQLiteOpenHelper(context.applicationContext, "survey_tasks.db", null, 2) {
+    private val appContext = context.applicationContext
     private val activeState = MutableStateFlow<SurveyTask?>(null)
     val active = activeState.asStateFlow()
     private val revisionState = MutableStateFlow(0L)
@@ -50,10 +52,13 @@ internal class SurveyTaskStore private constructor(context: Context) :
     /** Returns the running test task only. Viewing live packets must not open a recording session. */
     @Synchronized fun observationTask(): SurveyTask? = activeState.value
 
-    @Synchronized fun start(name: String = "", needLog: Boolean = false): SurveyTask {
+    /** [locationMode] is stored by task id, not as a survey_task column. Blank names may show DT or CQT. */
+    @Synchronized fun start(name: String = "", needLog: Boolean = false, locationMode: SurveyLocationMode? = null): SurveyTask {
         val now = System.currentTimeMillis()
-        val task = SurveyTask(UUID.randomUUID().toString(), name.trim().take(80).ifBlank {
-            "采集 " + SimpleDateFormat("MM-dd HH:mm:ss", Locale.getDefault()).format(Date(now))
+        val requested = name.trim().take(80)
+        val task = SurveyTask(UUID.randomUUID().toString(), requested.ifBlank {
+            val kind = locationMode?.let { "${it.name} " }.orEmpty()
+            kind + "采集 " + SimpleDateFormat("MM-dd HH:mm:ss", Locale.getDefault()).format(Date(now))
         }, now, startedElapsedMs = SystemClock.elapsedRealtime(), clockId = CLOCK_ID, needLog = needLog)
         val db = writableDatabase
         db.beginTransaction()
@@ -75,6 +80,10 @@ internal class SurveyTaskStore private constructor(context: Context) :
             }
             db.setTransactionSuccessful()
         } finally { db.endTransaction() }
+        locationMode?.let { mode ->
+            val remembered = runCatching { rememberSurveyLocationMode(appContext, task.id, mode) }.getOrDefault(false)
+            if (!remembered) timber.log.Timber.w("Could not remember DT/CQT choice for this task")
+        }
         activeState.value = task
         activeMission?.let { boundMissions.add(task.id to it) }
         revisionState.value++
