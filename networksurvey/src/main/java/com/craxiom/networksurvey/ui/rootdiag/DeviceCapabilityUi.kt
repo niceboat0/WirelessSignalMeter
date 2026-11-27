@@ -37,6 +37,7 @@ internal fun capabilityReasonId(reason: String): Int? = when (reason) {
     "kirin_unsupported" -> R.string.lock_reason_kirin
     "unverified_model" -> R.string.lock_reason_unverified
     "no_diag_channel" -> R.string.lock_reason_no_channel
+    "no_lock_capability" -> R.string.lock_reason_no_capability
     "verified" -> R.string.diag_reason_ok
     else -> null
 }

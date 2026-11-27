@@ -1566,6 +1566,7 @@
     <string name="lock_reason_kirin">Kirin is not supported. No lock backend is implemented.</string>
     <string name="lock_reason_unverified">The live DIAG probe succeeded, but this model is not in the verified set.</string>
     <string name="lock_reason_no_channel">No supported Qualcomm DIAG channel was found.</string>
+    <string name="lock_reason_no_capability">The modem reported no supported lock capability.</string>
     <string name="lock_reason_unknown">This device is unsupported until a live DIAG probe succeeds.</string>
 
 

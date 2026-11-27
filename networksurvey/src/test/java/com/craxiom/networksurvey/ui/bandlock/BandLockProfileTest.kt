@@ -31,6 +31,14 @@ class BandLockProfileTest {
     }
 
     @Test
+    fun verifiedModelWithoutLockCapabilityIsUnsupported() {
+        val profile = BandLockProfiles.classify("samsung", "SM-S9370", "SM8750", "sun", "samsung-diag-router", 0)
+        assertEquals(LockSupportLevel.Unsupported, profile.level)
+        assertFalse(profile.canLock)
+        assertEquals("no_lock_capability", profile.reason)
+    }
+
+    @Test
     fun mediatekIsUnsupported() {
         val profile = BandLockProfiles.classify("Xiaomi", "21091116C", "MT6893", "mt6893", null, 0)
         assertEquals(LockSupportLevel.Unsupported, profile.level)
