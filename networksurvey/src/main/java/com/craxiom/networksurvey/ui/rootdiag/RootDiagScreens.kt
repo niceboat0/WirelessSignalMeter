@@ -217,8 +217,92 @@ internal fun JSONObject?.fixedSignalFields(keys: List<String>): List<DiagField> 
 
 private enum class ProtocolFilter(val label: Int) {
     All(R.string.diag_filter_all), Nr(R.string.diag_filter_nr), Lte(R.string.diag_filter_lte), Nas(R.string.diag_filter_nas),
-    Ims(R.string.diag_filter_ims), Event(R.string.diag_filter_event),
+    Ims(R.string.diag_filter_ims),
 }
+
+private enum class Workbench { Signaling, Events }
+
+private enum class EventFilter(val label: Int) {
+    All(R.string.diag_filter_all),
+    Handover(R.string.diag_filter_handover),
+    Access(R.string.diag_filter_access),
+    Registration(R.string.diag_filter_registration),
+    Call(R.string.diag_filter_call),
+    Other(R.string.diag_filter_other),
+}
+
+@Composable
+private fun processEventTitle(key: String): String = stringResource(when (key) {
+    "handover_request" -> R.string.diag_pe_handover_request
+    "handover_in_progress" -> R.string.diag_pe_handover_in_progress
+    "handover_success" -> R.string.diag_pe_handover_success
+    "handover_failure" -> R.string.diag_pe_handover_failure
+    "prach_request" -> R.string.diag_pe_prach_request
+    "prach_in_progress" -> R.string.diag_pe_prach_in_progress
+    "prach_success" -> R.string.diag_pe_prach_success
+    "access_request" -> R.string.diag_pe_access_request
+    "access_in_progress" -> R.string.diag_pe_access_in_progress
+    "access_success" -> R.string.diag_pe_access_success
+    "access_failure" -> R.string.diag_pe_access_failure
+    "attach_request" -> R.string.diag_pe_attach_request
+    "attach_in_progress" -> R.string.diag_pe_attach_in_progress
+    "attach_success" -> R.string.diag_pe_attach_success
+    "attach_failure" -> R.string.diag_pe_attach_failure
+    "tau_request" -> R.string.diag_pe_tau_request
+    "tau_success" -> R.string.diag_pe_tau_success
+    "tau_complete" -> R.string.diag_pe_tau_complete
+    "tau_failure" -> R.string.diag_pe_tau_failure
+    "registration_request" -> R.string.diag_pe_registration_request
+    "registration_accept" -> R.string.diag_pe_registration_accept
+    "registration_complete" -> R.string.diag_pe_registration_complete
+    "registration_failure" -> R.string.diag_pe_registration_failure
+    "call_attempt" -> R.string.diag_pe_call_attempt
+    "call_progress" -> R.string.diag_pe_call_progress
+    "call_alerting" -> R.string.diag_pe_call_alerting
+    "call_established" -> R.string.diag_pe_call_established
+    "call_rejected" -> R.string.diag_pe_call_rejected
+    "call_cancelled" -> R.string.diag_pe_call_cancelled
+    "call_release" -> R.string.diag_pe_call_release
+    "call_drop" -> R.string.diag_pe_call_drop
+    "ims_register_request" -> R.string.diag_pe_ims_register_request
+    "ims_register_challenge" -> R.string.diag_pe_ims_register_challenge
+    "ims_register_success" -> R.string.diag_pe_ims_register_success
+    "ims_register_failure" -> R.string.diag_pe_ims_register_failure
+    "ims_deregister_request" -> R.string.diag_pe_ims_deregister_request
+    "ims_deregister_success" -> R.string.diag_pe_ims_deregister_success
+    else -> R.string.diag_pe_generic
+})
+
+@Composable
+private fun processPhaseLabel(phase: String): String = stringResource(when (phase) {
+    "request" -> R.string.diag_phase_request
+    "in_progress" -> R.string.diag_phase_in_progress
+    "success" -> R.string.diag_phase_success
+    "failure" -> R.string.diag_phase_failure
+    "release" -> R.string.diag_phase_release
+    else -> R.string.diag_pe_generic
+})
+
+@Composable
+private fun processNonClaim(key: String): String = stringResource(when (key) {
+    "rrc_complete_is_not_handover_success" -> R.string.diag_nc_rrc_complete_is_not_handover_success
+    "mobility_command_is_not_handover_success" -> R.string.diag_nc_mobility_command_is_not_handover_success
+    "target_setup_may_be_redirect" -> R.string.diag_nc_target_setup_may_be_redirect
+    "handover_success_is_one_procedure" -> R.string.diag_nc_handover_success_is_one_procedure
+    "reestablishment_while_handover_open" -> R.string.diag_nc_reestablishment_while_handover_open
+    "reestablishment_handover_failure" -> R.string.diag_nc_reestablishment_handover_failure
+    "msg2_is_not_contention_resolution" -> R.string.diag_nc_msg2_is_not_contention_resolution
+    "missing_ta_is_not_prach_failure" -> R.string.diag_nc_missing_ta_is_not_prach_failure
+    "setup_is_not_access_success" -> R.string.diag_nc_setup_is_not_access_success
+    "setup_not_in_trace" -> R.string.diag_nc_setup_not_in_trace
+    "attach_accept_is_not_attach_success" -> R.string.diag_nc_attach_accept_is_not_attach_success
+    "tau_complete_not_required" -> R.string.diag_nc_tau_complete_not_required
+    "registration_accept_is_not_ue_complete" -> R.string.diag_nc_registration_accept_is_not_ue_complete
+    "result_without_request" -> R.string.diag_nc_result_without_request
+    "bye_abnormal_is_heuristic" -> R.string.diag_nc_bye_abnormal_is_heuristic
+    "not_a_success_rate" -> R.string.diag_nc_not_a_success_rate
+    else -> R.string.diag_nc_not_a_success_rate
+})
 
 private enum class SignalingProtocol(val label: Int) {
     Rrc(R.string.diag_filter_rrc), Nas(R.string.diag_filter_nas), Ims(R.string.diag_filter_ims),
@@ -240,6 +324,34 @@ private val DiagRecord.isUnknownRrc: Boolean
 private val DiagRecord.isPacket: Boolean get() = type == "rrc" || type == "nas" || type == "nas_pdu" || type == "sip"
 private val DiagRecord.isTimelineEvent: Boolean
     get() = protocol == SignalingProtocol.Event || data.optBoolean("timeline_event")
+
+private val DiagRecord.isSignalingMessage: Boolean
+    get() = type in setOf("rrc", "nas", "nas_pdu", "nas_qos", "nas_mm", "sip", "ims_session", "ims_reg_log")
+
+private val DiagRecord.isWorkbenchEvent: Boolean
+    get() = type == "process_event" || type == "event" || type == "cell_change" || type == "nas_release" ||
+        type == "ims_call" || type == "ims_reg" || type == "ims_state"
+
+private fun DiagRecord.matchesEvent(filter: EventFilter): Boolean {
+    val family = data.optString("family")
+    val legacy = type != "process_event"
+    return when (filter) {
+        EventFilter.All -> true
+        EventFilter.Handover -> family == "handover"
+        EventFilter.Access -> family == "prach" || family == "rrc_access"
+        EventFilter.Registration -> family in setOf("attach", "tau", "registration", "ims_register")
+        EventFilter.Call -> family == "call"
+        EventFilter.Other -> legacy
+    }
+}
+
+private fun DiagRecord.linkedMessages(records: List<DiagRecord>): List<DiagRecord> {
+    val ids = data.optJSONArray("message_ids") ?: return emptyList()
+    return (0 until ids.length()).mapNotNull { index ->
+        val id = ids.optLong(index, -1)
+        records.firstOrNull { it.id == id }
+    }
+}
 
 private val DiagRecord.direction: String
     get() = data.optString("dir").ifBlank {
@@ -270,10 +382,22 @@ private val DiagRecord.channelLabel: String get() = data.optString("ch").let { c
 @Composable
 private fun DiagRecord.signalingHeading(protocol: String): String =
     listOf(formatTime(time), data.optString("rat").ifBlank { protocol }, directionArrow,
-        if (type == "cell_change") stringResource(R.string.diag_event_cell_change)
-        else title().replaceFirstChar { it.uppercase() }).filter(String::isNotBlank).joinToString("  ")
+        when (type) {
+            "cell_change" -> stringResource(R.string.diag_event_cell_change)
+            "process_event" -> processEventTitle(data.optString("title_key"))
+            else -> title().replaceFirstChar { it.uppercase() }
+        }).filter(String::isNotBlank).joinToString("  ")
 
-private fun DiagRecord.signalingInfo(protocol: String): String = buildList {
+@Composable
+private fun DiagRecord.signalingInfo(protocol: String): String {
+    val phaseLabel = if (type == "process_event") processPhaseLabel(data.optString("phase")) else ""
+    return buildList {
+    if (type == "process_event") {
+        add(phaseLabel)
+        data.optString("evidence").takeIf { it.isNotBlank() }?.let { add(it) }
+        data.optString("detail").takeIf { it == "MO" || it == "MT" }?.let { add(it) }
+        return@buildList
+    }
     val rat = data.optString("rat")
     /* MeasConfig events carry the trigger parameters rather than a message. */
     if (type == "event" && data.optString("event") == "meas_config") {
@@ -321,6 +445,7 @@ private fun DiagRecord.signalingInfo(protocol: String): String = buildList {
     }
     data.optInt("reassembled_len", data.optInt("len", -1)).takeIf { it >= 0 }?.let { add("$it B") }
 }.joinToString("  ")
+}
 
 private fun DiagRecord.matches(filter: ProtocolFilter, includeDiagnostics: Boolean): Boolean = when (filter) {
     ProtocolFilter.All -> includeDiagnostics || isPacket
@@ -328,7 +453,6 @@ private fun DiagRecord.matches(filter: ProtocolFilter, includeDiagnostics: Boole
     ProtocolFilter.Lte -> protocol == SignalingProtocol.Rrc && data.optString("rat") == "LTE"
     ProtocolFilter.Nas -> protocol == SignalingProtocol.Nas || data.has("dedicatedNAS") || data.has("nested_nas")
     ProtocolFilter.Ims -> protocol == SignalingProtocol.Ims
-    ProtocolFilter.Event -> isTimelineEvent
 }
 
 @Composable
@@ -347,7 +471,9 @@ internal fun SignalingScreen(viewModel: RootDiagViewModel, onBack: () -> Unit) {
         val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.ROOT).format(Date())
         qmdlExporter.launch("wireless-$stamp.qmdl")
     }
+    var workbench by rememberSaveable { mutableStateOf(Workbench.Signaling) }
     var filter by rememberSaveable { mutableStateOf(ProtocolFilter.All) }
+    var eventFilter by rememberSaveable { mutableStateOf(EventFilter.All) }
     var search by rememberSaveable { mutableStateOf("") }
     var searchOpen by rememberSaveable { mutableStateOf(false) }
     var showPaging by rememberSaveable { mutableStateOf(true) }
@@ -357,18 +483,27 @@ internal fun SignalingScreen(viewModel: RootDiagViewModel, onBack: () -> Unit) {
     var openedMessages by remember { mutableStateOf(emptyList<DiagRecord>()) }
     var openedIndex by remember { mutableStateOf(-1) }
     var linkedPacket by remember { mutableStateOf<DiagRecord?>(null) }
-    val visible = remember(records, filter, search, showPaging, showDiagnostics) {
+    val visible = remember(records, workbench, filter, eventFilter, search, showPaging, showDiagnostics) {
         val query = search.trim()
         records.filter { record ->
             val nas = record.data.optString("nested_nas").ifBlank {
                 record.data.optJSONObject("dedicatedNAS")?.optString("nas_message_type").orEmpty()
             }
-            record.matches(filter, showDiagnostics || query.isNotEmpty()) &&
-                (!record.isUnknownRrc || showDiagnostics || query.isNotEmpty()) &&
-                (showPaging || query.isNotEmpty() || !record.isPaging) &&
-                (query.isEmpty() || record.title().contains(query, ignoreCase = true) ||
+            val shown = if (workbench == Workbench.Signaling) {
+                record.isSignalingMessage &&
+                    record.matches(filter, showDiagnostics || query.isNotEmpty()) &&
+                    (!record.isUnknownRrc || showDiagnostics || query.isNotEmpty()) &&
+                    (showPaging || query.isNotEmpty() || !record.isPaging)
+            } else {
+                record.isWorkbenchEvent && record.matchesEvent(eventFilter)
+            }
+            shown && (query.isEmpty() || record.title().contains(query, ignoreCase = true) ||
                 record.data.optString("msg").contains(query, ignoreCase = true) ||
                 record.data.optString("event").contains(query, ignoreCase = true) ||
+                record.data.optString("title_key").contains(query, ignoreCase = true) ||
+                record.data.optString("title_zh").contains(query, ignoreCase = true) ||
+                record.data.optString("evidence").contains(query, ignoreCase = true) ||
+                record.data.optString("family").contains(query, ignoreCase = true) ||
                 (nasNames[nas] ?: nas).contains(query, ignoreCase = true))
         }
     }
@@ -401,6 +536,12 @@ internal fun SignalingScreen(viewModel: RootDiagViewModel, onBack: () -> Unit) {
             onPrevious = if (linkedPacket == null && openedIndex < openedMessages.lastIndex) ({ openedIndex++ }) else null,
             onNext = if (linkedPacket == null && openedIndex > 0) ({ openedIndex-- }) else null,
             onRelatedPacket = parent?.let { ({ linkedPacket = it }) },
+            linkedMessages = if (detail.type == "process_event") detail.linkedMessages(records) else emptyList(),
+            missingLinks = if (detail.type == "process_event") {
+                val expected = detail.data.optJSONArray("message_ids")?.length() ?: 0
+                expected - detail.linkedMessages(records).size
+            } else 0,
+            onOpenLinked = { linkedPacket = it },
         )
         return
     }
@@ -521,9 +662,23 @@ internal fun SignalingScreen(viewModel: RootDiagViewModel, onBack: () -> Unit) {
                 }
             }
             Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(3.dp)) {
-                for (option in ProtocolFilter.entries) {
-                    SignalListAction(stringResource(option.label), Modifier.weight(1f), selected = filter == option) {
-                        filter = option
+                SignalListAction(stringResource(R.string.diag_workbench_signaling), Modifier.weight(1f),
+                    selected = workbench == Workbench.Signaling) { workbench = Workbench.Signaling }
+                SignalListAction(stringResource(R.string.diag_workbench_events), Modifier.weight(1f),
+                    selected = workbench == Workbench.Events) { workbench = Workbench.Events }
+            }
+            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+                if (workbench == Workbench.Signaling) {
+                    for (option in ProtocolFilter.entries) {
+                        SignalListAction(stringResource(option.label), Modifier.weight(1f), selected = filter == option) {
+                            filter = option
+                        }
+                    }
+                } else {
+                    for (option in EventFilter.entries) {
+                        SignalListAction(stringResource(option.label), Modifier.weight(1f), selected = eventFilter == option) {
+                            eventFilter = option
+                        }
                     }
                 }
             }
@@ -531,7 +686,10 @@ internal fun SignalingScreen(viewModel: RootDiagViewModel, onBack: () -> Unit) {
                 OutlinedTextField(
                     value = search, onValueChange = { search = it },
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
-                    placeholder = { Text(stringResource(R.string.diag_search_messages)) },
+                    placeholder = {
+                        Text(stringResource(if (workbench == Workbench.Events) R.string.diag_search_events
+                        else R.string.diag_search_messages))
+                    },
                     leadingIcon = { Icon(Icons.Rounded.Search, null) },
                     trailingIcon = {
                         IconButton(onClick = { search = ""; searchOpen = false }) {
@@ -565,6 +723,8 @@ internal fun SignalingScreen(viewModel: RootDiagViewModel, onBack: () -> Unit) {
                         Column(Modifier.padding(16.dp)) {
                             Text(
                                 stringResource(when {
+                                    workbench == Workbench.Events && records.none(DiagRecord::isWorkbenchEvent) ->
+                                        R.string.diag_no_events
                                     waitingForModem && status.modemWaitTimedOut -> R.string.diag_modem_wait_timed_out
                                     waitingForModem -> R.string.diag_waiting_modem_packets
                                     records.isEmpty() -> R.string.diag_no_messages
@@ -629,9 +789,14 @@ private fun CaptureErrors(status: RootSignalState) {
 private fun MessageRow(record: DiagRecord, onClick: () -> Unit) {
     val colors = MaterialTheme.colorScheme
     val dark = colors.background.luminance() < 0.5f
-    val directionColor = when (record.direction) {
-        "UL" -> if (dark) Color(0xFF90C6FF) else Color(0xFF125FAE)
-        "DL" -> if (dark) Color(0xFF91DC9B) else Color(0xFF246B38)
+    val phase = record.data.optString("phase")
+    val directionColor = when {
+        record.type == "process_event" && phase == "failure" -> colors.error
+        record.type == "process_event" && (phase == "success" || phase == "release") ->
+            if (dark) Color(0xFF91DC9B) else Color(0xFF246B38)
+        record.type == "process_event" -> if (dark) Color(0xFF90C6FF) else Color(0xFF125FAE)
+        record.direction == "UL" -> if (dark) Color(0xFF90C6FF) else Color(0xFF125FAE)
+        record.direction == "DL" -> if (dark) Color(0xFF91DC9B) else Color(0xFF246B38)
         else -> colors.onSurface
     }
     val protocol = stringResource(record.protocol.label)
@@ -733,9 +898,44 @@ private fun DiagRecord.packetHeader(): String = buildList {
 }.joinToString("\n")
 
 @Composable
+private fun ProcessEventSummary(record: DiagRecord, linked: List<DiagRecord>, missing: Int,
+                                onOpen: (DiagRecord) -> Unit) {
+    val colors = MaterialTheme.colorScheme
+    Column(Modifier.padding(bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(processPhaseLabel(record.data.optString("phase")), style = MaterialTheme.typography.titleSmall,
+            color = colors.primary)
+        val evidence = record.data.optString("evidence")
+        if (evidence.isNotBlank()) {
+            Text("${stringResource(R.string.diag_event_evidence)}: $evidence",
+                style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+        }
+        val claim = record.data.optString("non_claim")
+        if (claim.isNotBlank()) {
+            Text(processNonClaim(claim), style = MaterialTheme.typography.bodySmall, color = colors.tertiary)
+        }
+        if (record.data.has("cause")) {
+            Text("${stringResource(R.string.diag_event_evidence)} cause ${record.data.optInt("cause")}",
+                style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+        }
+        for (message in linked) {
+            TextButton(onClick = { onOpen(message) }) {
+                Text(stringResource(R.string.diag_open_linked_message, message.title()))
+            }
+        }
+        if (missing > 0) {
+            Text(stringResource(R.string.diag_event_linked_missing), style = MaterialTheme.typography.bodySmall,
+                color = colors.error)
+        }
+    }
+}
+
+@Composable
 private fun MessageDetailsScreen(record: DiagRecord, onClose: () -> Unit,
                                  onPrevious: (() -> Unit)?, onNext: (() -> Unit)?,
-                                 onRelatedPacket: (() -> Unit)?) {
+                                 onRelatedPacket: (() -> Unit)?,
+                                 linkedMessages: List<DiagRecord> = emptyList(),
+                                 missingLinks: Int = 0,
+                                 onOpenLinked: (DiagRecord) -> Unit = {}) {
     val context = LocalContext.current
     val masked = stringResource(R.string.diag_identity_masked)
     val unknownPaging = stringResource(R.string.diag_paging_unsupported)
@@ -747,6 +947,11 @@ private fun MessageDetailsScreen(record: DiagRecord, onClose: () -> Unit,
     val report = record.data.optJSONObject("measResults")
     val header = remember(record) { record.packetHeader() }
     val body = remember(record, masked, unknownPaging, noFields, extension, partial, nasProtected) {
+        if (record.type == "process_event") return@remember ""
+        if (record.type == "sip") {
+            val tree = sipMessageTree(record.data)
+            if (tree.isNotBlank()) return@remember tree
+        }
         if (record.decodedTree.isNotBlank()) return@remember record.decodedTree.trimEnd()
         val tree = record.messageTree(masked, unknownPaging, noFields, extension, partial)
         if (record.data.optJSONObject("dedicatedNAS")?.optInt("nas_security_header", 0) in setOf(2, 4, 5)) {
@@ -791,6 +996,9 @@ private fun MessageDetailsScreen(record: DiagRecord, onClose: () -> Unit,
                                 if (warning.isNotBlank()) Text(warning, color = MaterialTheme.colorScheme.error,
                                     style = MaterialTheme.typography.labelMedium)
                             }
+                        }
+                        if (record.type == "process_event") item("process") {
+                            ProcessEventSummary(record, linkedMessages, missingLinks, onOpenLinked)
                         }
                         if (onRelatedPacket != null) item("related") {
                             TextButton(onClick = onRelatedPacket) { Text(stringResource(R.string.diag_open_related_message)) }

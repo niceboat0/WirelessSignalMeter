@@ -59,6 +59,10 @@ struct sd_summary {
     int suspended;
     struct { int mcc, mnc, mnc_digits; } plmns[SD_PLMN_LIMIT];
     int plmn_count, plmn_invalid, selected_plmn;
+    /* 1: reconfigurationWithSync, 2: mobilityControlInfo. A complete message alone never sets these. */
+    unsigned mobility_flags;
+    int target_pci_plus_one;
+    int reest_handover_failure;
 };
 
 static void sd_sib1_value(struct sd_summary *summary, const char *label, long long value) {
@@ -353,6 +357,14 @@ static void sd_open(struct sd *d, struct sd_br *r, uint32_t ni, int depth, const
 }
 
 static void sd_val(struct sd *d, struct sd_br *r, uint32_t ni, int depth, const char *label, int hide) {
+    if (!hide && d->summary) {
+        if (!strcmp(label, "reconfigurationWithSync")) d->summary->mobility_flags |= 1;
+        else if (!strcmp(label, "mobilityControlInfo") || !strcmp(label, "mobilityControlInfoSCG-r12"))
+            d->summary->mobility_flags |= 2;
+        if (d->summary->message && strstr(d->summary->message, "eestablishment") &&
+            !strcmp(label, "handoverFailure"))
+            d->summary->reest_handover_failure = 1;
+    }
     const char *type = sd_s(k_rs_node[ni].tname);
     if (!hide && !d->nr && d->summary && d->dl && !strcmp(label, "sib2") &&
         d->summary->message && !strcmp(d->summary->message, "systemInformation")) {
@@ -571,6 +583,8 @@ static void sd_val_impl(struct sd *d, struct sd_br *r, uint32_t ni, int depth, c
                v = (long long)u; }
         /* This is the RRC resource indication for the initial BWP.
          * The generic location redaction still applies to the signaling text. */
+        if (!r->err && d->summary && !strcmp(label, "targetPhysCellId") && v >= 0 && v <= 1007)
+            d->summary->target_pci_plus_one = (int)v + 1;
         if (!r->err && d->in_initial_bwp && !strcmp(label, "locationAndBandwidth")) {
             d->summary->sib1[d->in_initial_bwp] = (int)v;
             d->summary->sib1_present |= 1u << d->in_initial_bwp;
