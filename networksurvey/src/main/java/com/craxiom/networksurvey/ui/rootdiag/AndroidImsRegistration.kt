@@ -96,5 +96,7 @@ internal fun readAndroidIms(context: Context): ImsProviderStatus {
         AndroidImsRegistration.providerStatus(snapshots, sdk)
     } catch (_: SecurityException) {
         ImsProviderStatus("android_telephony", "unavailable", false, "permission_denied")
+    } catch (_: RuntimeException) {
+        ImsProviderStatus("android_telephony", "unavailable", false, "ims_unavailable")
     }
 }

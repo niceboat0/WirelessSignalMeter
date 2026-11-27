@@ -233,6 +233,7 @@ private fun SignalTab(rootDiag: RootDiagViewModel, bottomPadding: Dp, active: Bo
     val signal by rootDiag.signal.collectAsStateWithLifecycle()
     var fragment by remember { mutableStateOf<MainCellularFragment?>(null) }
     var simCount by remember { mutableIntStateOf(0) }
+    var subscriptionId by remember { mutableStateOf<Int?>(null) }
     val androidCells = fragment?.cellularModel?.observeAsState()?.value
     val protocol = androidCells?.servingCellProtocol?.observeAsState()?.value
     val nrBandwidthDiagnostic = androidCells?.nrBandwidthDiagnostic?.observeAsState()?.value
@@ -248,11 +249,11 @@ private fun SignalTab(rootDiag: RootDiagViewModel, bottomPadding: Dp, active: Bo
         DeviceCapabilities.displayUsesDiag(fragment?.simCount ?: simCount, protocol?.name, diagServing)
     }
     val useRoot = diagCells != null
-    LaunchedEffect(active, useRoot, protocol, simCount) {
-        if (active) {
-            rootDiag.recordSignalMode(useRoot, protocol?.name, simCount)
-            rootDiag.updateSimContext(simCount, fragment?.currentSubscriptionId?.takeIf { it >= 0 })
-        }
+    LaunchedEffect(active, fragment, useRoot, protocol, simCount) {
+        if (active && fragment != null) rootDiag.recordSignalMode(useRoot, protocol?.name, simCount)
+    }
+    LaunchedEffect(active, fragment, protocol, simCount, subscriptionId) {
+        if (active && fragment != null) rootDiag.updateSimContext(simCount, subscriptionId)
     }
     LaunchedEffect(active, useRoot, nrBandwidthDiagnostic) {
         if (active) rootDiag.recordAndroidNrBandwidth(nrBandwidthDiagnostic.takeUnless { useRoot })
@@ -260,8 +261,12 @@ private fun SignalTab(rootDiag: RootDiagViewModel, bottomPadding: Dp, active: Bo
 
     DisposableEffect(fragment) {
         val cellular = fragment
-        cellular?.setSimSwitchCallback { _, count, _ -> simCount = count }
+        cellular?.setSimSwitchCallback { _, count, _ ->
+            simCount = count
+            subscriptionId = cellular.currentSubscriptionId.takeIf { it >= 0 }
+        }
         simCount = cellular?.simCount ?: 0
+        subscriptionId = cellular?.currentSubscriptionId?.takeIf { it >= 0 }
         onDispose { cellular?.setSimSwitchCallback(null) }
     }
 

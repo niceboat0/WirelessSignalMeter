@@ -21,7 +21,9 @@ import com.craxiom.networksurvey.model.AndroidNrCarriers
 import com.craxiom.networksurvey.model.NrCarrier
 import com.craxiom.networksurvey.ui.cellular.CellularChartViewModel
 import com.craxiom.networksurvey.util.AndroidLteSinrReader
+import com.craxiom.networksurvey.util.AppLogger
 import com.craxiom.networksurvey.util.DiagJournal
+import com.craxiom.networksurvey.util.FramePerformanceDiagnostics
 import com.craxiom.networksurvey.util.LteSinrUtils
 import com.craxiom.networksurvey.services.CaptureServiceNotification
 import com.craxiom.networksurvey.services.RootDiagCollectorService
@@ -31,8 +33,8 @@ import android.Manifest
 import android.content.pm.PackageManager
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
@@ -43,11 +45,12 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.yield
+import kotlin.coroutines.coroutineContext
 import org.json.JSONObject
 import org.json.JSONArray
-import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.IOException
+import java.io.InputStream
 import java.util.concurrent.TimeUnit
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
@@ -114,7 +117,13 @@ internal data class RecordingExportPlan(
     val zip: Boolean,
 )
 
-class RootDiagViewModel(application: Application) : AndroidViewModel(application) {
+class RootDiagViewModel internal constructor(
+    application: Application,
+    private val captureIo: CoroutineDispatcher,
+    private val launchCollector: (() -> Process)? = null,
+) : AndroidViewModel(application) {
+    constructor(application: Application) : this(application, Dispatchers.IO)
+
     private val app = application
     private val signalState = MutableStateFlow(RootSignalState())
     internal val signal = signalState.asStateFlow()
@@ -165,12 +174,11 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
     private var overlayImsAvailable: Boolean? = null
     private var overlayImsCall = "idle"
     private var overlayDropped = 0L
-    private var lastEndStatus = RootDiagStatus.Checking
-    private var lastEndError: Int? = null
     private var hadBeenRunning = false
     private var restartAttempt = 0
     private var simCount = 0
     private var selectedSubscriptionId: Int? = null
+    private var androidImsRefresh: Job? = null
     private val imsProviders = linkedMapOf<String, ImsProviderStatus>()
     private var lastImsEvidence: ImsEvidence? = null
     private var taskStore: SurveyTaskStore? = null
@@ -183,9 +191,20 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
     internal val collectionMode = collectionModeState.asStateFlow()
 
     internal fun recordSignalMode(root: Boolean, androidProtocol: String?, simCount: Int) {
-        lastSignalMode = JSONObject().put("type", "signal_mode").put("t", System.currentTimeMillis())
-            .put("mode", if (root) "root_diag" else "android").put("sim_count", simCount)
+        val mode = if (root) "root_diag" else "android"
+        val previous = lastSignalMode
+        if (previous?.optString("mode") == mode && previous.optInt("sim_count") == simCount &&
+            previous.opt("android_rat") == (androidProtocol ?: JSONObject.NULL)) return
+        val state = signalState.value
+        val entry = JSONObject().put("type", "signal_mode").put("t", System.currentTimeMillis())
+            .put("mode", mode).put("sim_count", simCount)
             .put("android_rat", androidProtocol ?: JSONObject.NULL)
+            .put("clock_id", SurveyTaskStore.CLOCK_ID)
+            .put("collector_run", collectorRuns.lastOrNull()?.optLong("id") ?: JSONObject.NULL)
+            .put("collector_state", state.status.name)
+            .put("has_modem_packets", state.hasModemPackets)
+        lastSignalMode = entry
+        DiagJournal.append(app, JSONObject(entry.toString()).put("type", "signal_transition"))
     }
 
     internal fun recordAndroidNrBandwidth(sample: CellularViewModel.NrBandwidthDiagnostic?) {
@@ -211,7 +230,7 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
                 .put("baseband", Build.getRadioVersion().orEmpty()))
         }
         viewModelScope.launch {
-            val segments = withContext(Dispatchers.IO) {
+            val segments = withContext(captureIo) {
                 runCatching { recordingSession.recoverLeftoverActive() }
                 recordingSession.exportableRecordings().size
             }
@@ -231,7 +250,7 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
             }
         }
         viewModelScope.launch {
-            val store = withContext(Dispatchers.IO) {
+            val store = withContext(captureIo) {
                 runCatching { SurveyTaskStore.get(app) }.onFailure {
                     timber.log.Timber.w(it, "Could not open diagnostic task store")
                 }.getOrNull()
@@ -256,7 +275,7 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
     private fun requestQmdlStart(manual: Boolean) {
         val taskId = DiagRecordingPolicy.recordingTaskId(currentMode(), activeTask, manual, qmdlAutoStartBlockedTask)
             ?: return
-        if (signalState.value.status != RootDiagStatus.Running ||
+        if (capture?.isStopping != false || signalState.value.status != RootDiagStatus.Running ||
             qmdlState.value.phase != QmdlPhase.Idle || qmdlState.value.recovering || qmdlExport.value != null) return
         qmdlTaskId = taskId
         lastQmdlStatus = null
@@ -280,7 +299,7 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
     }
 
     private suspend fun finishQmdl(result: QmdlResult) {
-        val saved = withContext(Dispatchers.IO) {
+        val saved = withContext(captureIo) {
             // Saved, empty, error, interrupt, and the 128 MB limit all end here, so the sidecar stops too.
             try {
                 locationRecording.onSessionFinished()
@@ -385,6 +404,7 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
         val probeSamples = if (includeMeasurementSamples) neighborProbeSamples.values.flatten() else emptyList()
         val collectorStatus = lastCollectorStatus
         val qmdlStatus = lastQmdlStatus
+        capture?.updatePerformanceSnapshot()
         val runs = collectorRuns.map { JSONObject(it.toString()) }
         val recovery = collectorRecovery.toList()
         val notifications = CaptureServiceNotification.diagnostics(app)
@@ -395,6 +415,7 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
         val rootNrCa = nrCaObservations.toList()
         val neighborTables = neighborTableDiagnostics(snapshot)
         val invalidLines = invalidLineCount
+        val ims = currentCapability().imsStatus
         val rawJournal = withContext(Dispatchers.IO) {
             DiagJournal.flush(app)
             DiagJournal.read(app)
@@ -419,10 +440,10 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
                 .put("task_association", "captured_at_sample; missing task_id remains unassigned")
                 .put("time_ms", System.currentTimeMillis())
                 .put("ims_status", JSONObject()
-                    .put("headline", currentCapability().imsStatus.headlineKey)
-                    .put("registration", currentCapability().imsStatus.registration.name)
-                    .put("source", currentCapability().imsStatus.evidenceSource ?: JSONObject.NULL)
-                    .put("technical", currentCapability().imsStatus.technical))
+                    .put("headline", ims.headlineKey)
+                    .put("registration", ims.registration.name)
+                    .put("source", ims.evidenceSource ?: JSONObject.NULL)
+                    .put("technical", ims.technical))
                 .put("app_version", BuildConfig.VERSION_NAME)
                 .put("app_version_code", BuildConfig.VERSION_CODE)
                 .put("app_package", app.packageName)
@@ -435,6 +456,7 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
                 .put("soc_model", Build.SOC_MODEL)
                 .put("baseband", Build.getRadioVersion().orEmpty())
                 .put("collector_state", snapshot.status.name)
+                .put("frame_performance", FramePerformanceDiagnostics.snapshot())
                 .put("error_code", snapshot.errorCode ?: JSONObject.NULL)
                 .put("invalid_json_lines", invalidLines)
                 .put("journal_lines", journal.size)
@@ -451,9 +473,10 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
             output.bufferedWriter(Charsets.UTF_8).use { writer ->
                 writer.appendLine(header.toString())
                 writer.appendLine(notifications.toString())
-                for (entry in com.craxiom.networksurvey.util.AppLogger.readBandLockDiagnostics()) {
+                for (entry in AppLogger.readBandLockDiagnostics()) {
                     writer.appendLine(JSONObject().put("type", "band_lock").put("log", entry).toString())
                 }
+                for (entry in AppLogger.readFailureDiagnostics()) writer.appendLine(entry.toString())
                 for (taskId in taskIds) {
                     val events = tasks.events(taskId)
                     writer.appendLine(JSONObject().put("type", "task_event_window").put("task_id", taskId)
@@ -466,7 +489,6 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
                 collectorStatus?.let { writer.appendLine(redactDiagnostic(it).toString()) }
                 qmdlStatus?.let { writer.appendLine(redactDiagnostic(it).toString()) }
                 for (entry in runs) writer.appendLine(redactDiagnostic(entry).toString())
-                for (entry in recovery) writer.appendLine(entry.toString())
                 signalMode?.let { writer.appendLine(it.toString()) }
                 androidNrBandwidth?.let { writer.appendLine(it.toString()) }
                 for (entry in androidLteSinr) writer.appendLine(entry.toDiagnosticJson().toString())
@@ -489,6 +511,7 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
                 if (journal.isNotEmpty()) {
                     for (line in journal) writer.appendLine(line)
                 } else {
+                    for (entry in recovery) writer.appendLine(entry.toString())
                     for (entry in records) writer.appendLine(redactDiagnostic(entry).toString())
                 }
                 for (entry in samples) writer.appendLine(redactDiagnostic(entry).toString())
@@ -505,8 +528,14 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
     private fun recordDiagnostic(value: JSONObject) {
         val type = value.optString("type")
         when (type) {
-            "status" -> lastCollectorStatus = value
-            "qmdl" -> lastQmdlStatus = value
+            "status" -> {
+                lastCollectorStatus = value
+                DiagJournal.append(app, redactDiagnostic(value))
+            }
+            "qmdl" -> {
+                lastQmdlStatus = value
+                DiagJournal.append(app, redactDiagnostic(value))
+            }
             "unknown_layout", "layout_seen" -> {
                 val key = type + ":" + value.optString("code") + ":" + value.optString("ver")
                 if (key !in layoutNotices && layoutNotices.size == 128) layoutNotices.remove(layoutNotices.keys.first())
@@ -523,30 +552,33 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
                 if (samples.size == MAX_NEIGHBOR_SAMPLES_PER_CODE) samples.removeFirst()
                 samples.addLast(value)
             }
-            "ims_provider" -> {
+            "ims_provider", in signalingTypes -> {
+                val redacted = redactDiagnostic(value)
                 if (diagnosticRecords.size == MAX_DIAGNOSTIC_MESSAGES) diagnosticRecords.removeFirst()
-                diagnosticRecords.addLast(redactDiagnostic(value))
+                diagnosticRecords.addLast(if (type == "ims_provider" || value.has("decoded_tree")) redacted else value)
+                DiagJournal.append(app, redacted)
             }
-            in signalingTypes -> {
-                if (diagnosticRecords.size == MAX_DIAGNOSTIC_MESSAGES) diagnosticRecords.removeFirst()
-                diagnosticRecords.addLast(if (value.has("decoded_tree")) redactDiagnostic(value) else value)
-            }
-        }
-        /* Mirror the exported records to the crash-safe journal. A crash must
-           not lose the signaling/event history of the current run. */
-        if (type == "status" || type == "qmdl" || type == "ims_provider" || type in signalingTypes) {
-            DiagJournal.append(app, if (value.has("decoded_tree")) redactDiagnostic(value) else value)
         }
     }
 
     private var nextId = 0L
     private var firstVisibleMessageId = 0L
-    private var capture: Job? = null
-    private var collectorProcess: Process? = null
+    private var capture: CaptureSession? = null
+    private var lingeringProcess: Process? = null
+    private var lingeringSession: CaptureSession? = null
+    private var lingeringReaper: Job? = null
+    private var retryJob: Job? = null
     private var modemRecovery: Job? = null
     private var foreground = false
     private var pausedByUser = false
-    private var restartAfterStop = false
+
+    private enum class CaptureStop(val trace: String, val restart: Boolean) {
+        Paused("paused", false),
+        NoListener("no_listener", false),
+        SilentReconnect("silent_reconnect", true),
+        ModemRestart("modem_restart", true),
+        QmdlTimeout("qmdl_deadline", true),
+    }
 
     internal fun enterForeground() {
         foreground = true
@@ -569,10 +601,9 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
     internal fun reconnectSilentCollector() {
         if (!signalState.value.modemWaitTimedOut || qmdlState.value.phase != QmdlPhase.Idle ||
             qmdlState.value.recovering) return
-        val job = capture?.takeIf { it.isActive } ?: return
+        val session = capture?.takeUnless { it.isStopping } ?: return
         restartAttempt = 0
-        restartAfterStop = true
-        job.cancel()
+        session.requestStop(CaptureStop.SilentReconnect)
     }
 
     internal fun recoverAfterModemRestart() {
@@ -599,22 +630,25 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
                 val stale = CollectorRestartPolicy.needsModemRecovery(
                     signal.status == RootDiagStatus.Running, statusAge ?: Long.MAX_VALUE, packetAge, now - requestedAt,
                 )
-                val phase = CollectorRestartPolicy.modemRecoveryPhase(stale, check, restarts)
+                val phase = when {
+                    !stale -> "packets_resumed"
+                    qmdlState.value.phase != QmdlPhase.Idle || qmdlState.value.recovering -> "deferred_qmdl_active"
+                    capture?.isStopping == true || lingeringProcess?.isAlive == true -> "waiting_for_collector_exit"
+                    else -> CollectorRestartPolicy.modemRecoveryPhase(stale, check, restarts)
+                }
                 recordCollectorRecovery(phase, packetAge, statusAge, check)
                 if (phase == "restarting_collector") {
                     restarts++
                     restartAttempt = 0
-                    val recordingOpen = qmdlState.value.phase == QmdlPhase.Recording ||
-                        qmdlState.value.phase == QmdlPhase.Starting
-                    if (recordingOpen) {
-                        resumeRecordingTask = qmdlTaskId
-                        resumeRecordingFormat = recordingFormat
-                    }
-                    val job = capture
-                    if (job == null) start()
+                    val session = capture
+                    if (session == null) start()
                     else {
-                        restartAfterStop = true
-                        if (job.isActive) job.cancel()
+                        if (qmdlState.value.phase == QmdlPhase.Recording ||
+                            qmdlState.value.phase == QmdlPhase.Starting) {
+                            resumeRecordingTask = qmdlTaskId
+                            resumeRecordingFormat = recordingFormat
+                        }
+                        session.requestStop(CaptureStop.ModemRestart)
                     }
                 }
             }
@@ -631,31 +665,29 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
     private fun recordCollectorRecovery(
         stage: String, packetAgeMs: Long? = null, statusAgeMs: Long? = null, check: Int = 0,
     ) {
-        if (collectorRecovery.size == 24) collectorRecovery.removeFirst()
-        collectorRecovery.addLast(JSONObject().put("type", "collector_recovery")
+        val entry = JSONObject().put("type", "collector_recovery")
             .put("t", System.currentTimeMillis()).put("stage", stage)
             .put("check", check).put("collector_run", collectorRuns.lastOrNull()?.optLong("id") ?: JSONObject.NULL)
+            .put("clock_id", SurveyTaskStore.CLOCK_ID)
             .put("packet_age_ms", packetAgeMs ?: JSONObject.NULL)
             .put("status_age_ms", statusAgeMs ?: JSONObject.NULL)
             .put("live_serving", signalState.value.hasLiveServingCell(null, SystemClock.elapsedRealtime()))
             .put("collector_state", signalState.value.status.name)
-            .put("qmdl_phase", qmdlState.value.phase.name))
+            .put("qmdl_phase", qmdlState.value.phase.name)
+        if (collectorRecovery.size == 24) collectorRecovery.removeFirst()
+        collectorRecovery.addLast(entry)
+        DiagJournal.append(app, entry)
     }
 
     internal fun pause() {
         pausedByUser = true
+        modemRecovery?.cancel()
+        modemRecovery = null
         applyCollectionPolicy()
     }
 
-    private fun collectorProcessAlive(): Boolean = collectorProcess?.isAlive == true
-
-    /** Test hook: screen lock must not cancel the capture job that owns the live process. */
-    internal fun captureWasCancelled(): Boolean = capture?.isCancelled == true
-
-    internal fun bindLiveCollectorForTest(process: Process, status: RootDiagStatus) {
-        collectorProcess = process
-        signalState.value = signalState.value.copy(status = status)
-    }
+    private fun collectorProcessAlive(): Boolean =
+        capture?.processAlive == true || lingeringProcess?.isAlive == true
 
     private fun currentMode(): DiagRecordingPolicy.Mode = DiagRecordingPolicy.mode(
         taskRunning = activeTask != null,
@@ -670,13 +702,17 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
         collectionModeState.value = mode
         if (qmdlTaskId != eligibleQmdlTask()) requestQmdlStop()
         if (DiagRecordingPolicy.shouldListen(mode)) {
-            if (capture?.isCancelled == true) restartAfterStop = true
-            if (capture == null && !collectorProcessAlive() && (explicitRetry || signalState.value.status !in setOf(
+            capture?.resumeAfterStop()
+            lingeringSession?.resumeAfterStop()
+            if (capture == null && (explicitRetry || retryJob == null && signalState.value.status !in setOf(
                     RootDiagStatus.Denied, RootDiagStatus.Unavailable, RootDiagStatus.Unsupported,
                 ))) start()
         } else {
-            restartAfterStop = false
-            capture?.cancel()
+            retryJob?.cancel()
+            retryJob = null
+            val reason = if (pausedByUser) CaptureStop.Paused else CaptureStop.NoListener
+            capture?.requestStop(reason)
+            lingeringSession?.requestStop(reason)
         }
         publishOverlay(signalState.value.status, signalState.value.records)
         syncCollectorService(signalState.value.status)
@@ -691,45 +727,88 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
     private fun start() {
         if (capture != null || collectorProcessAlive()) return
         if (!DiagRecordingPolicy.shouldListen(currentMode())) return
+        retryJob?.cancel()
+        retryJob = null
+        val session = CaptureSession()
+        capture = session
         signalState.value = RootSignalState(
             RootDiagStatus.Checking, lastMeasurements.values.toList() + lastConfiguration.values,
             cachedMeasureIds = lastMeasurements.values.mapTo(mutableSetOf()) { it.id },
             lastNeighborMeasurementAt = signalState.value.lastNeighborMeasurementAt,
         )
-        capture = viewModelScope.launch(start = CoroutineStart.LAZY) {
+        syncCollectorService(RootDiagStatus.Checking)
+        viewModelScope.launch {
             try {
-                captureRecords()
+                session.collect()
             } finally {
                 capture = null
-                val keep = !pausedByUser && DiagRecordingPolicy.shouldListen(currentMode())
-                val retry = CollectorRestartPolicy.shouldRetry(
-                    lastEndStatus, lastEndError, hadBeenRunning, restartAttempt,
-                )
-                if (keep && (restartAfterStop || retry)) {
-                    restartAfterStop = false
-                    if (retry && isActive) {
-                        val wait = CollectorRestartPolicy.delayMs(restartAttempt)
-                        restartAttempt++
-                        delay(wait)
-                    }
-                    if (!pausedByUser && DiagRecordingPolicy.shouldListen(currentMode())) start()
-                    else syncCollectorService(lastEndStatus)
-                } else {
-                    syncCollectorService(lastEndStatus)
+            }
+            if (isActive) onCaptureFinished(session)
+        }
+    }
+
+    private fun onCaptureFinished(session: CaptureSession) {
+        val mode = currentMode()
+        collectionModeState.value = mode
+        if (lingeringSession === session) {
+            if (lingeringReaper?.isActive != true) {
+                lingeringProcess?.let { watchLingeringProcess(session, it) }
+            }
+            syncCollectorService(session.status)
+            return
+        }
+        val canContinue = DiagRecordingPolicy.shouldListen(mode) && !collectorProcessAlive()
+        when {
+            canContinue && session.restartRequested -> start()
+            canContinue && !session.wasAskedToStop && CollectorRestartPolicy.shouldRetry(
+                session.status, session.errorCode, hadBeenRunning, restartAttempt,
+            ) -> {
+                val wait = CollectorRestartPolicy.delayMs(restartAttempt++)
+                retryJob = viewModelScope.launch {
+                    delay(wait)
+                    retryJob = null
+                    start()
                 }
             }
+            else -> syncCollectorService(session.status)
         }
-        capture?.start()
-        syncCollectorService(RootDiagStatus.Checking)
+    }
+
+    /**
+     * A collector can ignore the initial close/destroy sequence (for example
+     * while the diag-router is blocked in a modem call). Keep watching that
+     * exact process after the capture coroutine has returned. Once it really
+     * exits, release the reference, finalize any recording that could not
+     * receive a stop ACK, and run the normal restart/retry decision again.
+     */
+    private fun watchLingeringProcess(session: CaptureSession, process: Process) {
+        lingeringReaper?.cancel()
+        lingeringReaper = viewModelScope.launch {
+            try {
+                while (process.isAlive) delay(LINGERING_PROCESS_POLL_MS)
+                if (lingeringProcess !== process || lingeringSession !== session) return@launch
+                lingeringProcess = null
+                lingeringSession = null
+                session.finishLingeringQmdl()
+                recordCollectorRecovery("lingering_process_exited")
+                onCaptureFinished(session)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } finally {
+                if (lingeringReaper === coroutineContext[Job]) lingeringReaper = null
+            }
+        }
     }
 
     internal fun updateSimContext(count: Int, subscriptionId: Int?) {
         simCount = count
         selectedSubscriptionId = subscriptionId
         publishCapability()
-        viewModelScope.launch(Dispatchers.IO) {
-            imsProviders["android_telephony"] = readAndroidIms(app)
-            withContext(Dispatchers.Main) { publishCapability() }
+        androidImsRefresh?.cancel()
+        androidImsRefresh = viewModelScope.launch {
+            val provider = withContext(Dispatchers.IO) { readAndroidIms(app) }
+            imsProviders[provider.name] = provider
+            publishCapability()
         }
     }
 
@@ -743,7 +822,8 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
             status == RootDiagStatus.Running
         val mode = currentMode()
         val hold = DiagRecordingPolicy.shouldHoldService(mode)
-        if (active && hold) {
+        if ((active || retryJob != null || capture?.restartRequested == true ||
+                lingeringSession?.restartRequested == true) && hold) {
             if (!RootDiagCollectorService.isMaintained && foreground) RootDiagCollectorService.start(app)
         } else {
             RootDiagCollectorService.stop(app)
@@ -798,19 +878,23 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
         )
     }
 
-    private suspend fun captureRecords() {
+    private inner class CaptureSession {
         val helper = File(app.applicationInfo.nativeLibraryDir, "libwireless_root_diag.so")
-        processLedger.reset()
         val run = JSONObject().put("type", "collector_run").put("id", nextCollectorRun++)
             .put("started_ms", System.currentTimeMillis()).put("clock_id", SurveyTaskStore.CLOCK_ID)
-        if (collectorRuns.size == MAX_COLLECTOR_RUNS) collectorRuns.removeFirst()
-        collectorRuns.addLast(run)
-        lastCollectorStatus = null
-        lastCollectorStatusAtElapsed = 0L
-
-        var process: Process? = null
+        // Save the handle on the IO thread even if scope cancellation prevents the result crossing back.
+        @Volatile private var process: Process? = null
+        val processAlive get() = process?.isAlive == true
+        private var stopRequest: CaptureStop? = null
+        private var closing = false
+        val isStopping get() = stopRequest != null || closing
+        val wasAskedToStop get() = stopRequest != null
+        var restartRequested = false
+            private set
         var status = RootDiagStatus.Checking
+            private set
         var errorCode: Int? = null
+            private set
         var hasModemPackets = false
         val metrics = mutableMapOf<String, DiagRecord>()
         val cached = lastMeasurements.toMutableMap()
@@ -820,8 +904,7 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
         var readyAt: Long? = null
         val pending = ArrayDeque<DiagRecord>()
         val startupLog = ArrayDeque<String>()
-        val line = ByteArrayOutputStream()
-        var overlong = false
+        val outputFramer = DiagOutputFramer(MAX_LINE_BYTES)
         var lastFlush = 0L
         var lastHeartbeat = SystemClock.elapsedRealtime()
         /* Liveness diagnostics. A 2026-11-27 export showed a run that stayed
@@ -837,7 +920,21 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
         var slowestLineType = ""
         var slowPublishes = 0
         var slowestPublishMs = 0L
-        var exitReason = "loop"
+        var jsonLines = 0L
+        var jsonChars = 0L
+        var jsonParseDispatched = 0L
+        var jsonParseMs = 0L
+        var jsonParseMaxMs = 0L
+        var jsonParseOverBudget = 0L
+        var receivedRecords = 0L
+        var receiveWallMs = 0L
+        var receiveWallMaxMs = 0L
+        var receiveWallOverBudget = 0L
+        var publishCalls = 0L
+        var publishWallMs = 0L
+        var publishWallMaxMs = 0L
+        var publishWallOverBudget = 0L
+        var exitReason = "exception"
         val lastChartRecords = mutableMapOf<String, Long>()
         val lastEventStates = mutableMapOf<String, String>()
         val recentRrc = mutableMapOf<String, JSONObject>()
@@ -849,7 +946,48 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
         var previousCaPacketAt = 0L
         var previousCaCounts = 0 to 0
 
-        fun publish(now: Long) {
+        init {
+            processLedger.reset()
+            if (collectorRuns.size == MAX_COLLECTOR_RUNS) collectorRuns.removeFirst()
+            collectorRuns.addLast(run)
+            lastCollectorStatus = null
+            lastCollectorStatusAtElapsed = 0L
+        }
+
+        fun requestStop(reason: CaptureStop) {
+            if (stopRequest == null) {
+                stopRequest = reason
+                recordCollectorRecovery("stop_requested_${reason.trace}")
+            }
+            restartRequested = reason.restart && !pausedByUser
+            requestQmdlStop()
+        }
+
+        fun resumeAfterStop() {
+            restartRequested = !pausedByUser
+        }
+
+        private fun performanceSnapshot() = JSONObject()
+            .put("json_lines", jsonLines)
+            .put("json_chars", jsonChars)
+            .put("json_parse_dispatched", jsonParseDispatched)
+            .put("json_parse_wall_ms", jsonParseMs)
+            .put("json_parse_max_ms", jsonParseMaxMs)
+            .put("json_parse_over_16ms", jsonParseOverBudget)
+            .put("records_received", receivedRecords)
+            .put("receive_wall_ms", receiveWallMs)
+            .put("receive_wall_max_ms", receiveWallMaxMs)
+            .put("receive_wall_over_16ms", receiveWallOverBudget)
+            .put("publish_calls", publishCalls)
+            .put("publish_wall_ms", publishWallMs)
+            .put("publish_wall_max_ms", publishWallMaxMs)
+            .put("publish_wall_over_16ms", publishWallOverBudget)
+
+        fun updatePerformanceSnapshot() {
+            run.put("performance", performanceSnapshot())
+        }
+
+        private fun publish(now: Long) {
             metrics.entries.removeAll { (_, record) ->
                 when (record.type) {
                     "nr_rach" -> false
@@ -864,8 +1002,6 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
             val errorDetails = if (status == RootDiagStatus.Unsupported) startupLog.toList() else emptyList()
             val cachedIds = (if (status == RootDiagStatus.Stopped) lastMeasurements else cached)
                 .values.mapTo(mutableSetOf()) { it.id }
-            lastEndStatus = status
-            lastEndError = errorCode
             if (status == RootDiagStatus.Running) {
                 hadBeenRunning = true
                 restartAttempt = 0
@@ -984,7 +1120,7 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
             }
         }
 
-        suspend fun receive(value: JSONObject) {
+        private suspend fun receive(value: JSONObject) {
             val now = SystemClock.elapsedRealtime()
             val receivedTime = System.currentTimeMillis()
             val type = value.optString("type")
@@ -1000,21 +1136,8 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
                 .put("collector_run", run.optLong("id"))
             if (taskId != null && runTaskIds.add(taskId)) run.put("task_ids", JSONArray(runTaskIds.toList()))
             val messageRat = value.optString("rat")
+            associateRrcEvent(value, type, messageRat, now)
             if (type in processObservationTypes && !value.has("message_id")) value.put("message_id", nextId)
-            if (type == "rrc") recentRrc[messageRat] = value
-            if (type == "event") {
-                val parent = recentRrc[messageRat]?.takeIf {
-                    it.optString("msg") == value.optString("msg") &&
-                        it.optString("task_id") == value.optString("task_id") &&
-                        now - it.optLong("received_elapsed_ms") in 0..1_000
-                }
-                if (parent != null) {
-                    for (key in listOf("pci", "arfcn", "src", "rrc_transaction_id", "cause", "tentative", "guess", "decode_incomplete")) {
-                        if (!value.has(key) && parent.has(key)) value.put(key, parent.get(key))
-                    }
-                    value.put("related_message_id", parent.optLong("message_id"))
-                }
-            }
             val stateKey = "$type:${value.optString("rat")}"
             val state = listOf("state", "reg", "call", "status").joinToString(":") { value.optString(it) }
             val isStateChange = type in setOf("nas_mm", "ims_reg", "ims_call", "ims_state") &&
@@ -1026,275 +1149,279 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
             )
             val timelineEvent = type in setOf("event", "cell_change", "nas_release", "nr_rach") || isStateChange || completion
             if (timelineEvent) value.put("timeline_event", true)
-            if (task != null && timelineEvent && type != "nr_rach") {
-                val rat = value.optString("rat").takeIf { it in setOf("NR", "LTE") }
-                // A private DIAG stream has no reliable Android subscription ID.
-                val estimated = value.optInt("tentative") == 1 || value.optInt("guess") == 1
-                val sourceTime = value.optLong("t")
-                val sourceAge = receivedTime - sourceTime
-                val fresh = sourceTime > 0 && sourceAge in 0..10_000
-                val pci = value.optInt("to_pci", value.optInt("pci", -1)).takeIf { !estimated && fresh && it in 0..1007 }
-                val arfcn = value.optInt("to_arfcn", value.optInt("arfcn", -1)).takeIf { !estimated && fresh && it >= 0 }
-                val title = formatDiagnosticEventTitle(
-                    type = type,
-                    rat = rat,
-                    messageRat = messageRat,
-                    msg = value.optString("msg"),
-                    event = value.optString("event"),
-                    psi = value.optInt("psi", -1),
-                    ebi = value.optInt("ebi", -1),
-                    state = state,
-                    estimated = estimated,
-                )
-                val safeValue = redactDiagnostic(value)
-                val details = listOf("msg", "cause", "why", "psi", "ebi", "from_pci", "from_arfcn", "to_pci",
-                    "to_arfcn", "rrc_transaction_id", "related_message_id", "collector_run", "src", "tentative", "guess", "decode_incomplete")
-                    .filter { safeValue.has(it) }.joinToString(" · ") { "$it=${safeValue.opt(it)}" }
-                try {
-                    withContext(Dispatchers.IO) {
-                        tasks?.append(SurveyEvent(java.util.UUID.randomUUID().toString(), task.id,
-                            if (fresh) sourceTime else receivedTime, if (fresh) now - sourceAge else now,
-                            SurveyTaskStore.CLOCK_ID, "root_diag", type,
-                            title, details, rat = rat, pci = pci, arfcn = arfcn,
-                            sourceTimeMs = sourceTime.takeIf { it > 0 },
-                            timeBasis = if (fresh) "source_age_adjusted" else "received"))
+            if (tasks != null && task != null && timelineEvent && type != "nr_rach") {
+                appendTaskEvent(tasks, task, value, type, messageRat, state, receivedTime, now)
+            }
+            recordDiagnostic(value)
+            when (type) {
+                "status" -> receiveStatus(value, now)
+                "ims_provider" -> receiveImsProvider(value)
+                "ims_state", "ims_reg", "ims_call" -> receiveImsEvidence(value, type, isStateChange, now)
+                "qmdl" -> receiveQmdl(value)
+                "mr_sample", "neighbor_probe_sample", "unknown_layout", "layout_seen" -> Unit
+                "nr_ca_state" -> receiveCaState(value, now)
+                else -> receiveRadioRecord(value, messageRat, now, task, tasks)
+            }
+        }
+
+        private fun associateRrcEvent(value: JSONObject, type: String, rat: String, now: Long) {
+            if (type == "rrc") {
+                value.put("message_id", nextId)
+                recentRrc[rat] = value
+            }
+            if (type != "event") return
+            val parent = recentRrc[rat]?.takeIf {
+                it.optString("msg") == value.optString("msg") &&
+                    it.optString("task_id") == value.optString("task_id") &&
+                    now - it.optLong("received_elapsed_ms") in 0..1_000
+            } ?: return
+            for (key in listOf("pci", "arfcn", "src", "rrc_transaction_id", "cause", "tentative", "guess", "decode_incomplete")) {
+                if (!value.has(key) && parent.has(key)) value.put(key, parent.get(key))
+            }
+            value.put("related_message_id", parent.optLong("message_id"))
+        }
+
+        private suspend fun appendTaskEvent(
+            tasks: SurveyTaskStore,
+            task: SurveyTask,
+            value: JSONObject,
+            type: String,
+            messageRat: String,
+            state: String,
+            receivedTime: Long,
+            now: Long,
+        ) {
+            val rat = messageRat.takeIf { it == "NR" || it == "LTE" }
+            // A private DIAG stream has no reliable Android subscription ID.
+            val estimated = value.optInt("tentative") == 1 || value.optInt("guess") == 1
+            val sourceTime = value.optLong("t")
+            val sourceAge = receivedTime - sourceTime
+            val fresh = sourceTime > 0 && sourceAge in 0..10_000
+            val pci = value.optInt("to_pci", value.optInt("pci", -1)).takeIf { !estimated && fresh && it in 0..1007 }
+            val arfcn = value.optInt("to_arfcn", value.optInt("arfcn", -1)).takeIf { !estimated && fresh && it >= 0 }
+            val title = formatDiagnosticEventTitle(
+                type = type,
+                rat = rat,
+                messageRat = messageRat,
+                msg = value.optString("msg"),
+                event = value.optString("event"),
+                psi = value.optInt("psi", -1),
+                ebi = value.optInt("ebi", -1),
+                state = state,
+                estimated = estimated,
+            )
+            val safeValue = redactDiagnostic(value)
+            val details = listOf("msg", "cause", "why", "from_pci", "from_arfcn", "to_pci",
+                "to_arfcn", "rrc_transaction_id", "related_message_id", "collector_run", "src", "tentative", "guess", "decode_incomplete")
+                .filter { safeValue.has(it) }.joinToString(" · ") { "$it=${safeValue.opt(it)}" }
+            try {
+                withContext(Dispatchers.IO) {
+                    tasks.append(SurveyEvent(java.util.UUID.randomUUID().toString(), task.id,
+                        if (fresh) sourceTime else receivedTime, if (fresh) now - sourceAge else now,
+                        SurveyTaskStore.CLOCK_ID, "root_diag", type,
+                        title, details, rat = rat, pci = pci, arfcn = arfcn,
+                        sourceTimeMs = sourceTime.takeIf { it > 0 },
+                        timeBasis = if (fresh) "source_age_adjusted" else "received"))
+                }
+            } catch (error: android.database.SQLException) {
+                timber.log.Timber.w(error, "Could not save DIAG event")
+            }
+        }
+
+        private fun receiveStatus(value: JSONObject, now: Long) {
+            val state = value.optString("state")
+            run.put("last_status", value)
+            if (state == "running") run.put("last_running_status", value)
+            val next = when (state) {
+                "authorized" -> RootDiagStatus.Starting
+                "running" -> RootDiagStatus.Running
+                "start_error", "error" -> RootDiagStatus.Unsupported
+                "denied" -> RootDiagStatus.Denied
+                else -> return
+            }
+            if (next == RootDiagStatus.Running && readyAt == null) readyAt = now
+            status = next
+            errorCode = value.optInt("rc").takeIf { it != 0 }
+            lastCollectorStatusAtElapsed = now
+            linesSinceStatus = 0L
+            hasModemPackets = value.optLong("pkts") > 0
+            lastHeartbeat = now
+            overlayDropped = value.optLong("decode_dropped")
+        }
+
+        private fun receiveImsProvider(value: JSONObject) {
+            val name = value.optString("name")
+            if (name.isBlank()) return
+            val statusName = value.optString("status")
+            val available = if (value.has("available")) value.optBoolean("available") else null
+            imsProviders[name] = ImsProviderStatus(name, statusName, available, value.optString("detail"))
+            publishCapability()
+        }
+
+        private fun receiveImsEvidence(value: JSONObject, type: String, isStateChange: Boolean, now: Long) {
+            val registration = value.optString("reg").ifBlank { value.optString("result") }
+            val inferred = value.optInt("reg_inferred") == 1 || value.optBoolean("reg_inferred")
+            val source = when {
+                inferred -> "inferred"
+                value.optString("why").isNotBlank() -> value.optString("why")
+                value.optString("call_src").isNotBlank() -> value.optString("call_src")
+                value.optString("src").isNotBlank() -> value.optString("src")
+                else -> type
+            }
+            val call = value.optString("call").takeIf { it.isNotBlank() } ?: lastImsEvidence?.call
+            lastImsEvidence = ImsEvidence(
+                registration = registration.takeIf { it.isNotBlank() && it != "unknown" },
+                inferred = inferred,
+                source = source,
+                call = call,
+                why = value.optString("why"),
+            )
+            overlayImsCall = call ?: overlayImsCall
+            publishCapability()
+            if (isStateChange) queueSignaling(pending, DiagRecord(nextId++, now, value))
+        }
+
+        private suspend fun receiveQmdl(value: JSONObject) {
+            if (qmdlCommand == null) return
+            val current = qmdlState.value
+            if (current.recovering) return
+            qmdlState.value = current.copy(
+                packets = value.optLong("packets"), bytes = value.optLong("bytes"),
+                phase = if (current.phase == QmdlPhase.Stopping) QmdlPhase.Stopping else QmdlPhase.Recording,
+                errorCode = value.optInt("rc").takeIf { it != 0 },
+            )
+            val result = when (value.optString("state")) {
+                "stopped" -> QmdlResult.Saved
+                "limit" -> QmdlResult.Limited
+                "error" -> QmdlResult.Error
+                else -> null
+            }
+            if (qmdlCommand == 'Q' || qmdlCommand == 'D' || result != null) qmdlDeadline = null
+            if (result != null) {
+                qmdlCommand = null
+                withContext(NonCancellable) { finishQmdl(result) }
+            }
+        }
+
+        private fun receiveCaState(value: JSONObject, now: Long) {
+            val result = nrCarriers.acceptCaState(value, now)
+            val cc = value.optJSONArray("cc")
+            val states = JSONArray()
+            if (cc != null) for (i in 0 until cc.length()) {
+                val row = cc.optJSONObject(i) ?: continue
+                states.put(JSONObject().put("cc", row.optInt("cc"))
+                    .put("dl", row.optInt("dl")).put("ul", row.optInt("ul")))
+            }
+            val version = value.optString("ver")
+            val signature = "$version:$result:$states"
+            if (signature != previousCaPacket || now - previousCaPacketAt >= 5_000) {
+                recordNrCaObservation(JSONObject().put("type", "root_b9a7_state")
+                    .put("t", value.optLong("t")).put("elapsed_ms", now).put("ver", version)
+                    .put("collector_run", run.optLong("id")).put("task_id", value.opt("task_id"))
+                    .put("clock_id", SurveyTaskStore.CLOCK_ID).put("result", result).put("cc", states))
+                previousCaPacket = signature
+                previousCaPacketAt = now
+            }
+        }
+
+        private suspend fun receiveRadioRecord(
+            value: JSONObject,
+            rat: String,
+            now: Long,
+            task: SurveyTask?,
+            tasks: SurveyTaskStore?,
+        ) {
+            nrCarriers.accept(value, now)
+            val record = DiagRecord(nextId++, now, value)
+            when (record.type) {
+                "nas_release", "nas_pdu", "nas_qos", "nas_mm" -> receiveNas(record, rat)
+                in configurationTypes -> lastConfiguration[record.type] = record
+                "cell_change" -> if (rat == "NR") {
+                    removeMeasurements("nr_rach:")
+                    removeMeasurements("nr_ssb_rx:")
+                }
+                "nr_rach" -> if (record.source == "0xB88A" && value.has("ta") &&
+                    value.optInt("pci", -1) in 0..1007 && value.optInt("arfcn", -1) in 1..3_279_165) {
+                    storeMeasurement("nr_rach:serving", record)
+                }
+                "lte_cell", "lte_mib" -> receiveLteCell(record)
+                in signalTypes -> receiveMeasurement(record, rat)
+                "nr_neighbor_sinr" -> receiveNrNeighborSinr(record)
+                "rrc" -> if ((rat == "NR" || rat == "LTE") && !record.isEstimated()) receiveRrc(record, rat)
+            }
+            if (record.type in signalingTypes) queueSignaling(pending, record)
+            if (record.type in processObservationTypes) {
+                for (event in processLedger.accept(value, record.id, now)) {
+                    val json = event.toJson()
+                        .put("task_id", value.opt("task_id"))
+                        .put("received_time_ms", value.optLong("received_time_ms"))
+                        .put("received_elapsed_ms", now)
+                        .put("clock_id", SurveyTaskStore.CLOCK_ID)
+                        .put("collector_run", value.opt("collector_run"))
+                        .put("timeline_event", true)
+                        .put("t", value.optLong("t"))
+                    queueSignaling(pending, DiagRecord(nextId++, now, json))
+                    if (task != null) {
+                        val linked = "family=${event.family} · phase=${event.phase} · evidence=${event.evidence}" +
+                            " · non_claim=${event.nonClaim} · message_ids=${event.messageIds.joinToString(",")}"
+                        try {
+                            withContext(Dispatchers.IO) {
+                                tasks?.append(SurveyEvent(
+                                    java.util.UUID.randomUUID().toString(), task.id,
+                                    value.optLong("received_time_ms").takeIf { it > 0 } ?: System.currentTimeMillis(),
+                                    now, SurveyTaskStore.CLOCK_ID, "root_diag", "process_event",
+                                    event.titleZh, linked, rat = event.rat.takeIf { it == "NR" || it == "LTE" },
+                                    sourceTimeMs = value.optLong("t").takeIf { it > 0 },
+                                    timeBasis = "received",
+                                ))
+                            }
+                        } catch (error: android.database.SQLException) {
+                            timber.log.Timber.w(error, "Could not save process event")
+                        }
                     }
-                } catch (error: android.database.SQLException) {
-                    timber.log.Timber.w(error, "Could not save DIAG event")
                 }
             }
-            if (value.optString("type") == "neighbor_probe_sample") value.put("collector_run", run.optLong("id"))
-            recordDiagnostic(value)
-            when (value.optString("type")) {
-                "status" -> {
-                    val state = value.optString("state")
-                    run.put("last_status", value)
-                    if (state == "running") run.put("last_running_status", value)
-                    val next = when (state) {
-                        "authorized" -> RootDiagStatus.Starting
-                        "running" -> RootDiagStatus.Running
-                        "start_error" -> RootDiagStatus.Unsupported
-                        "error" -> RootDiagStatus.Unsupported
-                        "denied" -> RootDiagStatus.Denied
-                        else -> return
-                    }
-                    if (next == RootDiagStatus.Running && readyAt == null) readyAt = now
-                    status = next
-                    errorCode = value.optInt("rc").takeIf { it != 0 }
-                    lastCollectorStatusAtElapsed = now
-                    linesSinceStatus = 0L
-                    hasModemPackets = value.optLong("pkts") > 0
-                    lastHeartbeat = now
-                    overlayDropped = value.optLong("decode_dropped")
-                }
-                "ims_provider" -> {
-                    val name = value.optString("name")
-                    val statusName = value.optString("status")
-                    val available = if (value.has("available")) value.optBoolean("available") else null
-                    if (name.isNotBlank()) {
-                        imsProviders[name] = ImsProviderStatus(name, statusName, available, value.optString("detail"))
-                        publishCapability()
+        }
+
+        private fun receiveNas(record: DiagRecord, rat: String) {
+            val value = record.data
+            when (record.type) {
+                "nas_release" -> {
+                    val session = value.optString("psi", value.optString("ebi"))
+                    lastConfiguration.remove("nas_pdu:$rat:$session")
+                    lastConfiguration.remove("nas_qos:$rat:$session")
+                    if (rat == "LTE") {
+                        lastConfiguration.values.removeAll { previous ->
+                            previous.type == "nas_qos" && previous.data.optString("rat") == "LTE" &&
+                                previous.data.optString("linked_ebi") == session
+                        }
                     }
                 }
-                "ims_state", "ims_reg", "ims_call" -> {
-                    val registration = value.optString("reg").ifBlank { value.optString("result") }
-                    val inferred = value.optInt("reg_inferred") == 1 || value.optBoolean("reg_inferred")
-                    val source = when {
-                        inferred -> "inferred"
-                        value.optString("why").isNotBlank() -> value.optString("why")
-                        value.optString("call_src").isNotBlank() -> value.optString("call_src")
-                        value.optString("src").isNotBlank() -> value.optString("src")
-                        else -> type
-                    }
-                    val call = value.optString("call").takeIf { it.isNotBlank() } ?: lastImsEvidence?.call
-                    lastImsEvidence = ImsEvidence(
-                        registration = registration.takeIf { it.isNotBlank() && it != "unknown" },
-                        inferred = inferred,
-                        source = source,
-                        call = call,
-                        why = value.optString("why"),
-                    )
-                    overlayImsCall = call ?: overlayImsCall
-                    publishCapability()
-                    if (isStateChange) queueSignaling(pending, DiagRecord(nextId++, now, value))
-                }
-                "qmdl" -> {
-                    if (qmdlCommand == null) return
-                    val current = qmdlState.value
-                    if (current.recovering) return
-                    qmdlState.value = current.copy(
-                        packets = value.optLong("packets"), bytes = value.optLong("bytes"),
-                        phase = if (current.phase == QmdlPhase.Stopping) QmdlPhase.Stopping else QmdlPhase.Recording,
-                        errorCode = value.optInt("rc").takeIf { it != 0 },
-                    )
-                    val result = when (value.optString("state")) {
-                        "stopped" -> QmdlResult.Saved
-                        "limit" -> QmdlResult.Limited
-                        "error" -> QmdlResult.Error
-                        else -> null
-                    }
-                    if (qmdlCommand == 'Q' || qmdlCommand == 'D' || result != null) qmdlDeadline = null
-                    if (result != null) {
-                        qmdlCommand = null
-                        withContext(NonCancellable) { finishQmdl(result) }
+                "nas_pdu", "nas_qos" -> {
+                    val session = value.optString("psi", value.optString("ebi"))
+                    val key = "${record.type}:$rat:$session"
+                    val previous = lastConfiguration[key]
+                    val modified = value.optBoolean("modified")
+                    if (record.type == "nas_pdu" && modified && previous != null) {
+                        val updated = JSONObject(value.toString())
+                        if (updated.optString("dnn").isBlank() && previous.data.optString("dnn").isNotBlank()) {
+                            updated.put("dnn", previous.data.optString("dnn"))
+                            updated.put("ims", previous.data.optInt("ims"))
+                        }
+                        lastConfiguration[key] = record.copy(data = updated)
+                    } else {
+                        if (record.type == "nas_pdu" && !modified) lastConfiguration.remove("nas_qos:$rat:$session")
+                        lastConfiguration[key] = record
                     }
                 }
-                "mr_sample", "neighbor_probe_sample", "unknown_layout", "layout_seen" -> Unit
-                "nr_ca_state" -> {
-                    val result = nrCarriers.acceptCaState(value, now)
-                    val cc = value.optJSONArray("cc")
-                    val states = JSONArray()
-                    if (cc != null) for (i in 0 until cc.length()) {
-                        val row = cc.optJSONObject(i) ?: continue
-                        states.put(JSONObject().put("cc", row.optInt("cc"))
-                            .put("dl", row.optInt("dl")).put("ul", row.optInt("ul")))
-                    }
-                    val version = value.optString("ver")
-                    val signature = "$version:$result:$states"
-                    if (signature != previousCaPacket || now - previousCaPacketAt >= 5_000) {
-                        recordNrCaObservation(JSONObject().put("type", "root_b9a7_state")
-                            .put("t", value.optLong("t")).put("elapsed_ms", now).put("ver", version)
-                            .put("collector_run", run.optLong("id")).put("task_id", value.opt("task_id"))
-                            .put("clock_id", SurveyTaskStore.CLOCK_ID).put("result", result).put("cc", states))
-                        previousCaPacket = signature
-                        previousCaPacketAt = now
-                    }
-                }
-                else -> {
-                    nrCarriers.accept(value, now)
-                    val record = DiagRecord(nextId++, now, value)
-                    val rat = value.optString("rat")
-                    when (record.type) {
-                        "nas_release" -> {
-                            val session = value.optString("psi", value.optString("ebi"))
-                            lastConfiguration.remove("nas_pdu:$rat:$session")
-                            lastConfiguration.remove("nas_qos:$rat:$session")
-                            if (rat == "LTE") {
-                                lastConfiguration.values.removeAll { previous ->
-                                    previous.type == "nas_qos" && previous.data.optString("rat") == "LTE" &&
-                                        previous.data.optString("linked_ebi") == session
-                                }
-                            }
-                        }
-                        "nas_pdu", "nas_qos" -> {
-                            val session = value.optString("psi", value.optString("ebi"))
-                            val key = "${record.type}:$rat:$session"
-                            val previous = lastConfiguration[key]
-                            if (record.type == "nas_pdu" && value.optBoolean("modified") && previous != null) {
-                                val updated = JSONObject(value.toString())
-                                if (updated.optString("dnn").isBlank() && previous.data.optString("dnn").isNotBlank()) {
-                                    updated.put("dnn", previous.data.optString("dnn"))
-                                    updated.put("ims", previous.data.optInt("ims"))
-                                }
-                                lastConfiguration[key] = record.copy(data = updated)
-                            } else {
-                                if (record.type == "nas_pdu" && !value.optBoolean("modified")) {
-                                    lastConfiguration.remove("nas_qos:$rat:$session")
-                                }
-                                lastConfiguration[key] = record
-                            }
-                        }
-                        "nas_mm" -> {
-                            if (value.optString("state") == "Deregistered") {
-                                lastConfiguration.values.removeAll { previous ->
-                                    previous.type in setOf("nas_pdu", "nas_qos") && previous.data.optString("rat") == rat
-                                }
-                            }
-                            lastConfiguration["nas_mm:$rat"] = record
-                        }
-                        in configurationTypes -> lastConfiguration[record.type] = record
-                        "cell_change" -> if (rat == "NR") {
-                            removeMeasurements("nr_rach:")
-                            removeMeasurements("nr_ssb_rx:")
-                        }
-                        "nr_rach" -> if (record.source == "0xB88A" && value.has("ta")) {
-                            val pci = value.optInt("pci", -1)
-                            val arfcn = value.optInt("arfcn", -1)
-                            if (pci in 0..1007 && arfcn in 1..3_279_165) {
-                                storeMeasurement("nr_rach:serving", record)
-                            }
-                        }
-                        "lte_cell", "lte_mib" -> {
-                            val pci = value.optInt("pci", -1)
-                            val earfcn = value.optInt("earfcn", -1)
-                            if (pci in 0..503 && earfcn in 0..262_143) {
-                                val key = "${record.type}:$earfcn:$pci"
-                                val previous = lastConfiguration[key]?.data
-                                val cid = value.optLong("cid")
-                                val sameCell = cid <= 0 || (previous?.optLong("cid") ?: 0L) <= 0 ||
-                                    previous?.optLong("cid") == cid
-                                val config = JSONObject(if (sameCell) previous?.toString() ?: "{}" else "{}")
-                                for (field in value.keys()) config.put(field, value.get(field))
-                                storeCellConfiguration(key, record, config)
-                            }
-                        }
-                        in signalTypes -> {
-                            val channel = when (record.type) {
-                                "serving" -> rat
-                                "lte_meas" -> "${value.optString("src")}:${value.optInt("earfcn", -1)}:" +
-                                    "${value.optInt("pci", -1)}:${value.optInt("cc", -1)}"
-                                "nr_meas" -> "${value.optInt("arfcn", -1)}:${value.optInt("layer", -1)}"
-                                "nr_snr" -> "${value.optString("rs")}:${record.source}:" +
-                                    "${value.optInt("pci", -1)}:${value.optInt("arfcn", -1)}"
-                                "layer_throughput" -> "$rat:${value.optString("layer")}:${value.optString("dir")}"
-                                "lte_phr", "lte_bsr" -> "${value.optInt("pci", -1)}:${value.optInt("arfcn", -1)}"
-                                "lte_ca", "lte_rank" -> "${value.optInt("pci", -1)}:${value.optInt("earfcn", -1)}"
-                                else -> ""
-                            }
-                            storeMeasurement("${record.type}:$channel", record)
-                            if (record.type == "nr_snr" && !record.isEstimated() &&
-                                value.optString("rs") == "SSB" && value.optInt("carrier", -1) == 0) {
-                                val pci = value.optInt("pci", -1)
-                                val arfcn = value.optInt("arfcn", -1)
-                                if (pci in 0..1007 && arfcn in 1..3_279_165) {
-                                    for (rx in 0..3) {
-                                        val sinr = value.optDouble("sinr_rx$rx")
-                                        if (sinr !in -23.0..40.0) continue
-                                        val measurement = JSONObject().put("type", "nr_ssb_rx")
-                                            .put("src", record.source).put("t", record.time)
-                                            .put("pci", pci).put("arfcn", arfcn).put("rx", rx).put("sinr", sinr)
-                                        storeMeasurement("nr_ssb_rx:$pci:$arfcn:${record.source}:$rx", record.copy(data = measurement))
-                                    }
-                                }
-                            }
-                            if (record.type in schedulingTypes) storeSchedulingSamples(record)
-                            if (record.type == "nr_ul_sched" && value.has("mac_new_tb_mbps")) {
-                                val sample = JSONObject(value.toString()).put("type", "nr_mac_ul_window")
-                                storeMeasurement("nr_mac_ul_window", record.copy(data = sample))
-                            }
-                            if (record.type == "nr_cfg" && !record.isEstimated()) {
-                                val cells = value.optJSONArray("cells")
-                                for (i in 0 until (cells?.length() ?: 0)) {
-                                    val cell = cells?.optJSONObject(i) ?: continue
-                                    val pci = cell.optInt("pci", -1)
-                                    val arfcn = cell.optInt("ssb_arfcn", -1)
-                                    if (pci !in 0..1007 || arfcn !in 1..3_279_165) continue
-                                    val type = "nr_carrier_config"
-                                    storeCellConfiguration("$type:$pci:$arfcn", record,
-                                        JSONObject(cell.toString()).put("type", type).put("arfcn", arfcn))
-                                }
-                            }
-                        }
-                        "nr_neighbor_sinr" -> {
-                            val channel = value.optInt("arfcn", -1)
-                            val cells = value.optJSONArray("cells")
-                            if (channel in 1..3_279_165 && cells != null) {
-                                for (entry in 0 until cells.length()) {
-                                    val cell = cells.optJSONObject(entry) ?: continue
-                                    val pci = cell.optInt("pci", -1)
-                                    val sinr = cell.optDouble("sinr")
-                                    if (pci !in 0..1007 || sinr !in -23.0..40.0) continue
-                                    val key = "nr_neighbor_sinr:$channel:$pci"
-                                    val previous = metrics[key]
-                                    if (previous?.id == record.id && previous.data.optDouble("sinr") >= sinr) continue
-                                    val reading = JSONObject().put("type", "nr_neighbor_sinr").put("src", "B96A")
-                                        .put("arfcn", channel).put("pci", pci).put("ssb", cell.optInt("ssb"))
-                                        .put("sinr", sinr).put("t", record.time)
-                                    storeMeasurement(key, record.copy(data = reading))
-                                }
-                            }
+                "nas_mm" -> {
+                    if (value.optString("state") == "Deregistered") {
+                        lastConfiguration.values.removeAll { previous ->
+                            (previous.type == "nas_pdu" || previous.type == "nas_qos") &&
+                                previous.data.optString("rat") == rat
                         }
                     }
+                    /*
                     if (record.type == "rrc" && (rat == "NR" || rat == "LTE") && !record.isEstimated()) {
                         val sinr = value.optInt("pcell_sinr_index", -1)
                         if (rat == "LTE" && sinr in 1..126) {
@@ -1479,25 +1606,300 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
                             }
                         }
                     }
+                    */
+                    lastConfiguration["nas_mm:$rat"] = record
                 }
             }
         }
 
-        try {
-            if (!withContext(Dispatchers.IO) { helper.isFile }) {
-                status = RootDiagStatus.Unsupported
-                publish(SystemClock.elapsedRealtime())
-                return
+        private fun receiveLteCell(record: DiagRecord) {
+            val value = record.data
+            val pci = value.optInt("pci", -1)
+            val earfcn = value.optInt("earfcn", -1)
+            if (pci !in 0..503 || earfcn !in 0..262_143) return
+            val key = "${record.type}:$earfcn:$pci"
+            val previous = lastConfiguration[key]?.data
+            val cid = value.optLong("cid")
+            val sameCell = cid <= 0 || (previous?.optLong("cid") ?: 0L) <= 0 || previous?.optLong("cid") == cid
+            val config = JSONObject(if (sameCell) previous?.toString() ?: "{}" else "{}")
+            for (field in value.keys()) config.put(field, value.get(field))
+            storeCellConfiguration(key, record, config)
+        }
+
+        private fun receiveMeasurement(record: DiagRecord, rat: String) {
+            val value = record.data
+            val channel = when (record.type) {
+                "serving" -> rat
+                "lte_meas" -> "${value.optString("src")}:${value.optInt("earfcn", -1)}:" +
+                    "${value.optInt("pci", -1)}:${value.optInt("cc", -1)}"
+                "nr_meas" -> "${value.optInt("arfcn", -1)}:${value.optInt("layer", -1)}"
+                "nr_snr" -> "${value.optString("rs")}:${record.source}:" +
+                    "${value.optInt("pci", -1)}:${value.optInt("arfcn", -1)}"
+                "layer_throughput" -> "$rat:${value.optString("layer")}:${value.optString("dir")}"
+                "lte_phr", "lte_bsr" -> "${value.optInt("pci", -1)}:${value.optInt("arfcn", -1)}"
+                "lte_ca", "lte_rank" -> "${value.optInt("pci", -1)}:${value.optInt("earfcn", -1)}"
+                else -> ""
             }
-            val running = withContext(Dispatchers.IO) {
-                ProcessBuilder("su", "-c", collectorCommand(helper))
-                    .redirectErrorStream(true)
-                    .start()
-                    .also {
-                        process = it
-                        collectorProcess = it
+            storeMeasurement("${record.type}:$channel", record)
+            if (record.type == "nr_snr") storeNrRxMeasurements(record)
+            if (record.type in schedulingTypes) storeSchedulingSamples(record)
+            if (record.type == "nr_ul_sched" && value.has("mac_new_tb_mbps")) {
+                val sample = JSONObject(value.toString()).put("type", "nr_mac_ul_window")
+                storeMeasurement("nr_mac_ul_window", record.copy(data = sample))
+            }
+            if (record.type == "nr_cfg" && !record.isEstimated()) storeNrCarrierConfig(record)
+        }
+
+        private fun storeNrRxMeasurements(record: DiagRecord) {
+            val value = record.data
+            if (record.isEstimated() || value.optString("rs") != "SSB" || value.optInt("carrier", -1) != 0) return
+            val pci = value.optInt("pci", -1)
+            val arfcn = value.optInt("arfcn", -1)
+            if (pci !in 0..1007 || arfcn !in 1..3_279_165) return
+            for (rx in 0..3) {
+                val sinr = value.optDouble("sinr_rx$rx")
+                if (sinr !in -23.0..40.0) continue
+                val measurement = JSONObject().put("type", "nr_ssb_rx")
+                    .put("src", record.source).put("t", record.time)
+                    .put("pci", pci).put("arfcn", arfcn).put("rx", rx).put("sinr", sinr)
+                storeMeasurement("nr_ssb_rx:$pci:$arfcn:${record.source}:$rx", record.copy(data = measurement))
+            }
+        }
+
+        private fun storeNrCarrierConfig(record: DiagRecord) {
+            val cells = record.data.optJSONArray("cells") ?: return
+            for (i in 0 until cells.length()) {
+                val cell = cells.optJSONObject(i) ?: continue
+                val pci = cell.optInt("pci", -1)
+                val arfcn = cell.optInt("ssb_arfcn", -1)
+                if (pci !in 0..1007 || arfcn !in 1..3_279_165) continue
+                val type = "nr_carrier_config"
+                storeCellConfiguration("$type:$pci:$arfcn", record,
+                    JSONObject(cell.toString()).put("type", type).put("arfcn", arfcn))
+            }
+        }
+
+        private fun receiveNrNeighborSinr(record: DiagRecord) {
+            val value = record.data
+            val channel = value.optInt("arfcn", -1)
+            if (channel !in 1..3_279_165) return
+            val cells = value.optJSONArray("cells") ?: return
+            for (entry in 0 until cells.length()) {
+                val cell = cells.optJSONObject(entry) ?: continue
+                val pci = cell.optInt("pci", -1)
+                val sinr = cell.optDouble("sinr")
+                if (pci !in 0..1007 || sinr !in -23.0..40.0) continue
+                val key = "nr_neighbor_sinr:$channel:$pci"
+                val previous = metrics[key]
+                if (previous?.id == record.id && previous.data.optDouble("sinr") >= sinr) continue
+                val reading = JSONObject().put("type", "nr_neighbor_sinr").put("src", "B96A")
+                    .put("arfcn", channel).put("pci", pci).put("ssb", cell.optInt("ssb"))
+                    .put("sinr", sinr).put("t", record.time)
+                storeMeasurement(key, record.copy(data = reading))
+            }
+        }
+
+        private fun receiveRrc(record: DiagRecord, rat: String) {
+            val value = record.data
+            val pci = value.optInt("pci", -1)
+            val arfcn = value.optInt("arfcn", -1)
+            val sinr = value.optInt("pcell_sinr_index", -1)
+            if (rat == "LTE" && sinr in 1..126) {
+                val reading = JSONObject().put("type", "lte_rrc_sinr").put("pci", pci).put("arfcn", arfcn)
+                    .put("sinr_index", sinr).put("t", record.time)
+                storeMeasurement("lte_rrc_sinr", record.copy(data = reading))
+            }
+            val config = measurementConfigs.getOrPut(rat) { RrcMeasurementConfig() }
+            val message = value.optString("display_msg").ifBlank { value.optString("msg") }
+            if (message in measurementContextReset && !value.optBoolean("rrc_suspended")) {
+                config.clear()
+                lastConfiguration.remove("plmn_selection:$rat")
+                if (rat == "LTE") {
+                    metrics.remove("lte_rrc_sinr")
+                    cached.remove("lte_rrc_sinr")
+                }
+                removeMeasurements("rrc_meas:$rat:")
+            }
+            val validCell = if (rat == "NR") pci in 0..1007 && arfcn in 1..3_279_165
+                else pci in 0..503 && arfcn in 0..262_143
+            if (validCell) {
+                storeRrcState(record, rat, message, pci, arfcn)
+                storeRrcPlmns(record, rat, pci, arfcn)
+            }
+            value.optJSONObject("meas_config")?.let { update ->
+                config.update(update).forEach { id -> removeMeasurements("rrc_meas:$rat:$id:") }
+            }
+            storeRrcMeasurements(record, config, rat, pci, arfcn)
+            if (rat == "NR") storeNrFrequencyConfig(record)
+            if (validCell) storeRrcCellConfig(record, rat, pci, arfcn)
+        }
+
+        private fun storeRrcState(record: DiagRecord, rat: String, message: String, pci: Int, arfcn: Int) {
+            val value = record.data
+            val rrcState = when (message) {
+                "rrcSetupComplete", "rrcResumeComplete", "rrcReestablishmentComplete",
+                "rrcReconfigurationComplete", "rrcConnectionSetupComplete", "rrcConnectionResumeComplete",
+                "rrcConnectionReestablishmentComplete", "rrcConnectionReconfigurationComplete" -> "Connected"
+                "measurementReport" -> if (!value.optBoolean("decode_incomplete", true)) "Connected" else null
+                "rrcRelease", "rrcConnectionRelease" -> when {
+                    value.optBoolean("rrc_suspended") -> if (rat == "NR") "Inactive" else "Suspended"
+                    !value.optBoolean("decode_incomplete", true) -> "Idle"
+                    else -> null
+                }
+                else -> null
+            } ?: return
+            val reading = JSONObject().put("type", "rrc_state").put("rat", rat)
+                .put("state", rrcState).put("pci", pci).put("arfcn", arfcn).put("t", record.time)
+            storeMeasurement("rrc_state:$rat", record.copy(data = reading))
+        }
+
+        private fun storeRrcPlmns(record: DiagRecord, rat: String, pci: Int, arfcn: Int) {
+            val value = record.data
+            val broadcastPlmns = value.optJSONArray("broadcast_plmns")
+            val selectedPlmnIndex = value.optInt("selected_plmn_index", -1)
+            if (broadcastPlmns == null && selectedPlmnIndex !in 1..12) return
+            val selectionKey = "plmn_selection:$rat"
+            val identity = JSONObject().put("rat", rat).put("pci", pci).put("arfcn", arfcn)
+            if (broadcastPlmns != null) {
+                val key = "plmn_broadcast:$rat:$pci:$arfcn"
+                val previous = lastConfiguration.remove(key)?.data?.optJSONArray("plmns")
+                if (previous != null && previous.toString() != broadcastPlmns.toString()) {
+                    val selection = lastConfiguration[selectionKey]?.data
+                    if (selection?.optInt("pci", -1) == pci && selection.optInt("arfcn", -1) == arfcn) {
+                        lastConfiguration.remove(selectionKey)
                     }
+                }
+                val data = JSONObject(identity.toString()).put("type", "plmn_broadcast").put("plmns", broadcastPlmns)
+                lastConfiguration[key] = record.copy(data = data)
+                val keys = lastConfiguration.keys.filter { it.startsWith("plmn_broadcast:$rat:") }
+                if (keys.size > MAX_BROADCAST_CELLS) lastConfiguration.remove(keys.first())
             }
+            if (selectedPlmnIndex in 1..12) {
+                val data = identity.put("type", "plmn_selection").put("index", selectedPlmnIndex)
+                lastConfiguration[selectionKey] = record.copy(data = data)
+            }
+        }
+
+        private fun storeRrcMeasurements(record: DiagRecord, config: RrcMeasurementConfig, rat: String, pci: Int, arfcn: Int) {
+            val results = record.data.optJSONObject("measResults") ?: return
+            val measurementId = results.optInt("measId", -1)
+            if (measurementId !in 1..64) return
+            if (rat == "NR") {
+                results.nrServingObjectNeighborSinr(pci, arfcn)?.let {
+                    storeRrcNeighborSinr(record, rat, pci, arfcn, "NR", it)
+                }
+            }
+            val carrier = config.carrierFor(measurementId) ?: return
+            val reading = JSONObject().put("type", "rrc_neighbor").put("rat", rat)
+                .put("measResults", results).put("measurement_carrier", carrier).put("t", record.time)
+            storeMeasurement("rrc_meas:$rat:$measurementId:latest", record.copy(data = reading))
+            val neighborRat = carrier.optString("rat")
+            for (measurement in results.rrcNeighborSinr(carrier)) {
+                storeRrcNeighborSinr(record, rat, pci, arfcn, neighborRat, measurement)
+            }
+        }
+
+        private fun storeRrcNeighborSinr(
+            record: DiagRecord,
+            rat: String,
+            servingPci: Int,
+            servingChannel: Int,
+            neighborRat: String,
+            measurement: RrcNeighborSinr,
+        ) {
+            val reference = measurement.reference?.label
+            val sample = JSONObject().put("type", "rrc_neighbor_sinr").put("src", "RRC")
+                .put("rat", neighborRat).put("arfcn", measurement.channel).put("pci", measurement.pci)
+                .put("serving_rat", rat).put("serving_pci", servingPci).put("serving_arfcn", servingChannel)
+                .put("reference", reference).put("sinr_index", measurement.index)
+                .put("beam", measurement.beam).put("t", record.time)
+            // Once resolved, the sample belongs to this cell pair, even if its measId is reused.
+            val key = "rrc_meas:$rat:sinr:$servingChannel:$servingPci:" +
+                "$neighborRat:$reference:${measurement.channel}:${measurement.pci}"
+            storeMeasurement(key, record.copy(data = sample))
+        }
+
+        private fun storeNrFrequencyConfig(record: DiagRecord) {
+            val config = record.data.optJSONObject("frequency_config") ?: return
+            val targetPci = config.optInt("pci", -1)
+            val targetArfcn = config.optInt("arfcn", -1)
+            if (targetPci !in 0..1007 || targetArfcn !in 1..3_279_165) return
+            val type = "nr_frequency_config"
+            storeCellConfiguration("$type:$targetPci:$targetArfcn", record,
+                JSONObject(config.toString()).put("type", type))
+        }
+
+        private fun storeRrcCellConfig(record: DiagRecord, rat: String, pci: Int, arfcn: Int) {
+            val value = record.data
+            if (rat == "NR") {
+                for ((field, type) in nrBroadcastTypes) {
+                    val config = value.optJSONObject(field) ?: continue
+                    val data = JSONObject(config.toString()).put("type", type).put("pci", pci).put("arfcn", arfcn)
+                    storeCellConfiguration("$type:$pci:$arfcn", record, data)
+                }
+            } else {
+                val tdd = value.optJSONObject("lte_tdd_config")
+                if (tdd != null) {
+                    val type = "lte_tdd_config"
+                    storeCellConfiguration("$type:$pci:$arfcn", record,
+                        JSONObject(tdd.toString()).put("type", type).put("pci", pci).put("arfcn", arfcn))
+                }
+            }
+            val access = value.optJSONObject("access_config") ?: return
+            val type = if (rat == "NR") "nr_access_config" else "lte_access_config"
+            val key = "$type:$pci:$arfcn"
+            // LTE broadcasts these parameters in separate SIBs.
+            val data = JSONObject(lastConfiguration[key]?.data?.toString() ?: "{}")
+            for (field in access.keys()) data.put(field, access.get(field))
+            storeCellConfiguration(key, record, data.put("type", type).put("pci", pci).put("arfcn", arfcn))
+        }
+
+        suspend fun collect() {
+            try {
+                exitReason = startAndPoll()
+            } catch (error: IOException) {
+                exitReason = "io_error"
+                status = when {
+                    stopRequest != null -> RootDiagStatus.Stopped
+                    process == null -> RootDiagStatus.Unavailable
+                    else -> RootDiagStatus.Unsupported
+                }
+                timber.log.Timber.w(error, "DIAG collector I/O failed")
+            } catch (cancelled: CancellationException) {
+                exitReason = "scope_cancelled"
+                status = RootDiagStatus.Stopped
+                throw cancelled
+            } finally {
+                closing = true
+                try {
+                    publish(SystemClock.elapsedRealtime())
+                } finally {
+                    // Only shutdown is non-cancellable, so the scope can still cancel listening.
+                    withContext(NonCancellable) { closeRun() }
+                }
+            }
+        }
+
+        private suspend fun startAndPoll(): String {
+            if (lingeringProcess != null) {
+                // start() lets us get here only after that process has exited.
+                lingeringProcess = null
+                lingeringSession = null
+                finishInterruptedQmdl()
+            }
+            stopRequest?.let {
+                status = RootDiagStatus.Stopped
+                return it.trace
+            }
+            if (launchCollector == null && !withContext(captureIo) { helper.isFile }) {
+                status = RootDiagStatus.Unsupported
+                return "missing_helper"
+            }
+            stopRequest?.let {
+                status = RootDiagStatus.Stopped
+                return it.trace
+            }
+            /*
             val stream = running.inputStream
             do {
                 when {
@@ -1662,6 +2064,210 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
                 run.put("end_detail", JSONObject()
                     .put("reason", exitReason)
                     .put("phase", phaseMarker)
+            */
+            val running = withContext(captureIo) {
+                (launchCollector?.invoke() ?: ProcessBuilder("su", "-c", collectorCommand(helper))
+                    .redirectErrorStream(true).start()).also { process = it }
+            }
+            val reason = poll(running)
+            status = when {
+                stopRequest != null -> RootDiagStatus.Stopped
+                status == RootDiagStatus.Checking -> RootDiagStatus.Denied
+                status == RootDiagStatus.Starting || status == RootDiagStatus.Running -> RootDiagStatus.Unsupported
+                else -> status
+            }
+            return reason
+        }
+
+        private suspend fun poll(running: Process): String {
+            val stream = running.inputStream
+            while (true) {
+                requestedExit()?.let { return it }
+                updateQmdl(running)
+                requestedExit()?.let { return it }
+                val (size, output) = readChunk(stream)
+                invalidLineCount += output.invalidLines
+                for (line in output.lines) receiveLine(line)
+                val now = SystemClock.elapsedRealtime()
+                loopBeatAt = now
+                publishIfDue(now)
+                requestedExit()?.let { return it }
+                if (size < 0 || (!running.isAlive && size == 0)) return "eof"
+                if (qmdlDeadline?.let { now >= it } == true) {
+                    blockQmdlAutoStart()
+                    qmdlState.value = qmdlState.value.copy(recovering = true)
+                    if (stopRequest == null) requestStop(CaptureStop.QmdlTimeout)
+                    return "qmdl_deadline"
+                }
+                val timeout = if (status == RootDiagStatus.Checking) 25_000 else 16_000
+                if (now - lastHeartbeat >= timeout) return "heartbeat_timeout"
+                if (size < buffer.size) delay(40) else yield()
+            }
+        }
+
+        private fun requestedExit(): String? = stopRequest?.trace?.takeIf {
+            qmdlCommand == null && qmdlState.value.phase == QmdlPhase.Idle
+        }
+
+        private suspend fun updateQmdl(running: Process) {
+            when (qmdlState.value.phase) {
+                QmdlPhase.Idle -> if (stopRequest == null && status == RootDiagStatus.Running && qmdlCommand == null) {
+                    val resume = resumeRecordingTask
+                    if (resume != null) {
+                        resumeRecordingTask = null
+                        if (resume == activeTask?.id && !pausedByUser) {
+                            recordingFormat = resumeRecordingFormat
+                            requestQmdlStart(manual = true)
+                        } else {
+                            requestQmdlStart(manual = false)
+                        }
+                    } else {
+                        requestQmdlStart(manual = false)
+                    }
+                }
+                QmdlPhase.Starting -> if (status == RootDiagStatus.Running && qmdlCommand == null) {
+                    prepareQmdl(running)
+                }
+                QmdlPhase.Recording -> Unit
+                QmdlPhase.Stopping -> when (qmdlCommand) {
+                    null -> withContext(NonCancellable) { finishQmdl(QmdlResult.Interrupted) }
+                    'Q', 'D' -> sendQmdlCommand(running, 'S')
+                    else -> Unit
+                }
+            }
+        }
+
+        private suspend fun prepareQmdl(running: Process) {
+            val taskId = qmdlTaskId
+            val format = recordingFormat
+            val prepared = taskId != null && taskId == eligibleQmdlTask() && withContext(captureIo) {
+                runCatching {
+                    recordingSession.start(taskId, format)
+                    runCatching { locationRecording.onSessionStarted(taskId) }.onFailure {
+                        timber.log.Timber.w(it, "Could not open location sidecar")
+                    }
+                }.onFailure {
+                    timber.log.Timber.w(it, "Could not prepare QMDL file")
+                }.isSuccess
+            }
+            if (prepared && taskId == eligibleQmdlTask() && qmdlState.value.phase == QmdlPhase.Starting) {
+                sendQmdlCommand(running, format.command)
+            } else {
+                val result = if (!prepared && taskId != null && taskId == eligibleQmdlTask()) QmdlResult.Error
+                    else QmdlResult.Interrupted
+                withContext(NonCancellable) { finishQmdl(result) }
+            }
+        }
+
+        private suspend fun sendQmdlCommand(running: Process, command: Char) {
+            qmdlCommand = command
+            qmdlDeadline = SystemClock.elapsedRealtime() + QMDL_ACK_TIMEOUT
+            withContext(captureIo) {
+                running.outputStream.write(command.code)
+                running.outputStream.flush()
+            }
+        }
+
+        private suspend fun readChunk(stream: InputStream): Pair<Int, DiagOutputLines> = withContext(captureIo) {
+            val available = stream.available()
+            val size = if (available > 0) stream.read(buffer, 0, minOf(available, buffer.size)) else 0
+            size to if (size > 0) outputFramer.append(buffer, size) else DiagOutputLines()
+        }
+
+        private suspend fun receiveLine(text: String) {
+            if (text.startsWith(DIAG_LOG_PREFIX)) {
+                if (startupLog.size == 5) startupLog.removeFirst()
+                startupLog.addLast(text.removePrefix(DIAG_LOG_PREFIX).take(512))
+                return
+            }
+            if (!text.startsWith("{")) return
+            val entered = SystemClock.elapsedRealtime()
+            phaseMarker = "parse_json"
+            jsonLines++
+            jsonChars += text.length
+            if (text.length >= DIAG_JSON_PARSE_DISPATCH_THRESHOLD) jsonParseDispatched++
+            val parseStarted = SystemClock.elapsedRealtime()
+            val value = try {
+                parseDiagJson(text, captureIo)
+            } catch (_: org.json.JSONException) {
+                null
+            }
+            val parseCost = SystemClock.elapsedRealtime() - parseStarted
+            jsonParseMs += parseCost
+            jsonParseMaxMs = maxOf(jsonParseMaxMs, parseCost)
+            if (parseCost > PERFORMANCE_BUDGET_MS) jsonParseOverBudget++
+            if (value == null) {
+                invalidLineCount++
+                phaseMarker = "read"
+                return
+            }
+            val type = value.optString("type")
+            phaseMarker = "receive"
+            val receiveStarted = SystemClock.elapsedRealtime()
+            try {
+                receive(value)
+            } catch (_: org.json.JSONException) {
+                invalidLineCount++
+            } finally {
+                val receiveCost = SystemClock.elapsedRealtime() - receiveStarted
+                receivedRecords++
+                receiveWallMs += receiveCost
+                receiveWallMaxMs = maxOf(receiveWallMaxMs, receiveCost)
+                if (receiveCost > PERFORMANCE_BUDGET_MS) receiveWallOverBudget++
+            }
+            val lineCost = SystemClock.elapsedRealtime() - entered
+            linesSinceStatus++
+            if (type.isNotEmpty()) lastLineType = type
+            if (type == "status") linesSinceStatus = 0
+            if (lineCost >= SLOW_LINE_MS) {
+                slowLines++
+                if (lineCost > slowestLineMs) {
+                    slowestLineMs = lineCost
+                    slowestLineType = type
+                }
+            }
+            phaseMarker = "read"
+        }
+
+        private fun publishIfDue(now: Long) {
+            if (now - lastFlush < 400) return
+            phaseMarker = "publish"
+            val publishStarted = SystemClock.elapsedRealtime()
+            publish(now)
+            val cost = SystemClock.elapsedRealtime() - publishStarted
+            lastFlush = now
+            publishCalls++
+            publishWallMs += cost
+            publishWallMaxMs = maxOf(publishWallMaxMs, cost)
+            if (cost > PERFORMANCE_BUDGET_MS) publishWallOverBudget++
+            if (cost >= SLOW_LINE_MS) {
+                slowPublishes++
+                slowestPublishMs = maxOf(slowestPublishMs, cost)
+            }
+            phaseMarker = "read"
+        }
+
+        private suspend fun closeRun() {
+            val exitedAt = SystemClock.elapsedRealtime()
+            val running = process
+            val result = if (running == null) "not_started" else withContext(captureIo) {
+                closeCollectorProcess(running, if (readyAt == null) 16 else 4)
+            }
+            if (running?.isAlive == true) {
+                lingeringProcess = running
+                lingeringSession = this@CaptureSession
+                if (qmdlState.value.phase != QmdlPhase.Idle) {
+                    qmdlState.value = qmdlState.value.copy(recovering = true)
+                }
+            } else {
+                finishInterruptedQmdl()
+            }
+            run.put("ended_ms", System.currentTimeMillis()).put("end_state", status.name)
+                .put("performance", performanceSnapshot())
+                .put("end_detail", JSONObject().put("exit_reason", exitReason).put("phase", phaseMarker)
+                    .put("stop_request", stopRequest?.trace ?: JSONObject.NULL)
+                    .put("process_exit", result)
+                    .put("cleanup_ms", SystemClock.elapsedRealtime() - exitedAt)
                     .put("since_beat_ms", exitedAt - loopBeatAt)
                     .put("since_status_ms", if (lastCollectorStatusAtElapsed > 0) exitedAt - lastCollectorStatusAtElapsed else -1L)
                     .put("lines_since_status", linesSinceStatus)
@@ -1672,29 +2278,29 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
                     .put("slow_publishes", slowPublishes)
                     .put("slowest_publish_ms", slowestPublishMs)
                     .put("invalid_lines", invalidLineCount))
-            }
-            run.put("ended_ms", System.currentTimeMillis()).put("end_state", status.name)
-            withContext(NonCancellable + Dispatchers.IO) {
-                process?.let {
-                    runCatching { it.outputStream.close() }
-                    // Close the read end as well so a writer blocked on a full pipe can exit.
-                    runCatching { it.inputStream.close() }
-                    if (!it.waitFor(4, TimeUnit.SECONDS)) {
-                        it.destroy()
-                        if (!it.waitFor(500, TimeUnit.MILLISECONDS)) {
-                            it.destroyForcibly()
-                            it.waitFor(500, TimeUnit.MILLISECONDS)
-                        }
-                    }
-                }
-            }
-            if (collectorProcess === process) collectorProcess = null
+            DiagJournal.append(app, redactDiagnostic(run))
+        }
+
+        private suspend fun finishInterruptedQmdl() {
             if (qmdlState.value.phase != QmdlPhase.Idle || qmdlState.value.recovering) {
                 withContext(NonCancellable) {
                     finishQmdl(if (pausedByUser) QmdlResult.Saved else QmdlResult.Interrupted)
                 }
             }
         }
+
+        suspend fun finishLingeringQmdl() = finishInterruptedQmdl()
+    }
+
+    private fun closeCollectorProcess(process: Process, graceSeconds: Long): String {
+        // EOF asks the helper to flush and exit. Also unblock a writer with a full stdout pipe.
+        runCatching { process.outputStream.close() }
+        runCatching { process.inputStream.close() }
+        if (process.waitFor(graceSeconds, TimeUnit.SECONDS)) return "exited"
+        process.destroy()
+        if (process.waitFor(500, TimeUnit.MILLISECONDS)) return "destroyed"
+        process.destroyForcibly()
+        return if (process.waitFor(500, TimeUnit.MILLISECONDS)) "forced" else "unconfirmed"
     }
 
     private fun queueSignaling(pending: ArrayDeque<DiagRecord>, record: DiagRecord) {
@@ -1737,6 +2343,8 @@ class RootDiagViewModel(application: Application) : AndroidViewModel(application
         const val MAX_MESSAGES = 4_000
         const val MODEM_WAIT_TIMEOUT = 20_000L
         const val QMDL_ACK_TIMEOUT = 8_000L
+        const val PERFORMANCE_BUDGET_MS = 16L
+        const val LINGERING_PROCESS_POLL_MS = 250L
         const val MAX_DIAGNOSTIC_MESSAGES = 400
         const val MAX_COLLECTOR_RUNS = 8
         const val MAX_NEIGHBOR_SAMPLES_PER_CODE = 6

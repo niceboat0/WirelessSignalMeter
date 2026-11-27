@@ -16,6 +16,7 @@ internal data class BandLockCommand(
     val arguments: List<String>,
     val restartsModem: Boolean,
     val modeAfterLock: LockNetworkMode? = null,
+    val qmi: QmiLockPlan? = null,
 ) {
     companion object {
         private fun number(text: String, maximum: Int, minimum: Int = 0): Int {
@@ -28,6 +29,7 @@ internal data class BandLockCommand(
         ): BandLockCommand {
             val prefix = radio.argument
             val args: List<String>
+            val qmi: QmiLockPlan?
             var instantLteBands = false
             when (target) {
                 LockTarget.Bands -> {
@@ -40,20 +42,24 @@ internal data class BandLockCommand(
                     /* Native sends bands 1..32 as an instant CM frame with no modem
                      * restart; only 33..64 still ride the EFS+restart route. */
                     instantLteBands = radio == LockRadio.Lte && numbers.all { it <= 32 }
+                    qmi = QmiLockCommand.bandPlan(radio, numbers)
                 }
                 LockTarget.Frequency, LockTarget.Cell -> {
                     val frequency = number(channel, radio.maxChannel, if (radio == LockRadio.Nr) 1 else 0)
                     if (radio == LockRadio.Nr) require(scs in setOf(15, 30, 60, 120))
                     args = if (target == LockTarget.Frequency) {
+                        qmi = QmiLockCommand.frequencyPlan(radio, frequency, scs)
                         listOfNotNull("$prefix-freq", frequency.toString(), scs.toString().takeIf { radio == LockRadio.Nr })
                     } else {
                         val cell = number(pci, radio.maxPci)
+                        val nrBand = if (radio == LockRadio.Nr) number(bands, radio.maxBand, 1) else null
+                        qmi = QmiLockCommand.cellPlan(radio, frequency, cell, scs, nrBand)
                         if (radio == LockRadio.Lte) listOf("lte-cell", "$frequency:$cell")
-                        else listOf("nr-cell", number(bands, radio.maxBand, 1).toString(), frequency.toString(), cell.toString(), scs.toString())
+                        else listOf("nr-cell", nrBand.toString(), frequency.toString(), cell.toString(), scs.toString())
                     }
                 }
             }
-            return BandLockCommand(args, !instantLteBands, radio.mode)
+            return BandLockCommand(args, !instantLteBands, radio.mode, qmi)
         }
 
         fun restore(radio: LockRadio, target: LockTarget) = BandLockCommand(
@@ -62,9 +68,12 @@ internal data class BandLockCommand(
                 LockTarget.Frequency -> "freq-clear"
                 LockTarget.Cell -> "cell-clear"
             }}"), true,
+            modeAfterLock = LockNetworkMode.Auto,
+            qmi = QmiLockCommand.restorePlan(radio, target),
         )
 
-        fun mode(mode: LockNetworkMode) = BandLockCommand(listOf("mode", mode.argument), false)
+        fun mode(mode: LockNetworkMode) =
+            BandLockCommand(listOf("mode", mode.argument), false, qmi = QmiLockCommand.modePlan(mode))
 
         /** probe carries the device identity so the helper logs it and future
          * per-model profiles can key off the same arguments. */

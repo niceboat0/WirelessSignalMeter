@@ -79,6 +79,7 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
     var radio by rememberSaveable { mutableStateOf(LockRadio.Lte) }
     var target by rememberSaveable { mutableStateOf(LockTarget.Bands) }
     var advanced by rememberSaveable { mutableStateOf(false) }
+    var preferDiag by rememberSaveable { mutableStateOf(false) }
     val lockScroll = rememberScrollState()
     val advancedScroll = rememberScrollState()
     var networkMode by rememberSaveable { mutableStateOf(state.appliedMode ?: LockNetworkMode.Auto) }
@@ -99,14 +100,21 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
      * to 60 s so sparse DIAG serving heartbeats do not flash the row empty
      * every second-tick when the 15 s freshness window expires in between. */
     var heldServing by remember { mutableStateOf<DiagRecord?>(null) }
-    val enabled = !state.busy && (
+    val busy = state.busy || qmi.busy
+    val legacyEnabled = !busy && (
         state.availability == LockAvailability.Ready ||
             state.availability == LockAvailability.Cached && state.profile.canLock
         )
     val bands = if (radio == LockRadio.Lte) lteBands else if (target == LockTarget.Cell) nrBand else nrBands
     val channel = if (radio == LockRadio.Lte) lteChannel else nrChannel
     val pci = if (radio == LockRadio.Lte) ltePci else nrPci
-    val command = runCatching { BandLockCommand.apply(radio, target, bands, channel, pci, scs) }.getOrNull()
+    val command = remember(radio, target, bands, channel, pci, scs) {
+        runCatching { BandLockCommand.apply(radio, target, bands, channel, pci, scs) }.getOrNull()
+    }
+    val restore = remember(radio, target) { BandLockCommand.restore(radio, target) }
+    fun backendFor(action: BandLockCommand) = preferredLockBackend(action.qmi, qmi.backends, preferDiag)
+    val diagControls = backendFor(restore) == LockBackend.Diag
+    val showDiag = (if (advanced) preferDiag else diagControls) || qmi.availability == LockAvailability.Unavailable
     val targetLabel = stringResource(when (target) {
         LockTarget.Bands -> R.string.lock_bands
         LockTarget.Frequency -> R.string.lock_frequency
@@ -133,7 +141,7 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
         LockTarget.Cell -> "$radioLabel · ARFCN $channel · PCI $pci" +
             if (radio == LockRadio.Nr) " · n$nrBand · $scs kHz" else ""
     }
-    val operating = state.busy && state.availability != LockAvailability.Checking
+    val operating = qmi.busy || state.busy && state.availability != LockAvailability.Checking
     BackHandler(operating) { /* Keep the active operation attached until the helper exits. */ }
 
     Scaffold(
@@ -146,7 +154,7 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
                 TabRowWithContour(
                     tabs = listOf(stringResource(R.string.lock_tab_controls), stringResource(R.string.lock_tab_advanced)),
                     selectedTabIndex = if (advanced) 1 else 0,
-                    onTabSelected = { if (!state.busy) advanced = it == 1 },
+                    onTabSelected = { if (!busy) advanced = it == 1 },
                     modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
                 )
             }
@@ -161,17 +169,19 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     if (advanced) Text(model.device, style = MaterialTheme.typography.titleSmall)
                     Text(stringResource(when {
-                        state.availability == LockAvailability.Checking -> R.string.lock_checking
-                        state.busy -> R.string.lock_working
+                        state.busy && state.availability == LockAvailability.Checking -> R.string.lock_checking
+                        busy -> R.string.lock_working
+                        !showDiag && qmi.availability == LockAvailability.Ready -> R.string.lock_qmi_available
+                        !showDiag -> R.string.lock_qmi_title
                         state.availability == LockAvailability.Unchecked -> R.string.lock_unchecked
                         state.availability == LockAvailability.Cached -> R.string.lock_cached_unconfirmed
                         state.availability == LockAvailability.Ready && state.profile.level == LockSupportLevel.Verified -> R.string.lock_ready
                         state.availability == LockAvailability.Ready -> R.string.lock_probe_only
                         else -> R.string.lock_unavailable
                     }), style = MaterialTheme.typography.bodySmall,
-                        color = if (state.availability == LockAvailability.Unavailable) MaterialTheme.colorScheme.error
+                        color = if (showDiag && state.availability == LockAvailability.Unavailable) MaterialTheme.colorScheme.error
                         else MaterialTheme.colorScheme.onSurfaceVariant)
-                    if (state.profile.reason.isNotBlank() &&
+                    if (showDiag && advanced && state.profile.reason.isNotBlank() &&
                         state.availability in setOf(LockAvailability.Ready, LockAvailability.Unavailable)) {
                         Text(stringResource(when (state.profile.reason) {
                             "mediatek_unsupported" -> R.string.lock_reason_mediatek
@@ -184,8 +194,8 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
                             color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
-                LockIconButton(R.string.lock_refresh, Icons.Rounded.Refresh, !state.busy) {
-                    model.refresh(signal.status == RootDiagStatus.Running)
+                LockIconButton(R.string.lock_refresh, Icons.Rounded.Refresh, !busy) {
+                    model.checkPreferred(if (advanced) preferDiag else diagControls, signal.status == RootDiagStatus.Running)
                 }
             }
             if (advanced && state.availability == LockAvailability.Ready &&
@@ -199,21 +209,22 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
             }
             if (advanced) Text(stringResource(R.string.lock_scope), style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
-            if (state.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+            if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
             state.result?.let { Text(stringResource(it), style = MaterialTheme.typography.bodyMedium) }
+            qmi.result?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
             HorizontalDivider()
             if (!advanced) Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 TabRowWithContour(
                     tabs = listOf("4G · LTE", "5G · NR"),
                     selectedTabIndex = radio.ordinal,
-                    onTabSelected = { if (!state.busy) radio = LockRadio.entries[it] },
+                    onTabSelected = { if (!busy) radio = LockRadio.entries[it] },
                     modifier = Modifier.fillMaxWidth(),
                 )
                 TabRowWithContour(
                     tabs = listOf(R.string.lock_bands, R.string.lock_frequency, R.string.lock_cell)
                         .map { stringResource(it) },
                     selectedTabIndex = target.ordinal,
-                    onTabSelected = { if (!state.busy) target = LockTarget.entries[it] },
+                    onTabSelected = { if (!busy) target = LockTarget.entries[it] },
                     modifier = Modifier.fillMaxWidth(),
                 )
             if (target != LockTarget.Bands) Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -231,7 +242,7 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 LockIconButton(R.string.lock_use_current_cell, Icons.Rounded.MyLocation,
-                    !state.busy && serving != null) {
+                    !busy && serving != null) {
                     serving?.let {
                         if (radio == LockRadio.Lte) {
                             lteChannel = it.optInt("arfcn").toString()
@@ -256,12 +267,12 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
                             val next = selected.toMutableSet().apply { if (!add(text)) remove(text) }
                                 .sortedBy(String::toInt).joinToString(",")
                             if (radio == LockRadio.Lte) lteBands = next else nrBands = next
-                        }, enabled = !state.busy, label = { Text("${if (radio == LockRadio.Lte) "B" else "n"}$band") })
+                        }, enabled = !busy, label = { Text("${if (radio == LockRadio.Lte) "B" else "n"}$band") })
                     }
                 }
                 OutlinedTextField(
                     bands, { if (radio == LockRadio.Lte) lteBands = it else nrBands = it },
-                    Modifier.fillMaxWidth(), enabled = !state.busy, singleLine = true,
+                    Modifier.fillMaxWidth(), enabled = !busy, singleLine = true,
                     isError = bands.isNotBlank() && command == null,
                     label = { Text(stringResource(R.string.lock_band_list)) },
                     placeholder = { Text(if (radio == LockRadio.Lte) "1,3,5,8,28,41" else "1,28,41,78,79") },
@@ -269,18 +280,18 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
                 )
             } else {
                 if (radio == LockRadio.Nr && target == LockTarget.Cell) {
-                    LockNumberField(nrBand, { nrBand = it }, stringResource(R.string.lock_nr_band), !state.busy, 1, 512)
+                    LockNumberField(nrBand, { nrBand = it }, stringResource(R.string.lock_nr_band), !busy, 1, 512)
                 }
                 LockNumberField(channel, { if (radio == LockRadio.Lte) lteChannel = it else nrChannel = it },
-                    if (radio == LockRadio.Lte) "EARFCN" else "NR-ARFCN", !state.busy,
+                    if (radio == LockRadio.Lte) "EARFCN" else "NR-ARFCN", !busy,
                     if (radio == LockRadio.Lte) 0 else 1, radio.maxChannel)
                 if (target == LockTarget.Cell) LockNumberField(pci,
-                    { if (radio == LockRadio.Lte) ltePci = it else nrPci = it }, "PCI", !state.busy, 0, radio.maxPci)
+                    { if (radio == LockRadio.Lte) ltePci = it else nrPci = it }, "PCI", !busy, 0, radio.maxPci)
                 if (radio == LockRadio.Nr) {
                     Text("SCS", style = MaterialTheme.typography.labelLarge)
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         listOf(15, 30, 60, 120).forEach { value ->
-                            FilterChip(scs == value, { scs = value }, enabled = !state.busy, label = { Text("$value kHz") })
+                            FilterChip(scs == value, { scs = value }, enabled = !busy, label = { Text("$value kHz") })
                         }
                     }
                 }
@@ -288,26 +299,28 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
             val applyLabel = stringResource(R.string.lock_apply)
             Button(
                 onClick = { pending = command; confirmation = "$applyLabel · $targetLabel\n$summary" },
-                enabled = enabled && command != null, modifier = Modifier.fillMaxWidth(),
+                enabled = !busy && command != null && (backendFor(command) == LockBackend.Qmi || legacyEnabled),
+                modifier = Modifier.fillMaxWidth(),
             ) {
                 Icon(Icons.Rounded.Lock, contentDescription = null, modifier = Modifier.padding(end = 8.dp))
                 Text(applyLabel)
             }
             val hasBackup = if (radio == LockRadio.Lte) state.lteBackup else state.nrBackup
             val backupHint = if (radio == LockRadio.Lte) state.lteBackupHint else state.nrBackupHint
-            val restoreNeedsBackup = target == LockTarget.Bands
-            val backupCanBeChecked = hasBackup ||
-                (state.availability == LockAvailability.Cached && backupHint)
-            val restoreLabel = stringResource(if (target == LockTarget.Bands) R.string.lock_restore_bands else R.string.lock_clear)
+            val restoreLabel = stringResource(when {
+                target != LockTarget.Bands -> R.string.lock_clear
+                diagControls -> R.string.lock_restore_bands
+                else -> R.string.lock_qmi_restore_bands
+            })
             OutlinedButton(
-                onClick = { pending = BandLockCommand.restore(radio, target); confirmation = "$restoreLabel · $radioLabel · $targetLabel" },
-                enabled = enabled && (!restoreNeedsBackup || backupCanBeChecked),
+                onClick = { pending = restore; confirmation = "$restoreLabel · $radioLabel · $targetLabel" },
+                enabled = !busy,
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Icon(Icons.Rounded.LockOpen, contentDescription = null, modifier = Modifier.padding(end = 8.dp))
                 Text(restoreLabel)
             }
-            if (target == LockTarget.Bands) Text(
+            if (target == LockTarget.Bands && diagControls) Text(
                 stringResource(when (BandLockVerification.backupCaption(
                     state.availability, radio, hasBackup, backupHint,
                 )) {
@@ -318,83 +331,34 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
                 }),
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            /* Instant lock (QMI NAS): an independent backend from the NV/EFS
-             * route above. Takes effect without a restart; persistence after
-             * SSR is unverified, so it is a separate section. */
-            HorizontalDivider()
-            Text(stringResource(R.string.lock_qmi_title), style = MaterialTheme.typography.titleSmall)
-            Text(stringResource(R.string.lock_qmi_hint), style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text(stringResource(when (qmi.availability) {
-                    LockAvailability.Ready -> R.string.lock_qmi_available
-                    LockAvailability.Unavailable -> R.string.lock_qmi_unavailable
-                    else -> R.string.lock_qmi_unknown
-                }), Modifier.weight(1f), style = MaterialTheme.typography.bodySmall,
-                    color = if (qmi.availability == LockAvailability.Unavailable) MaterialTheme.colorScheme.error
-                    else MaterialTheme.colorScheme.onSurfaceVariant)
-                LockIconButton(R.string.lock_qmi_check, Icons.Rounded.Refresh, !qmi.busy) { model.qmiCheck() }
-            }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton({ model.qmiApplyBands(radio, bands) },
-                    Modifier.weight(1f), enabled = !qmi.busy && bands.isNotBlank()) {
-                    Text(stringResource(R.string.lock_qmi_apply_bands))
-                }
-                OutlinedButton({ model.qmiRestoreBands() }, Modifier.weight(1f), enabled = !qmi.busy) {
-                    Text(stringResource(R.string.lock_qmi_restore_bands))
-                }
-            }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton({ model.qmiLockCell(radio, channel, pci, scs) },
-                    Modifier.weight(1f), enabled = !qmi.busy && channel.isNotBlank() && pci.isNotBlank()) {
-                    Text(stringResource(R.string.lock_qmi_lock_cell))
-                }
-                OutlinedButton({ model.qmiClearCell(radio) }, Modifier.weight(1f), enabled = !qmi.busy) {
-                    Text(stringResource(R.string.lock_qmi_clear_cell))
-                }
-            }
-            qmi.result?.let { message ->
-                Text(message, style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error)
-            }
-            if (qmi.log.isNotBlank()) {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text(stringResource(R.string.lock_qmi_log), Modifier.weight(1f),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    LockIconButton(R.string.lock_clear_log, Icons.Rounded.DeleteOutline, !qmi.busy, model::qmiClearLog)
-                }
-                SelectionContainer {
-                    Text(qmi.log.takeLast(1200), style = MaterialTheme.typography.bodySmall,
-                        fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            }
             } else Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                FilterChip(preferDiag, { preferDiag = !preferDiag }, enabled = !busy,
+                    label = { Text(stringResource(R.string.lock_prefer_diag)) })
                 Text(stringResource(R.string.lock_network_mode), style = MaterialTheme.typography.titleSmall)
                 TabRowWithContour(
                     tabs = listOf(stringResource(R.string.lock_mode_auto), "LTE", "NR"),
                     selectedTabIndex = networkMode.ordinal,
-                    onTabSelected = { if (!state.busy) networkMode = LockNetworkMode.entries[it] },
+                    onTabSelected = { if (!busy) networkMode = LockNetworkMode.entries[it] },
                     modifier = Modifier.fillMaxWidth(),
                 )
             val modeLabel = stringResource(R.string.lock_apply_mode)
             val modeValue = if (networkMode == LockNetworkMode.Auto) stringResource(R.string.lock_mode_auto) else networkMode.argument.uppercase()
             OutlinedButton(
                 { pending = BandLockCommand.mode(networkMode); confirmation = "$modeLabel · $modeValue" },
-                Modifier.fillMaxWidth(), enabled = enabled,
+                Modifier.fillMaxWidth(), enabled = !busy && (!preferDiag || legacyEnabled),
             ) { Text(modeLabel) }
             HorizontalDivider()
             Text(stringResource(R.string.lock_console_title), style = MaterialTheme.typography.titleSmall)
             val consoleRunLabel = stringResource(R.string.lock_console_run)
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 OutlinedTextField(
-                    consoleText, { consoleText = it }, Modifier.weight(1f), enabled = !state.busy,
+                    consoleText, { consoleText = it }, Modifier.weight(1f), enabled = !busy,
                     singleLine = true, isError = consoleText.isNotBlank() && consoleValid == null,
                     label = { Text(stringResource(R.string.lock_console_placeholder)) },
                     supportingText = { Text(stringResource(R.string.lock_console_hint)) },
                 )
                 LockIconButton(R.string.lock_console_run, Icons.Rounded.Terminal,
-                    enabled && consoleValid != null) {
+                    legacyEnabled && consoleValid != null) {
                     consoleValid?.let {
                         pending = it
                         confirmation = "$consoleRunLabel · ${consoleText.trim()}"
@@ -404,10 +368,13 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
             HorizontalDivider()
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text(stringResource(R.string.lock_execution_log), Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)
-                LockIconButton(R.string.lock_clear_log, Icons.Rounded.DeleteOutline, !state.busy, model::clearLog)
+                LockIconButton(R.string.lock_clear_log, Icons.Rounded.DeleteOutline, !busy) {
+                    model.clearLog()
+                    model.qmiClearLog()
+                }
             }
             SelectionContainer {
-                Text(state.log.ifEmpty { stringResource(R.string.lock_log_empty) },
+                Text((qmi.log + state.log).ifEmpty { stringResource(R.string.lock_log_empty) },
                     Modifier.fillMaxWidth().padding(bottom = 16.dp), style = MaterialTheme.typography.bodySmall,
                     fontFamily = FontFamily.Monospace)
             }
@@ -421,11 +388,12 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
             title = stringResource(R.string.lock_confirm),
             confirmText = stringResource(R.string.lock_apply),
             dismissText = stringResource(android.R.string.cancel),
-            confirmEnabled = !state.busy,
+            confirmEnabled = !busy,
             onConfirm = {
                 pending = null
-                model.run(
+                model.runPreferred(
                     action,
+                    preferDiag = preferDiag,
                     collectorRunning = signal.status == RootDiagStatus.Running,
                     onModemRestartRequested = rootDiag::recoverAfterModemRestart,
                 )
@@ -433,15 +401,47 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(confirmation)
+                val instant = backendFor(action) == LockBackend.Qmi
+                val possibleFallback = instant && action.qmi?.allowsDiagFallback(qmi.backends) == true && action.restartsModem
                 Text(stringResource(when {
+                    instant && action.qmi?.restoring == true && action.qmi.slot?.target == LockTarget.Bands ->
+                        R.string.lock_confirm_qmi_restore_bands
+                    instant && action.qmi?.restoring == true -> R.string.lock_confirm_qmi_clear
+                    possibleFallback && action.modeAfterLock != null -> R.string.lock_confirm_qmi_apply
+                    instant && action.modeAfterLock != null -> R.string.lock_confirm_apply_mode
                     action.modeAfterLock != null && action.restartsModem -> R.string.lock_confirm_apply_restart
                     action.modeAfterLock != null -> R.string.lock_confirm_apply_mode
                     action.restartsModem -> R.string.lock_confirm_restart
                     else -> R.string.lock_confirm_mode
                 }))
-                if (state.profile.level == LockSupportLevel.ProbeOnly) {
+                if (!instant && state.profile.level == LockSupportLevel.ProbeOnly) {
                     Text(stringResource(R.string.lock_confirm_unverified))
                 }
+            }
+        }
+    }
+    qmi.pendingDiagFallback?.let { command ->
+        AppDialog(
+            show = true,
+            onDismissRequest = model::dismissDiagFallback,
+            title = stringResource(R.string.lock_qmi_diag_fallback_title),
+            confirmText = stringResource(R.string.lock_qmi_diag_fallback_action),
+            dismissText = stringResource(android.R.string.cancel),
+            confirmEnabled = !busy,
+            onConfirm = {
+                model.retryPendingWithDiag(
+                    collectorRunning = signal.status == RootDiagStatus.Running,
+                    onModemRestartRequested = rootDiag::recoverAfterModemRestart,
+                )
+            },
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(stringResource(R.string.lock_qmi_diag_fallback_message))
+                Text(
+                    command.arguments.joinToString(" "),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
     }

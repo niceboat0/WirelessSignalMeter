@@ -4,6 +4,7 @@ import android.app.ActivityManager
 import android.app.ApplicationExitInfo
 import android.content.Context
 import android.os.Build
+import android.os.Looper
 import android.os.SystemClock
 import android.system.Os
 import android.system.OsConstants
@@ -11,6 +12,8 @@ import android.telephony.CellInfo
 import android.telephony.CellInfoLte
 import android.telephony.CellInfoNr
 import android.util.Log
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
 import java.io.PrintWriter
@@ -29,6 +32,7 @@ object AppLogger {
     private const val MAX_LOG_BYTES = 512 * 1024L
     private const val KEEP_LINES = 3000
     internal const val BAND_LOCK_TAG = "BandLock"
+    private const val FAILURE_TAG = "AppFailure"
 
     private val dateFormat = DateTimeFormatter.ofPattern("MM-dd HH:mm:ss.SSS", Locale.US)
 
@@ -53,6 +57,10 @@ object AppLogger {
             initialized = true
             val prev = Thread.getDefaultUncaughtExceptionHandler()
             Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+                runCatching {
+                    write("E", FAILURE_TAG,
+                        crashDiagnostic(throwable, thread === Looper.getMainLooper().thread).toString(), null)
+                }
                 runCatching { e("Crash", "uncaught in ${thread.name}; cellular=$cellularContext", throwable) }
                 prev?.uncaughtException(thread, throwable)
             }
@@ -133,6 +141,8 @@ object AppLogger {
                 exit.reason == ApplicationExitInfo.REASON_ANR ||
                 exit.reason == ApplicationExitInfo.REASON_INITIALIZATION_FAILURE
             ) {
+                write("E", FAILURE_TAG, JSONObject().put("type", "app_process_exit")
+                    .put("t", exit.timestamp).put("reason", exit.reason).put("status", exit.status).toString(), null)
                 w("PreviousExit", "time=${exit.timestamp} process=${exit.processName} " +
                     "reason=${exit.reason} status=${exit.status} description=${exit.description}")
             }
@@ -157,6 +167,23 @@ object AppLogger {
         return readLog()?.lineSequence()?.filter { it.startsWith(marker, startIndex = 18) }
             ?.toList()?.takeLast(240).orEmpty()
     }
+
+    internal fun readFailureDiagnostics(): List<JSONObject> {
+        val marker = " E/$FAILURE_TAG: "
+        return readLog()?.lineSequence()?.mapNotNull { line ->
+            if (!line.startsWith(marker, startIndex = 18)) return@mapNotNull null
+            runCatching { JSONObject(line.substring(18 + marker.length)) }.getOrNull()
+        }?.toList()?.takeLast(12).orEmpty()
+    }
+
+    // Export exception classes and frames without exception messages or cellular context.
+    internal fun crashDiagnostic(error: Throwable, mainThread: Boolean): JSONObject =
+        JSONObject().put("type", "app_crash").put("t", System.currentTimeMillis())
+            .put("thread", if (mainThread) "main" else "background")
+            .put("causes", JSONArray(generateSequence(error) { it.cause }.take(3).map { cause ->
+                JSONObject().put("class", cause.javaClass.name)
+                    .put("frames", JSONArray(cause.stackTrace.take(12).map { it.toString() }))
+            }.toList()))
 
     /** 日志文件字节数（供 UI 提示），无则 0。 */
     @JvmStatic
