@@ -177,6 +177,19 @@ __declspec(dllexport) int test_qmi_lock(void) {
     qp_format_band_list(lte_1341, 8, tighter, sizeof tighter);
     CHECK(str_eq(tighter, "1,..."));
 
+    /* Extended LTE restore (0x24, 32 bytes for >B64, never alongside 0x15). */
+    uint8_t lte_ext[32] = {0};
+    lte_ext[0] = 0x05;
+    lte_ext[8] = 0x02;                                              /* B66 = bit 65 = byte 8, bit 1 */
+    n = qp_nas_ssp_set_ext_lte(out, 21, lte_ext, NULL, -1);
+    CHECK(qp_read16(out + 3) == QMI_NAS_SET_SSP);
+    CHECK(n == QMI_HEADER + (3 + 1) + (3 + 32));
+    CHECK(out[7] == QP_TLV_SSP_DURATION && qp_read16(out + 8) == 1 && out[10] == 1);
+    CHECK(out[11] == QP_TLV_SSP_EXT_LTE_SET && qp_read16(out + 12) == 32);
+    CHECK(out[14] == 0x05 && out[14 + 8] == 0x02);
+    CHECK(qp_find_tlv(out, n, QP_TLV_SSP_LTE_BANDS, &v, &len) == 0);
+    CHECK(qp_find_tlv(out, n, QP_TLV_SSP_EXT_LTE_SET, &v, &len) == 1 && len == 32);
+
     /* GET 0x0034 synthetic reply: 4-byte 0x2B mode + 64-byte 0x2C SA + 0x2D NSA. */
     uint8_t ssp_resp[256];
     size_t sr = qp_req_hdr(ssp_resp, 20, QMI_NAS_GET_SSP);
