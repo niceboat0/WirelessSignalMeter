@@ -112,9 +112,9 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
         runCatching { BandLockCommand.apply(radio, target, bands, channel, pci, scs) }.getOrNull()
     }
     val restore = remember(radio, target) { BandLockCommand.restore(radio, target) }
-    fun backendFor(action: BandLockCommand) = preferredLockBackend(action.qmi, qmi.backends, preferDiag)
+    fun backendFor(action: BandLockCommand) = preferredLockBackend(action.qmi, preferDiag)
     val diagControls = backendFor(restore) == LockBackend.Diag
-    val showDiag = (if (advanced) preferDiag else diagControls) || qmi.availability == LockAvailability.Unavailable
+    val showDiag = preferDiag
     val targetLabel = stringResource(when (target) {
         LockTarget.Bands -> R.string.lock_bands
         LockTarget.Frequency -> R.string.lock_frequency
@@ -165,6 +165,12 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
                 .verticalScroll(if (advanced) advancedScroll else lockScroll).padding(horizontal = 16.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            TabRowWithContour(
+                tabs = listOf(stringResource(R.string.lock_backend_qmi), stringResource(R.string.lock_backend_diag)),
+                selectedTabIndex = if (preferDiag) 1 else 0,
+                onTabSelected = { if (!busy) preferDiag = it == 1 },
+                modifier = Modifier.fillMaxWidth(),
+            )
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     if (advanced) Text(model.device, style = MaterialTheme.typography.titleSmall)
@@ -172,6 +178,7 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
                         state.busy && state.availability == LockAvailability.Checking -> R.string.lock_checking
                         busy -> R.string.lock_working
                         !showDiag && qmi.availability == LockAvailability.Ready -> R.string.lock_qmi_available
+                        !showDiag && qmi.availability == LockAvailability.Unavailable -> R.string.lock_qmi_unavailable
                         !showDiag -> R.string.lock_qmi_title
                         state.availability == LockAvailability.Unchecked -> R.string.lock_unchecked
                         state.availability == LockAvailability.Cached -> R.string.lock_cached_unconfirmed
@@ -179,7 +186,8 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
                         state.availability == LockAvailability.Ready -> R.string.lock_probe_only
                         else -> R.string.lock_unavailable
                     }), style = MaterialTheme.typography.bodySmall,
-                        color = if (showDiag && state.availability == LockAvailability.Unavailable) MaterialTheme.colorScheme.error
+                        color = if ((showDiag && state.availability == LockAvailability.Unavailable) ||
+                            (!showDiag && qmi.availability == LockAvailability.Unavailable)) MaterialTheme.colorScheme.error
                         else MaterialTheme.colorScheme.onSurfaceVariant)
                     if (showDiag && advanced && state.profile.reason.isNotBlank() &&
                         state.availability in setOf(LockAvailability.Ready, LockAvailability.Unavailable)) {
@@ -196,7 +204,7 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
                     }
                 }
                 LockIconButton(R.string.lock_refresh, Icons.Rounded.Refresh, !busy) {
-                    model.checkPreferred(if (advanced) preferDiag else diagControls, signal.status == RootDiagStatus.Running)
+                    model.checkPreferred(preferDiag, signal.status == RootDiagStatus.Running)
                 }
             }
             if (advanced && state.availability == LockAvailability.Ready &&
@@ -300,7 +308,7 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
             val applyLabel = stringResource(R.string.lock_apply)
             Button(
                 onClick = { pending = command; confirmation = "$applyLabel · $targetLabel\n$summary" },
-                enabled = !busy && command != null && (backendFor(command) == LockBackend.Qmi || legacyEnabled),
+                enabled = !busy && command != null,
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Icon(Icons.Rounded.Lock, contentDescription = null, modifier = Modifier.padding(end = 8.dp))
@@ -321,6 +329,10 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
                 Icon(Icons.Rounded.LockOpen, contentDescription = null, modifier = Modifier.padding(end = 8.dp))
                 Text(restoreLabel)
             }
+            if (!preferDiag && restore.qmi == null) {
+                Text(stringResource(R.string.lock_diag_only_hint),
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
             if (target == LockTarget.Bands && diagControls) Text(
                 stringResource(when (BandLockVerification.backupCaption(
                     state.availability, radio, hasBackup, backupHint,
@@ -333,8 +345,6 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             } else Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                FilterChip(preferDiag, { preferDiag = !preferDiag }, enabled = !busy,
-                    label = { Text(stringResource(R.string.lock_prefer_diag)) })
                 Text(stringResource(R.string.lock_network_mode), style = MaterialTheme.typography.titleSmall)
                 TabRowWithContour(
                     tabs = listOf(stringResource(R.string.lock_mode_auto), "LTE", "NR"),
@@ -346,7 +356,7 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
             val modeValue = if (networkMode == LockNetworkMode.Auto) stringResource(R.string.lock_mode_auto) else networkMode.argument.uppercase()
             OutlinedButton(
                 { pending = BandLockCommand.mode(networkMode); confirmation = "$modeLabel · $modeValue" },
-                Modifier.fillMaxWidth(), enabled = !busy && (!preferDiag || legacyEnabled),
+                Modifier.fillMaxWidth(), enabled = !busy,
             ) { Text(modeLabel) }
             HorizontalDivider()
             Text(stringResource(R.string.lock_console_title), style = MaterialTheme.typography.titleSmall)
@@ -402,8 +412,21 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(confirmation)
-                val instant = backendFor(action) == LockBackend.Qmi
-                val possibleFallback = instant && action.qmi?.allowsDiagFallback(qmi.backends) == true && action.restartsModem
+                val chosen = backendFor(action)
+                val instant = chosen == LockBackend.Qmi
+                val recorded = action.qmi?.savedBackend(qmi.backends)
+                val possibleFallback = instant && action.qmi?.allowsDiagFallback() == true && action.restartsModem
+                if (recorded != null && recorded != chosen) {
+                    Text(
+                        stringResource(
+                            R.string.lock_confirm_cross_backend,
+                            stringResource(if (recorded == LockBackend.Qmi) R.string.lock_backend_qmi else R.string.lock_backend_diag),
+                            stringResource(if (chosen == LockBackend.Qmi) R.string.lock_backend_qmi else R.string.lock_backend_diag),
+                        ),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 Text(stringResource(when {
                     instant && action.qmi?.restoring == true && action.qmi.slot?.target == LockTarget.Bands ->
                         R.string.lock_confirm_qmi_restore_bands

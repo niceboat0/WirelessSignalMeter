@@ -168,6 +168,10 @@
     <string name="lock_scope">高通 diag-router · 作用于基带主协议栈，暂不支持指定 SIM 卡。</string>
     <string name="lock_refresh">检测设备</string>
     <string name="lock_qmi_title">即时锁（QMI）</string>
+    <string name="lock_backend_qmi">QMI 即时</string>
+    <string name="lock_backend_diag">DIAG 传统</string>
+    <string name="lock_diag_only_hint">当前锁定类型仅支持 DIAG 通道（会重启基带）。</string>
+    <string name="lock_confirm_cross_backend">上次锁定使用 %1$s，本次将按所选 %2$s 执行。</string>
     <string name="lock_prefer_diag">优先使用 DIAG</string>
     <string name="lock_qmi_available">QMI NAS 可用</string>
     <string name="lock_qmi_unavailable">本机 QMI NAS 不可达</string>

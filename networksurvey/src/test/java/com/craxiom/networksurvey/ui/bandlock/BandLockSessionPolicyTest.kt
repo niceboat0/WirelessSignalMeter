@@ -313,4 +313,69 @@ class BandLockCollectorReuseTest {
         assertEquals(LockNetworkMode.Nr, model.state.value.appliedMode)
         assertEquals(com.craxiom.networksurvey.R.string.lock_and_mode_accepted, model.state.value.result)
     }
+
+    @Test
+    fun manualSwitchBetweenQmiAndDiagWorksAfterPriorLockOrFailedRestore() = runTest(dispatcher) {
+        val model = model()
+        val runner = RecordingRunner { model.state.value.availability }.also { it.connected = true }
+        val qmi = object : QmiLockRunner({ java.io.File("unused") }) {
+            val responses = ArrayDeque<QmiLockOutcome>()
+            val calls = mutableListOf<List<String>>()
+            override suspend fun run(arguments: List<String>, timeoutMs: Long): QmiLockOutcome {
+                calls += arguments
+                return responses.removeFirst()
+            }
+        }
+        qmi.responses.addLast(QmiLockOutcome(0, "QMI bands lte=0x0000000000000005\nVERDICT ok\n", "ok", reachable = true))
+        qmi.responses.addLast(QmiLockOutcome(0, "VERDICT ok\n", "ok", reachable = true))
+        qmi.responses.addLast(QmiLockOutcome(9, "QMI bands-restore fail=hw_capability\n", "fail", reachable = false))
+        model.commandRunner = runner
+        model.qmiRunner = qmi
+        model.restoreForTest(BandLockState(
+            availability = LockAvailability.Ready,
+            channel = "samsung-diag-router",
+            profile = BandLockProfile(LockSupportLevel.Verified, "qualcomm-diag", "samsung-diag-router"),
+        ))
+
+        // Lock NR bands via QMI, then attempt a failed QMI restore.
+        model.runPreferred(
+            BandLockCommand.apply(LockRadio.Nr, LockTarget.Bands, "78", "", "", 30),
+            preferDiag = false,
+            collectorRunning = true,
+            onModemRestartRequested = {},
+        )
+        model.qmi.first { !it.busy }
+        model.runPreferred(
+            BandLockCommand.restore(LockRadio.Nr, LockTarget.Bands),
+            preferDiag = false,
+            collectorRunning = true,
+            onModemRestartRequested = {},
+        )
+        model.qmi.first { !it.busy }
+        assertEquals(LockBackend.Qmi, model.qmi.value.backends[QmiLockSlot(LockRadio.Nr, LockTarget.Bands)])
+
+        // Switching to DIAG must immediately run DIAG instead of sticking on QMI.
+        qmi.responses.addLast(QmiLockOutcome(0, "QMI mode ok\nVERDICT ok\n", "ok", reachable = true))
+        model.runPreferred(
+            BandLockCommand.restore(LockRadio.Nr, LockTarget.Bands),
+            preferDiag = true,
+            collectorRunning = true,
+            onModemRestartRequested = {},
+        )
+        model.state.first { !it.busy }
+        assertEquals(listOf("nr-band-restore"), runner.calls.map { it.second.first() })
+
+        // Switching back to QMI must immediately run QMI again.
+        qmi.responses.addLast(QmiLockOutcome(0, "QMI bands lte=0x0000000000000005\nVERDICT ok\n", "ok", reachable = true))
+        qmi.responses.addLast(QmiLockOutcome(0, "VERDICT ok\n", "ok", reachable = true))
+        model.runPreferred(
+            BandLockCommand.apply(LockRadio.Nr, LockTarget.Bands, "1", "", "", 30),
+            preferDiag = false,
+            collectorRunning = true,
+            onModemRestartRequested = {},
+        )
+        model.qmi.first { !it.busy }
+        assertEquals(listOf("bands-get", "bands-set", "bands-restore", "mode", "bands-get", "bands-set"),
+            qmi.calls.map { it.first() })
+    }
 }

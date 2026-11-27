@@ -117,8 +117,7 @@ internal data class QmiLockPlan(
     val switchModeAfterWrite: Boolean = false,
     val restoring: Boolean = false,
 ) {
-    fun allowsDiagFallback(backends: Map<QmiLockSlot, LockBackend>): Boolean =
-        !restoring && savedBackend(backends) == null
+    fun allowsDiagFallback(): Boolean = !restoring
 
     suspend fun execute(
         beforeWrite: suspend () -> Unit,
@@ -144,9 +143,8 @@ internal data class QmiLockPlan(
 
 internal fun preferredLockBackend(
     plan: QmiLockPlan?,
-    backends: Map<QmiLockSlot, LockBackend>,
     preferDiag: Boolean,
-): LockBackend = plan?.savedBackend(backends) ?: if (plan == null || preferDiag) LockBackend.Diag else LockBackend.Qmi
+): LockBackend = if (plan == null || preferDiag) LockBackend.Diag else LockBackend.Qmi
 
 internal fun QmiLockPlan.savedBackend(backends: Map<QmiLockSlot, LockBackend>): LockBackend? {
     val key = slot ?: return null
