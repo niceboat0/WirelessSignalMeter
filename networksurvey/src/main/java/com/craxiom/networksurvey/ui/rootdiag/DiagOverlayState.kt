@@ -5,6 +5,7 @@ import kotlinx.coroutines.flow.asStateFlow
 
 internal data class DiagOverlaySnapshot(
     val collecting: Boolean = false,
+    val recording: Boolean = false,
     val status: String = "",
     val rat: String = "",
     val pci: Int? = null,

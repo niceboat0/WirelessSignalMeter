@@ -21,6 +21,14 @@ internal object CollectorRestartPolicy {
     ): Boolean = !statusRunning || statusAgeMs !in 0..STATUS_STALE_MS ||
         packetAgeMs == null || packetAgeMs !in 0 until minOf(MODEM_PACKET_STALE_MS, sinceRequestMs)
 
+    /** An open recording does not postpone a stale collector. The segment is archived first. */
+    fun modemRecoveryPhase(stale: Boolean, check: Int, restarts: Int): String = when {
+        !stale -> "packets_resumed"
+        check == MODEM_RECOVERY_CHECKS -> "still_stalled"
+        restarts >= MAX_MODEM_RECOVERY_RESTARTS -> "waiting_after_restarts"
+        else -> "restarting_collector"
+    }
+
     fun isTransient(status: RootDiagStatus, errorCode: Int?, hadBeenRunning: Boolean): Boolean {
         if (status == RootDiagStatus.Denied || status == RootDiagStatus.Unavailable) return false
         if (errorCode == 2 || errorCode == 3) return false

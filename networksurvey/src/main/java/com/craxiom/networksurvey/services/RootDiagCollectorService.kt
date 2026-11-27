@@ -93,7 +93,7 @@ class RootDiagCollectorService : Service() {
         }
     }
 
-    private fun DiagOverlaySnapshot.isTask() = collecting || status == "task"
+    private fun DiagOverlaySnapshot.isTask() = recording
 
     private fun maybeShowOverlay() {
         if (!RootDiagPrefs.overlayWanted(this) || !Settings.canDrawOverlays(this)) {
@@ -178,7 +178,8 @@ class RootDiagCollectorService : Service() {
     private fun formatOverlay(snap: DiagOverlaySnapshot): String {
         val parts = mutableListOf<String>()
         parts += when {
-            snap.collecting || snap.status == "task" -> getString(R.string.diag_overlay_task_collecting)
+            snap.recording || snap.status == "recording" -> getString(R.string.diag_overlay_recording)
+            snap.status == "task" -> getString(R.string.diag_overlay_task_open)
             snap.status == "listening" -> getString(R.string.diag_overlay_listening)
             snap.status == "standby" -> getString(R.string.diag_overlay_standby)
             else -> snap.status.ifBlank { getString(R.string.diag_overlay_standby) }
