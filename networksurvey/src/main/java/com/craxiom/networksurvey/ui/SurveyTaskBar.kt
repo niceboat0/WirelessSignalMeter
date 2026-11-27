@@ -18,6 +18,9 @@ import com.craxiom.networksurvey.ui.rootdiag.RecordingLocationMarks
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import com.craxiom.networksurvey.db.recallSurveyRecordingFormat
+import com.craxiom.networksurvey.ui.rootdiag.DiagLogFormat
+import com.craxiom.networksurvey.ui.rootdiag.DiagRecordingPolicy
 
 @Composable
 internal fun SurveyTaskBar() {
@@ -28,6 +31,8 @@ internal fun SurveyTaskBar() {
     var edit by remember { mutableStateOf(false) }
     var name by remember { mutableStateOf("") }
     var needLog by remember { mutableStateOf(false) }
+    var logFormat by remember { mutableStateOf(DiagLogFormat.Qmdl) }
+    var rememberedFormat by remember { mutableStateOf<String?>(null) }
     var locationMode by remember { mutableStateOf(SurveyLocationMode.DT) }
     var rememberedMode by remember { mutableStateOf<SurveyLocationMode?>(null) }
     var busy by remember { mutableStateOf(false) }
@@ -39,7 +44,15 @@ internal fun SurveyTaskBar() {
             store = repository
             repository.active.collect { next ->
                 task = next
-                rememberedMode = next?.let { withContext(Dispatchers.IO) { recallSurveyLocationMode(context, it.id) } }
+                val recalled = next?.let {
+                    withContext(Dispatchers.IO) {
+                        recallSurveyLocationMode(context, it.id) to DiagRecordingPolicy.recordingFormatLabel(
+                            if (it.needLog) recallSurveyRecordingFormat(context, it.id) else null,
+                        )
+                    }
+                }
+                rememberedMode = recalled?.first
+                rememberedFormat = recalled?.second
             }
         } catch (_: android.database.SQLException) { error = true }
     }
@@ -49,9 +62,15 @@ internal fun SurveyTaskBar() {
                 Text(task?.name ?: stringResource(R.string.road_task_idle), style = MaterialTheme.typography.titleSmall,
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
                 task?.let {
-                    val status = rememberedMode?.let { mode ->
-                        stringResource(R.string.road_task_running) + " · " + mode.name
-                    } ?: stringResource(R.string.road_task_running)
+                    val logLabel = if (it.needLog) {
+                        rememberedFormat?.let { name -> stringResource(R.string.road_task_status_log_format, name) }
+                            ?: stringResource(R.string.road_task_status_log_on)
+                    } else stringResource(R.string.road_task_status_log_off)
+                    val status = listOfNotNull(
+                        stringResource(R.string.road_task_running),
+                        rememberedMode?.label,
+                        logLabel,
+                    ).joinToString(" · ")
                     Text(status, style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
@@ -62,6 +81,7 @@ internal fun SurveyTaskBar() {
             if (task == null) Button(enabled = !busy && store != null, onClick = {
                 name = ""
                 needLog = false
+                logFormat = DiagLogFormat.Qmdl
                 locationMode = SurveyLocationMode.DT
                 edit = true
             }) { Text(stringResource(R.string.road_task_new)) }
@@ -74,15 +94,27 @@ internal fun SurveyTaskBar() {
                 }
             }) { Text(stringResource(R.string.road_task_finish)) }
         }
+        if (task != null) Text(
+            stringResource(R.string.road_task_active_hint),
+            Modifier.padding(top = 4.dp),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            stringResource(R.string.road_map_mark_hint),
+            Modifier.padding(top = 2.dp, bottom = 8.dp),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
         if (error) Text("无法保存任务，请检查存储空间", color = MaterialTheme.colorScheme.error,
             style = MaterialTheme.typography.bodySmall)
     }
     if (edit) AlertDialog(
         onDismissRequest = { if (!busy) edit = false },
-        title = { Text("新建采集任务") },
+        title = { Text(stringResource(R.string.road_task_create_title)) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                OutlinedTextField(name, { name = it.take(80) }, label = { Text("任务名称") }, singleLine = true)
+                OutlinedTextField(name, { name = it.take(80) }, label = { Text(stringResource(R.string.road_task_name)) }, singleLine = true)
                 Text("位置记法")
                 Text(
                     if (locationMode == SurveyLocationMode.DT) "基带录制期间写一条 GPX 轨迹，离开本页也继续"
@@ -102,22 +134,49 @@ internal fun SurveyTaskBar() {
                 }
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     Column(Modifier.weight(1f)) {
-                        Text("录制原始日志")
-                        Text("仅此任务期间写入 QMDL 或 DLF", style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(stringResource(R.string.road_task_log_title))
+                        Text(
+                            stringResource(if (needLog) R.string.road_task_log_on_hint else R.string.road_task_log_off_hint),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
-                    Switch(checked = needLog, onCheckedChange = { needLog = it })
+                    Switch(checked = needLog, onCheckedChange = { needLog = it }, enabled = !busy)
+                }
+                if (needLog) {
+                    Text(stringResource(R.string.road_task_format))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        RadioButton(
+                            selected = logFormat == DiagLogFormat.Qmdl,
+                            onClick = { logFormat = DiagLogFormat.Qmdl },
+                            enabled = !busy,
+                        )
+                        Text(stringResource(R.string.diag_qmdl_format_qmdl))
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        RadioButton(
+                            selected = logFormat == DiagLogFormat.Dlf,
+                            onClick = { logFormat = DiagLogFormat.Dlf },
+                            enabled = !busy,
+                        )
+                        Text(stringResource(R.string.diag_qmdl_format_dlf))
+                    }
                 }
             }
         },
         confirmButton = { TextButton(enabled = !busy, onClick = {
             busy = true
             scope.launch {
-                try { withContext(Dispatchers.IO) { store?.start(name, needLog, locationMode) }; edit = false }
+                try {
+                    withContext(Dispatchers.IO) {
+                        store?.start(name, needLog, locationMode, if (needLog) logFormat.name else null)
+                    }
+                    edit = false
+                }
                 catch (_: android.database.SQLException) { error = true }
                 finally { busy = false }
             }
-        }) { Text("开始") } },
+        }) { Text(stringResource(if (needLog) R.string.road_task_create_and_record else R.string.road_task_create_confirm)) } },
         dismissButton = { TextButton(enabled = !busy, onClick = { edit = false }) { Text("取消") } },
     )
 }

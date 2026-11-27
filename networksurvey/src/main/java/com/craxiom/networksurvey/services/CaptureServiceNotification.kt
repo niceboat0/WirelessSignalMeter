@@ -11,6 +11,8 @@ import com.craxiom.networksurvey.Application
 import com.craxiom.networksurvey.NetworkSurveyActivity
 import com.craxiom.networksurvey.R
 import com.craxiom.networksurvey.constants.NetworkSurveyConstants
+import com.craxiom.networksurvey.ui.rootdiag.diagPresenceDetail
+import com.craxiom.networksurvey.ui.rootdiag.diagPresenceHeadline
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -19,30 +21,30 @@ internal object CaptureServiceNotification {
     private const val ID = NetworkSurveyConstants.LOGGING_NOTIFICATION_ID
 
     private var surveyText: String? = null
-    private var diagTask: Boolean? = null
+    private var diagPresence: String? = null
 
     @JvmStatic
     @Synchronized
     fun startSurvey(service: Service, type: Int, text: String) {
-        start(service, type, text, diagTask)
+        start(service, type, text, diagPresence)
         surveyText = text
     }
 
     @Synchronized
-    fun startDiag(service: Service, type: Int, task: Boolean) {
-        start(service, type, surveyText, task)
-        diagTask = task
+    fun startDiag(service: Service, type: Int, presence: String) {
+        start(service, type, surveyText, presence)
+        diagPresence = presence
     }
 
-    private fun start(service: Service, type: Int, survey: String?, diag: Boolean?) {
+    private fun start(service: Service, type: Int, survey: String?, diag: String?) {
         Application.createNotificationChannel(service)
         ServiceCompat.startForeground(service, ID, build(service, survey, diag), type)
     }
 
     @Synchronized
-    fun updateDiag(context: Context, task: Boolean) {
-        if (diagTask == null || diagTask == task) return
-        diagTask = task
+    fun updateDiag(context: Context, presence: String) {
+        if (diagPresence == null || diagPresence == presence) return
+        diagPresence = presence
         refresh(context)
     }
 
@@ -57,30 +59,25 @@ internal object CaptureServiceNotification {
 
     @Synchronized
     fun stopDiag(service: Service) {
-        if (diagTask == null) return
-        diagTask = null
+        if (diagPresence == null) return
+        diagPresence = null
         ServiceCompat.stopForeground(service, ServiceCompat.STOP_FOREGROUND_REMOVE)
         refresh(service)
     }
 
     private fun refresh(context: Context) {
-        if (diagTask == null && surveyText == null) return
+        if (diagPresence == null && surveyText == null) return
         context.getSystemService(NotificationManager::class.java)
-            ?.notify(ID, build(context, surveyText, diagTask))
+            ?.notify(ID, build(context, surveyText, diagPresence))
     }
 
-    private fun build(context: Context, survey: String?, diag: Boolean?) =
+    private fun build(context: Context, survey: String?, diag: String?) =
         NotificationCompat.Builder(context, NetworkSurveyConstants.NOTIFICATION_CHANNEL_ID).apply {
             setSmallIcon(R.drawable.logging_thick_icon)
-            setContentTitle(context.getString(when (diag) {
-                true -> R.string.diag_bg_notification_title_task
-                false -> R.string.diag_bg_notification_title_listen
-                null -> R.string.network_survey_notification_title
-            }))
-            val diagText = diag?.let {
-                context.getString(if (it) R.string.diag_bg_notification_text_task
-                    else R.string.diag_bg_notification_text_listen)
-            }
+            setContentTitle(context.getString(
+                if (diag == null) R.string.network_survey_notification_title else diagPresenceHeadline(diag),
+            ))
+            val diagText = diag?.let { context.getString(diagPresenceDetail(it)) }
             val text = listOfNotNull(diagText, survey?.takeIf { it.isNotBlank() }).joinToString("\n")
             setContentText(text)
             setStyle(NotificationCompat.BigTextStyle().bigText(text))
@@ -106,7 +103,7 @@ internal object CaptureServiceNotification {
         val manager = context.getSystemService(NotificationManager::class.java)
         val active = runCatching { manager?.activeNotifications.orEmpty() }.getOrDefault(emptyArray())
         return JSONObject().put("type", "capture_notifications")
-            .put("survey_foreground", surveyText != null).put("diag_foreground", diagTask != null)
+            .put("survey_foreground", surveyText != null).put("diag_foreground", diagPresence != null)
             .put("allowed", manager?.areNotificationsEnabled() ?: false)
             .put("active", JSONArray(active.map {
                 JSONObject().put("id", it.id).put("channel", it.notification.channelId)

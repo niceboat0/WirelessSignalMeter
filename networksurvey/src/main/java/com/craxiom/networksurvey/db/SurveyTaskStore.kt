@@ -52,8 +52,16 @@ internal class SurveyTaskStore private constructor(context: Context) :
     /** Returns the running test task only. Viewing live packets must not open a recording session. */
     @Synchronized fun observationTask(): SurveyTask? = activeState.value
 
-    /** [locationMode] is stored by task id, not as a survey_task column. Blank names may show DT or CQT. */
-    @Synchronized fun start(name: String = "", needLog: Boolean = false, locationMode: SurveyLocationMode? = null): SurveyTask {
+    /**
+     * [locationMode] and [recordingFormat] are stored by task id, not as survey_task columns.
+     * Blank names may show DT or CQT. The format is written before the active task is published.
+     */
+    @Synchronized fun start(
+        name: String = "",
+        needLog: Boolean = false,
+        locationMode: SurveyLocationMode? = null,
+        recordingFormat: String? = null,
+    ): SurveyTask {
         val now = System.currentTimeMillis()
         val requested = name.trim().take(80)
         val task = SurveyTask(UUID.randomUUID().toString(), requested.ifBlank {
@@ -83,6 +91,15 @@ internal class SurveyTaskStore private constructor(context: Context) :
         locationMode?.let { mode ->
             val remembered = runCatching { rememberSurveyLocationMode(appContext, task.id, mode) }.getOrDefault(false)
             if (!remembered) timber.log.Timber.w("Could not remember DT/CQT choice for this task")
+        }
+        if (task.needLog) {
+            val formatName = recordingFormat?.trim().orEmpty()
+            if (formatName.isNotEmpty()) {
+                val remembered = runCatching {
+                    rememberSurveyRecordingFormat(appContext, task.id, formatName)
+                }.getOrDefault(false)
+                if (!remembered) timber.log.Timber.w("Could not remember air-interface format for this task")
+            }
         }
         activeState.value = task
         activeMission?.let { boundMissions.add(task.id to it) }
