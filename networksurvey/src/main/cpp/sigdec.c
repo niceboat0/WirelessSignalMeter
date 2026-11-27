@@ -41,6 +41,21 @@ struct sd_meas_config {
     struct sd_meas_link links[SD_MEAS_LIMIT + 1];
     struct sd_meas_report reports[SD_MEAS_LIMIT + 1];
 };
+/* Broadcast reselection parameters (SIB3/SIB5 for LTE, SIB2/SIB4/SIB5 for NR). */
+struct sd_reselection {
+    int q_hyst, has_q_hyst;                  /* dB (ENUMERATED name) */
+    int s_intra_search, has_s_intra;         /* dB (range x2) */
+    int thresh_serving_low, has_thresh_serving_low;   /* dB (x2) */
+    int thresh_x_high, has_thresh_x_high;    /* dB (x2) */
+    int thresh_x_low, has_thresh_x_low;      /* dB (x2) */
+    int t_reselect, has_t_reselect;          /* seconds */
+    int priority, has_priority;              /* 0..7 */
+};
+struct sd_sib_info {
+    char name[8];       /* last SIB subtree entered ("sib3"/"sib5") */
+    unsigned mask;      /* bit n set for sibN seen */
+    struct sd_reselection resel;
+};
 struct sd_summary {
     const char *message;
     char nas[96];
@@ -55,6 +70,7 @@ struct sd_summary {
     int nr_frequency[SD_NR_FREQ_FIELDS];
     struct sd_meas_config meas;
     int meas_complete;
+    struct sd_sib_info sib;
     int lte_pcell_sinr_plus_one;
     int suspended;
     struct { int mcc, mnc, mnc_digits; } plmns[SD_PLMN_LIMIT];
@@ -98,6 +114,7 @@ struct sd {
     struct sd_summary *summary;
     int nested_error;
     int in_meas_config, meas_parent_depth, meas_object_depth, meas_item;
+    int in_sib;      /* inside a sibN subtree of SystemInformation */
     int lte_pcell_depth;
     int in_sib1_plmns;
     int in_initial_bwp;
@@ -361,6 +378,19 @@ static void sd_val(struct sd *d, struct sd_br *r, uint32_t ni, int depth, const 
         d->in_lte_sib2--;
         return;
     }
+    /* SIB3/SIB4/SIB5 subtrees of SystemInformation: track the SIB for the
+       broadcast reselection-parameter capture. LTE sib2 stays on its own
+       hook above; NR sib2 (cellReselectionInfoCommon) lands here. */
+    if (!hide && d->summary && d->dl && d->summary->message &&
+        !strcmp(d->summary->message, "systemInformation") &&
+        !strncmp(label, "sib", 3) && label[3] >= '2' && label[3] <= '8' && !label[4]) {
+        d->in_sib = 1;
+        snprintf(d->summary->sib.name, sizeof(d->summary->sib.name), "%s", label);
+        d->summary->sib.mask |= 1u << (label[3] - '0');
+        sd_val_impl(d, r, ni, depth, label, hide);
+        d->in_sib = 0;
+        return;
+    }
     if (!hide && d->summary && d->dl && d->summary->message &&
         !strcmp(d->summary->message, "systemInformationBlockType1")) {
         int *scope = NULL;
@@ -576,6 +606,29 @@ static void sd_val_impl(struct sd *d, struct sd_br *r, uint32_t ni, int depth, c
             d->summary->sib1_present |= 1u << d->in_initial_bwp;
         }
         if (!hide) {
+            /* Broadcast reselection parameters (SIB3/SIB5 LTE, SIB2/4/5 NR). */
+            if (!r->err && d->in_sib && d->summary) {
+                struct sd_reselection *rs = &d->summary->sib.resel;
+                if (!strcmp(label, "threshServingLow") || !strcmp(label, "threshServingLowQ")) {
+                    rs->thresh_serving_low = 2 * (int)v;
+                    rs->has_thresh_serving_low = 1;
+                } else if (!strcmp(label, "threshX-High")) {
+                    rs->thresh_x_high = 2 * (int)v;
+                    rs->has_thresh_x_high = 1;
+                } else if (!strcmp(label, "threshX-Low")) {
+                    rs->thresh_x_low = 2 * (int)v;
+                    rs->has_thresh_x_low = 1;
+                } else if (!strcmp(label, "s-IntraSearch") || !strcmp(label, "s-IntraSearchQ")) {
+                    rs->s_intra_search = 2 * (int)v;
+                    rs->has_s_intra = 1;
+                } else if (!strcmp(label, "t-ReselectionEUTRA") || !strcmp(label, "t-ReselectionNR")) {
+                    rs->t_reselect = (int)v;
+                    rs->has_t_reselect = 1;
+                } else if (!strcmp(label, "cellReselectionPriority")) {
+                    rs->priority = (int)v;
+                    rs->has_priority = 1;
+                }
+            }
             if (!r->err && d->summary && d->summary->message &&
                 !strcmp(d->summary->message, "systemInformationBlockType1")) {
                 if (!strcmp(label, "p-Max") && (!d->nr || d->in_sib1_ul))
@@ -657,6 +710,14 @@ static void sd_val_impl(struct sd *d, struct sd_br *r, uint32_t ni, int depth, c
             } else if (!strcmp(label, "triggerQuantity")) {
                 rp->quantity = !strcmp(nm, "rsrp") ? SD_Q_RSRP :
                     !strcmp(nm, "rsrq") ? SD_Q_RSRQ : SD_Q_NONE;
+            }
+        }
+        /* Broadcast q-Hyst (ENUMERATED dB0..dB30) inside a SIB subtree. */
+        if (!r->err && d->in_sib && d->summary && !strcmp(label, "q-Hyst")) {
+            int v = sd_enum_num(nm, "dB");
+            if (v >= 0) {
+                d->summary->sib.resel.q_hyst = v;
+                d->summary->sib.resel.has_q_hyst = 1;
             }
         }
         int nr_access = d->nr && d->in_sib1_ul && d->summary && d->summary->message &&

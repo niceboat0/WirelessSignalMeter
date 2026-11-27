@@ -978,6 +978,41 @@ static void emit_mr_trigger(int nr, const struct mr_out *mr) {
     g_mr_head = (g_mr_head + 1) & 7;
 }
 
+/* Broadcast reselection parameters: emit one event per changed set of
+   SIB3/5 (LTE) or SIB2/4/5 (NR) parameters, with the serving cell context. */
+static void emit_reselection_event(int nr, const struct sd_sib_info *sib, int pci) {
+    static uint64_t last_fingerprint;
+    static int have_fingerprint;
+    const struct sd_reselection *rs = &sib->resel;
+    uint64_t fp = 1469598103934665603ULL ^ (uint64_t)(nr + 1) ^ ((uint64_t)sib->mask << 5);
+    fp = fp * 31 + (uint64_t)rs->q_hyst + (rs->has_q_hyst ? 199 : 0);
+    fp = fp * 31 + (uint64_t)rs->priority + (rs->has_priority ? 199 : 0);
+    fp = fp * 31 + (uint64_t)rs->t_reselect + (rs->has_t_reselect ? 199 : 0);
+    fp = fp * 31 + (uint64_t)rs->s_intra_search + (rs->has_s_intra ? 199 : 0);
+    fp = fp * 31 + (uint64_t)rs->thresh_serving_low + (rs->has_thresh_serving_low ? 199 : 0);
+    fp = fp * 31 + (uint64_t)rs->thresh_x_high + (rs->has_thresh_x_high ? 199 : 0);
+    fp = fp * 31 + (uint64_t)rs->thresh_x_low + (rs->has_thresh_x_low ? 199 : 0);
+    if (have_fingerprint && fp == last_fingerprint) return;
+    last_fingerprint = fp;
+    have_fingerprint = 1;
+    const struct serving *s = nr ? &g_nr : &g_lte;
+    struct jb j;
+    jb_init(&j, "event");
+    jb_add(&j, ",\"rat\":\"%s\",\"event\":\"reselection\",\"msg\":\"SystemInformation\""
+                ",\"display_msg\":\"SIB reselection\"", nr ? "NR" : "LTE");
+    jb_i(&j, "sib_mask", (int)sib->mask);
+    if (rs->has_q_hyst) jb_i(&j, "q_hyst_db", rs->q_hyst);
+    if (rs->has_priority) jb_i(&j, "priority", rs->priority);
+    if (rs->has_t_reselect) jb_i(&j, "t_reselect_s", rs->t_reselect);
+    if (rs->has_s_intra) jb_i(&j, "s_intra_search_db", rs->s_intra_search);
+    if (rs->has_thresh_serving_low) jb_i(&j, "thresh_serving_low_db", rs->thresh_serving_low);
+    if (rs->has_thresh_x_high) jb_i(&j, "thresh_x_high_db", rs->thresh_x_high);
+    if (rs->has_thresh_x_low) jb_i(&j, "thresh_x_low_db", rs->thresh_x_low);
+    if (s->pci >= 0) jb_i(&j, "pci", s->pci);
+    if (s->arfcn >= 0) jb_i(&j, "arfcn", s->arfcn);
+    jb_emit(&j);
+}
+
 static void add_measurement_report(struct jb *j, int nr, int serving_pci, const uint8_t *b, int n,
                                    int lte_pcell_sinr, struct mr_out *mr);
 
@@ -1025,6 +1060,23 @@ static void emit_rrc_signaling(struct jb *j, int nr, int ch, int pci, const uint
             first = 0;
         }
         jb_add(j, "}");
+    }
+    /* Broadcast reselection parameters from SIB3/SIB5 (LTE) or SIB2/4/5 (NR). */
+    if (!incomplete && summary.sib.mask) {
+        const struct sd_reselection *rs = &summary.sib.resel;
+        if (rs->has_q_hyst || rs->has_priority || rs->has_t_reselect || rs->has_s_intra ||
+            rs->has_thresh_serving_low || rs->has_thresh_x_high || rs->has_thresh_x_low) {
+            jb_add(j, ",\"reselection_config\":{\"sib_mask\":%d", (int)summary.sib.mask);
+            if (rs->has_q_hyst) jb_i(j, "q_hyst_db", rs->q_hyst);
+            if (rs->has_priority) jb_i(j, "priority", rs->priority);
+            if (rs->has_t_reselect) jb_i(j, "t_reselect_s", rs->t_reselect);
+            if (rs->has_s_intra) jb_i(j, "s_intra_search_db", rs->s_intra_search);
+            if (rs->has_thresh_serving_low) jb_i(j, "thresh_serving_low_db", rs->thresh_serving_low);
+            if (rs->has_thresh_x_high) jb_i(j, "thresh_x_high_db", rs->thresh_x_high);
+            if (rs->has_thresh_x_low) jb_i(j, "thresh_x_low_db", rs->thresh_x_low);
+            jb_add(j, "}");
+            emit_reselection_event(nr, &summary.sib, pci);
+        }
     }
     if (!incomplete && summary.access_present) {
         static const char *const fields[SD_ACCESS_FIELDS] = {
