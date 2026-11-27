@@ -21,6 +21,13 @@ import java.time.LocalTime
 import java.time.format.DateTimeFormatter
 
 internal enum class LockAvailability { Unchecked, Cached, Checking, Ready, Unavailable }
+/* QMI instant lock: a separate backend from the NV/EFS route, so its own state. */
+internal data class QmiLockState(
+    val availability: LockAvailability = LockAvailability.Unchecked,
+    val busy: Boolean = false,
+    val log: String = "",
+    val result: String? = null,
+)
 internal data class BandLockState(
     val availability: LockAvailability = LockAvailability.Unchecked,
     val busy: Boolean = false,
@@ -47,6 +54,11 @@ internal class BandLockViewModel(application: Application) : AndroidViewModel(ap
         BuildConfig.VERSION_CODE, Build.FINGERPRINT, Build.SOC_MODEL,
     )
     private var collectorProved = false
+    private val qmiMutable = MutableStateFlow(QmiLockState())
+    val qmi = qmiMutable.asStateFlow()
+    internal var qmiRunner: QmiLockRunner = QmiLockRunner {
+        File(app.applicationInfo.nativeLibraryDir, "libwireless_qmi_probe.so")
+    }
     internal var commandRunner: BandLockCommandRunner = BandLockHelperSession(
         helper = { File(app.applicationInfo.nativeLibraryDir, "libwireless_band_lock.so") },
         directory = ::backupDirectory,
@@ -94,6 +106,74 @@ internal class BandLockViewModel(application: Application) : AndroidViewModel(ap
         run(BandLockCommand.probe(Build.MODEL, Build.SOC_MODEL), collectorRunning = collectorRunning)
 
     fun clearLog() { if (!mutableState.value.busy) mutableState.value = mutableState.value.copy(log = "") }
+
+    /* ---- QMI instant lock (independent of the NV/EFS backend) ---- */
+
+    fun qmiCheck() = qmiRun(QmiLockCommand.probe())
+
+    fun qmiApplyBands(radio: LockRadio, bands: String) {
+        val arguments = runCatching { QmiLockCommand.applyBands(radio, bands) }.getOrNull()
+        if (arguments == null) {
+            qmiMutable.value = qmiMutable.value.copy(result = app.getString(R.string.lock_qmi_failed))
+            return
+        }
+        qmiRun(arguments)
+    }
+
+    fun qmiRestoreBands() = qmiRun(QmiLockCommand.restoreBands())
+
+    fun qmiLockCell(radio: LockRadio, channel: String, pci: String, scs: Int) {
+        val arguments = runCatching { QmiLockCommand.lockCell(radio, channel, pci, scs) }.getOrNull()
+        if (arguments == null) {
+            qmiMutable.value = qmiMutable.value.copy(result = app.getString(R.string.lock_qmi_failed))
+            return
+        }
+        qmiRun(arguments)
+    }
+
+    fun qmiClearCell(radio: LockRadio) = qmiRun(QmiLockCommand.clearCell(radio))
+
+    fun qmiClearLog() { if (!qmiMutable.value.busy) qmiMutable.value = qmiMutable.value.copy(log = "") }
+
+    private fun qmiRun(arguments: List<String>) {
+        if (qmiMutable.value.busy) return
+        val started = SystemClock.elapsedRealtime()
+        val cmd = arguments.firstOrNull() ?: "?"
+        AppLogger.i(AppLogger.BAND_LOCK_TAG,
+            "run=$started backend=qmi cmd=$cmd stage=start model=${Build.MODEL} soc=${Build.SOC_MODEL} api=${Build.VERSION.SDK_INT}")
+        qmiMutable.value = qmiMutable.value.copy(busy = true, result = null)
+        viewModelScope.launch {
+            val outcome = qmiRunner.run(arguments)
+            outcome.output.lineSequence().map { it.trim() }
+                .filter { it.startsWith("QMI ") || it.startsWith("VERDICT ") }
+                .take(16)
+                .forEach { line ->
+                    AppLogger.i(AppLogger.BAND_LOCK_TAG, "run=$started backend=qmi cmd=$cmd stage=native $line")
+                }
+            AppLogger.i(AppLogger.BAND_LOCK_TAG,
+                "run=$started backend=qmi cmd=$cmd stage=finish exit=${outcome.exit} verdict=${outcome.verdict} " +
+                    "error=${outcome.errorCode} reachable=${outcome.reachable} elapsed_ms=${SystemClock.elapsedRealtime() - started}")
+            val current = qmiMutable.value
+            qmiMutable.value = current.copy(
+                busy = false,
+                availability = if (outcome.reachable) LockAvailability.Ready else LockAvailability.Unavailable,
+                log = (current.log + outcome.output).takeLast(8000),
+                result = qmiResultMessage(outcome),
+            )
+        }
+    }
+
+    /* Map a rejected QMI run to a readable message. The raw output stays in the
+       log pane, so the code is explained rather than hidden. */
+    private fun qmiResultMessage(outcome: QmiLockOutcome): String? = when {
+        outcome.accepted -> null
+        outcome.verdict == "unavailable" -> app.getString(R.string.lock_qmi_unavailable)
+        outcome.verdict == "rejected" -> outcome.errorCode?.let { code ->
+            if (code == 3) app.getString(R.string.lock_qmi_error_internal)
+            else app.getString(R.string.lock_qmi_rejected_code, code)
+        } ?: app.getString(R.string.lock_qmi_failed)
+        else -> app.getString(R.string.lock_qmi_failed)
+    }
 
     internal fun restoreForTest(state: BandLockState) {
         mutableState.value = state
