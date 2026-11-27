@@ -23,7 +23,6 @@ class RecordingLocationSidecarTest {
     @Test fun requestIsOneSecondAndZeroMetersRatherThanTheMapDedup() {
         assertEquals(1_000L, RECORDING_LOCATION_INTERVAL_MS)
         assertEquals(0f, RECORDING_LOCATION_MIN_DISTANCE_M)
-        assertEquals(5_000L, CQT_WAIT_MS)
         assertEquals(10_000L, LOCATION_ALIGN_WINDOW_MS)
         assertEquals(100.0, LOCATION_MAX_ACCURACY_M, 0.0)
     }
@@ -116,38 +115,74 @@ class RecordingLocationSidecarTest {
         assertEquals(listOf("task-1.qmdl"), session.recordings().map { it.name })
     }
 
-    @Test fun cqtKeepsOnePointUntilAnExplicitRemarkAndMarksACoarseFix() {
+    @Test fun cqtStoresFloorTapsAndUndoWithoutSplittingTheAirFile() {
         val dir = temp()
+        val session = DiagRecordingSession(dir)
+        val air = session.start("task-1")
+        air.writeBytes(byteArrayOf(1, 2, 3))
         val side = RecordingLocationSidecar(dir)
         side.open("task-1", SurveyLocationMode.CQT, "clock-a")
-        val coarse = fix(accuracyM = 180.0, ageMs = 20_000, provider = "network")
-        assertTrue(side.captureCqt(coarse, coarse = false))
-        repeat(5) { assertFalse(side.captureCqt(fix(elapsedRealtimeMs = 1_000L + it), coarse = false)) }
-        assertTrue(side.allowRemark())
-        assertTrue(side.captureCqt(fix(provider = "gps", accuracyM = 8.0, ageMs = 500), coarse = false))
+        assertTrue(side.mark(tap(x = 12.5, y = 40.0)))
+        assertTrue(side.mark(tap(x = 80.0, y = 90.0, elapsed = 60_000)))
+        assertFalse(side.mark(tap(task = "other")))
+        assertFalse(side.mark(tap(x = -1.0)))
+        assertTrue(side.undo())
+        assertFalse(side.replaceFloor(CqtFloorPlan.blank(), null))
+        assertEquals(3L, air.length())
+        assertTrue(session.isOpen())
+        assertEquals(listOf("active.qmdl"), dir.listFiles()!!.filter { it.name.endsWith(".qmdl") }.map { it.name })
         val file = side.finish()!!
-        assertEquals("task-1.cqt.json", file.name)
+        assertEquals("task-1.qmdl", session.finish()?.name)
         val text = file.readText()
-        assertTrue(text.contains("\"mode\":\"CQT\""))
-        assertTrue(text.contains("\"task_id\":\"task-1\""))
-        assertEquals(2, Regex("\"coarse\":").findAll(text).count())
-        assertTrue(text.contains("\"coarse\":true"))
-        assertTrue(text.contains("\"coarse\":false"))
-        assertTrue(text.contains("\"provider\":\"network\""))
-        assertTrue(text.contains("\"provider\":\"gps\""))
+        assertTrue(text.contains("\"kind\":\"blank\""))
+        assertTrue(text.contains("\"x_px\":12.5"))
+        assertTrue(text.contains("\"y_px\":40"))
+        assertEquals(1, Regex("\"x_px\"").findAll(text).count())
+        assertFalse(text.contains("\"latitude\""))
+        assertTrue(text.contains("\"elapsed_realtime_ms\":50000"))
+        assertTrue(text.contains("\"clock_id\":\"clock-a\""))
         assertFalse(text.contains("<trkpt"))
     }
 
-    @Test fun cqtWithoutAFixStillSavesOneCoarsePoint() {
+    @Test fun cqtGnssIsMetadataBesideTheFloorCoordinate() {
+        val side = RecordingLocationSidecar(temp())
+        side.open("task-1", SurveyLocationMode.CQT, "clock-a")
+        assertTrue(side.mark(tap(x = 12.5, y = 40.0, gnss = fix())))
+        val text = side.finish()!!.readText()
+        assertTrue(text.contains("\"x_px\":12.5"))
+        assertTrue(text.contains("\"y_px\":40"))
+        assertTrue(text.contains("\"gnss\":{\"latitude\":31.2"))
+        assertTrue(text.contains("\"coarse\":false"))
+        val point = tap()
+        assertTrue(point.matchesDiagnostic(55_000, "clock-a"))
+        assertFalse(point.matchesDiagnostic(55_000, "clock-b"))
+        assertFalse(point.matchesDiagnostic(70_001, "clock-a"))
+    }
+
+    @Test fun cqtWithoutTapsSavesTheFloorPlanAndNoSyntheticPoint() {
         val side = RecordingLocationSidecar(temp())
         side.open("point", SurveyLocationMode.CQT, "clock-a")
-        val file = side.finish()!!
-        val text = file.readText()
+        assertFalse(side.undo())
+        val text = side.finish()!!.readText()
         assertTrue(text.contains("\"mode\":\"CQT\""))
-        assertTrue(text.contains("\"latitude\":null"))
-        assertTrue(text.contains("\"coarse\":true"))
-        assertEquals(1, Regex("\"coarse\":").findAll(text).count())
+        assertTrue(text.contains("\"points\":[]"))
+        assertTrue(text.contains("\"kind\":\"blank\""))
+        assertFalse(text.contains("\"x_px\""))
+        assertFalse(text.contains("\"latitude\""))
         assertNull(side.finish())
+    }
+
+    @Test fun cqtArchivesTheFloorImageBesideTheSameTask() {
+        val dir = temp()
+        val plan = CqtFloorPlan(CqtFloorKind.IMAGE, 640, 480, "level.png")
+        val side = RecordingLocationSidecar(dir)
+        side.open("task-1", SurveyLocationMode.CQT, "clock", plan, byteArrayOf(9, 8, 7))
+        assertTrue(side.mark(tap(x = 1.0, y = 2.0, width = 640, height = 480, clock = "clock")))
+        val json = side.finish()!!
+        assertEquals("task-1.cqt.json", json.name)
+        assertTrue(json.readText().contains("\"file\":\"task-1.cqt-plan\""))
+        assertTrue(json.readText().contains("\"width_px\":640"))
+        assertTrue(File(dir, "task-1.cqt-plan").readBytes().contentEquals(byteArrayOf(9, 8, 7)))
     }
 
     @Test fun headerKeepsTheRawTaskIdAndALaterSessionDoesNotReuseTheFile() {
@@ -197,6 +232,17 @@ class RecordingLocationSidecarTest {
         assertTrue(dir.listFiles()!!.any { it.name.startsWith("orphan") && it.name.endsWith(".gpx") })
         assertEquals("task-2.gpx", side.finish()?.name)
     }
+
+    private fun tap(
+        x: Double = 10.0,
+        y: Double = 20.0,
+        width: Int = CQT_BLANK_WIDTH_PX,
+        height: Int = CQT_BLANK_HEIGHT_PX,
+        elapsed: Long = 50_000,
+        clock: String = "clock-a",
+        task: String = "task-1",
+        gnss: RecordedFix? = null,
+    ) = CqtCanvasPoint(x, y, width, height, elapsed, 1_700_000_000_000, clock, task, gnss)
 
     private fun fix(
         latitude: Double = 31.2,

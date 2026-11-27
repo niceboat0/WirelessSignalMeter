@@ -47,6 +47,10 @@ internal class SurveyTaskStore private constructor(context: Context) :
         if (oldVersion < 2) db.execSQL("ALTER TABLE survey_task ADD COLUMN need_log INTEGER NOT NULL DEFAULT 0")
     }
 
+    /**
+     * Returns the running task, or creates one with no DT/CQT choice.
+     * Mission start and map tracking must not call this; they only attach to a task the user created.
+     */
     @Synchronized fun ensure(): SurveyTask = activeState.value ?: start()
 
     /** Returns the running test task only. Viewing live packets must not open a recording session. */
@@ -116,7 +120,8 @@ internal class SurveyTaskStore private constructor(context: Context) :
 
     @Synchronized private fun missionState(missionId: String?, active: Boolean) {
         activeMission = missionId?.takeIf { active && it.isNotBlank() }
-        activeMission?.let { bindMission(ensure().id, it) }
+        val taskId = missionTaskToBind(activeState.value?.id, missionId, active) ?: return
+        activeMission?.let { bindMission(taskId, it) }
     }
 
     @Synchronized fun append(event: SurveyEvent) {
@@ -194,6 +199,16 @@ internal class SurveyTaskStore private constructor(context: Context) :
         }
     }
 }
+
+/** A mission start binds the id only when a test task already exists. It does not create one. */
+internal fun missionTaskToBind(activeTaskId: String?, missionId: String?, sessionActive: Boolean): String? {
+    if (!sessionActive || missionId.isNullOrBlank() || activeTaskId.isNullOrBlank()) return null
+    return activeTaskId
+}
+
+/** Map tracking records into the current task. A blank id is not a task. */
+internal fun existingTaskForMapTracking(activeTaskId: String?): String? =
+    activeTaskId?.trim()?.takeIf { it.isNotEmpty() }
 
 internal fun SurveyEvent.toJson(): JSONObject = JSONObject()
     .put("type", "task_event").put("id", id).put("task_id", taskId).put("time_ms", time)

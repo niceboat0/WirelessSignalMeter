@@ -298,6 +298,67 @@ class DiagRecordingSessionTest {
     }
 
     @Test
+    fun leftoverSidecarUsesTheAirTaskIdInsteadOfOrphan() {
+        val dir = temp()
+        DiagRecordingSession(dir).start("keep-me").writeBytes(byteArrayOf(9))
+        File(dir, RecordingLocationSidecar.ACTIVE_CQT).writeText("{\"task_id\":\"keep-me\"}")
+        File(dir, ACTIVE_CQT_PLAN).writeBytes(byteArrayOf(1, 2))
+        File(dir, RecordingLocationSidecar.ACTIVE_GPX).writeText("<gpx><trk><trkseg><trkpt lat=\"1\" lon=\"2\">")
+        DiagRecordingSession(dir).recoverLeftoverActive()
+        assertTrue(File(dir, "keep-me.qmdl").isFile)
+        assertTrue(File(dir, "keep-me.cqt.json").isFile)
+        assertTrue(File(dir, "keep-me.cqt-plan").isFile)
+        val track = File(dir, "keep-me.gpx").readText()
+        assertTrue(track.contains("</gpx>"))
+        assertFalse(dir.listFiles()!!.any { it.name.startsWith("orphan") || it.name.startsWith("active.") })
+    }
+
+    @Test
+    fun emptyAirSegmentDeletesTheSidecar() {
+        val dir = temp()
+        val session = DiagRecordingSession(dir)
+        session.start("task-1")
+        File(dir, RecordingLocationSidecar.ACTIVE_CQT).writeText("{\"points\":[]}")
+        File(dir, RecordingLocationSidecar.ACTIVE_GPX).writeText("<gpx>")
+        assertFalse(shouldRetainLocationSidecar(session.isOpen(), session.activeFile.length()))
+        discardActiveLocationSidecars(dir)
+        assertNull(session.finish())
+        assertTrue(dir.listFiles().orEmpty().isEmpty())
+    }
+
+    @Test
+    fun crashOfAnEmptyAirSegmentDoesNotLeaveASidecar() {
+        val dir = temp()
+        DiagRecordingSession(dir).start("task-1")
+        File(dir, RecordingLocationSidecar.ACTIVE_CQT).writeText("{}")
+        DiagRecordingSession(dir).recoverLeftoverActive()
+        assertTrue(dir.listFiles().orEmpty().none {
+            it.name.contains("cqt") || it.name.endsWith(".qmdl") || it.name == "active.task"
+        })
+    }
+
+    @Test
+    fun exportIncludesSidecarsForTheSameAirStemOnly() {
+        val dir = temp()
+        val session = DiagRecordingSession(dir)
+        session.start("task-1").writeBytes(byteArrayOf(1))
+        session.finish()
+        File(dir, "task-1.gpx").writeText("<gpx></gpx>")
+        File(dir, "task-1.cqt.json").writeText("{}\n")
+        File(dir, "other.cqt.json").writeText("{}\n")
+        val air = session.exportableRecordings()
+        val plan = recordingExportPlan(air, locationSidecarsFor(dir, air), "20261127")!!
+        assertEquals(setOf("task-1.qmdl", "task-1.cqt.json", "task-1.gpx"), plan.files.map { it.name }.toSet())
+        assertTrue(plan.zip)
+        assertEquals(1, plan.segments)
+        assertEquals("wireless-20261127-logs.zip", plan.suggestedName)
+        val alone = recordingExportPlan(air, emptyList(), "20261127")!!
+        assertFalse(alone.zip)
+        assertEquals("wireless-20261127.qmdl", alone.suggestedName)
+        assertNull(recordingExportPlan(emptyList(), listOf(File(dir, "other.cqt.json")), "20261127"))
+    }
+
+    @Test
     fun configChangeDoesNotStartASessionByItself() {
         val dir = temp()
         val session = DiagRecordingSession(dir)

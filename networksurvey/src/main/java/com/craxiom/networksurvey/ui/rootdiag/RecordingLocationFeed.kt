@@ -10,35 +10,13 @@ import android.location.LocationManager
 import android.os.Looper
 import android.os.SystemClock
 import com.craxiom.networksurvey.model.SurveyLocationMode
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeoutOrNull
 import timber.log.Timber
 import java.util.concurrent.Executors
-
-/** UI observes this to offer another CQT mark. The listener itself is not tied to the screen. */
-internal object RecordingLocationMarks {
-    val active = MutableStateFlow(false)
-    @Volatile var remark: (() -> Unit)? = null
-
-    fun bind(onRemark: () -> Unit) {
-        remark = onRemark
-        active.value = true
-    }
-
-    fun clear() {
-        remark = null
-        active.value = false
-    }
-}
 
 /**
  * One location request owned by the recording session.
  * It keeps running after the map screen pauses. Updates stop only when the session does.
+ * CQT uses the latest fix only as optional metadata on a floor-plan tap.
  */
 internal class RecordingLocationFeed(context: Context) {
     private val app = context.applicationContext
@@ -48,10 +26,10 @@ internal class RecordingLocationFeed(context: Context) {
             Thread(runnable, "recording-location").apply { isDaemon = true }
         }
     }
-    private val updates = Channel<RecordedFix>(Channel.BUFFERED)
     private var listener: LocationListener? = null
     private var taskId: String = ""
     private var clockId: String = ""
+    @Volatile private var latest: RecordedFix? = null
 
     fun start(taskId: String, clockId: String, onFix: (RecordedFix) -> Unit) {
         stop()
@@ -67,10 +45,10 @@ internal class RecordingLocationFeed(context: Context) {
         if (order.isEmpty()) return
         val next = LocationListener { location ->
             val fix = location.toRecordedFix(taskId, clockId) ?: return@LocationListener
+            latest = fix
             callbacks.execute {
                 runCatching { onFix(fix) }.onFailure { Timber.w(it, "Could not record location") }
             }
-            updates.trySend(fix)
         }
         for (provider in order) {
             try {
@@ -107,28 +85,16 @@ internal class RecordingLocationFeed(context: Context) {
         }
     }
 
-    suspend fun collect(timeoutMs: Long): List<RecordedFix> {
-        val found = mutableListOf<RecordedFix>()
-        val deadline = SystemClock.elapsedRealtime() + timeoutMs
-        while (true) {
-            val remaining = deadline - SystemClock.elapsedRealtime()
-            if (remaining <= 0) break
-            val next = withTimeoutOrNull(remaining) { updates.receive() } ?: break
-            if (next.taskId != taskId) continue
-            found += next
-            if (selectCachedFix(found) != null) break
-        }
-        return found
-    }
-
-    fun drainPending() {
-        while (updates.tryReceive().isSuccess) Unit
+    /** The newest fix already delivered to this session, or a qualified cached fix. */
+    fun latestFix(): RecordedFix? {
+        val current = latest?.takeIf { it.taskId == taskId }
+        return current ?: selectCachedFix(cachedFixes())
     }
 
     fun stop() {
         listener?.let { current -> runCatching { manager?.removeUpdates(current) } }
         listener = null
-        drainPending()
+        latest = null
     }
 
     private fun permitted(): Boolean =
@@ -160,13 +126,10 @@ private fun Location.toRecordedFix(taskId: String, clockId: String): RecordedFix
 internal class RecordingLocationCoordinator(
     private val sidecar: RecordingLocationSidecar,
     private val feed: RecordingLocationFeed,
-    private val scope: CoroutineScope,
     private val recallMode: (String) -> SurveyLocationMode?,
     private val clockId: () -> String,
+    private val floorPlans: CqtFloorPlanLibrary,
 ) {
-    private var job: Job? = null
-    private var remarks = Channel<Unit>(Channel.CONFLATED)
-
     fun onSessionStarted(taskId: String) {
         if (sidecar.isAccepting()) {
             Timber.w("Location sidecar was still open")
@@ -175,8 +138,9 @@ internal class RecordingLocationCoordinator(
         val mode = recallMode(taskId)
         if (!shouldOpenLocationSidecar(recordingSessionOpen = true, mode)) return
         val clock = clockId()
+        val stored = if (mode == SurveyLocationMode.CQT) floorPlans.recall(taskId) else null
         try {
-            sidecar.open(taskId, mode!!, clock)
+            sidecar.open(taskId, mode!!, clock, stored?.plan ?: CqtFloorPlan.blank(), stored?.image)
         } catch (error: Exception) {
             Timber.w(error, "Could not open location sidecar")
             return
@@ -185,43 +149,25 @@ internal class RecordingLocationCoordinator(
             if (mode == SurveyLocationMode.DT) sidecar.accept(fix)
         }
         if (mode != SurveyLocationMode.CQT) return
-        remarks = Channel(Channel.CONFLATED)
-        val incoming = remarks
-        RecordingLocationMarks.bind { incoming.trySend(Unit) }
-        job = scope.launch(Dispatchers.IO) {
-            writeCqt(remark = false)
-            for (ignored in incoming) {
-                if (!sidecar.isAccepting()) break
-                writeCqt(remark = true)
-            }
-        }
+        val plan = stored?.plan ?: CqtFloorPlan.blank()
+        CqtFloorMarks.bind(
+            plan = plan,
+            onMark = { point ->
+                sidecar.mark(point.copy(clockId = clock, taskId = taskId, gnss = feed.latestFix()))
+            },
+            onUndo = { sidecar.undo() },
+            onReplaceFloor = { next, image -> sidecar.replaceFloor(next, image) },
+        )
     }
 
-    suspend fun onSessionFinished() {
+    suspend fun onSessionFinished(retainSidecar: Boolean) {
         sidecar.stopAccepting()
         feed.stop()
-        val running = job
-        job = null
-        running?.cancel()
-        running?.join()
-        RecordingLocationMarks.clear()
-        runCatching { sidecar.finish() }.onFailure { Timber.w(it, "Could not archive location sidecar") }
-    }
-
-    private suspend fun writeCqt(remark: Boolean) {
-        if (!sidecar.isAccepting()) return
-        if (remark && !sidecar.allowRemark()) return
-        val cached = selectCachedFix(feed.cachedFixes())
-        if (cached != null) {
-            sidecar.captureCqt(cached, coarse = false)
+        CqtFloorMarks.clear()
+        if (!retainSidecar) {
+            runCatching { sidecar.discard() }.onFailure { Timber.w(it, "Could not discard location sidecar") }
             return
         }
-        if (!sidecar.isAccepting()) return
-        if (remark) feed.drainPending()
-        val samples = feed.collect(CQT_WAIT_MS)
-        if (!sidecar.isAccepting()) return
-        val qualified = selectCachedFix(samples)
-        if (qualified != null) sidecar.captureCqt(qualified, coarse = false)
-        else sidecar.captureCqt(chooseCoarseFix(samples), coarse = true)
+        runCatching { sidecar.finish() }.onFailure { Timber.w(it, "Could not archive location sidecar") }
     }
 }

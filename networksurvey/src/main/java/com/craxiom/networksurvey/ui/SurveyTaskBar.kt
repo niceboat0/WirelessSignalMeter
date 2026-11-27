@@ -14,7 +14,6 @@ import com.craxiom.networksurvey.db.SurveyTaskStore
 import com.craxiom.networksurvey.db.recallSurveyLocationMode
 import com.craxiom.networksurvey.model.SurveyLocationMode
 import com.craxiom.networksurvey.model.SurveyTask
-import com.craxiom.networksurvey.ui.rootdiag.RecordingLocationMarks
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -32,7 +31,6 @@ internal fun SurveyTaskBar() {
     var rememberedMode by remember { mutableStateOf<SurveyLocationMode?>(null) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf(false) }
-    val cqtActive by RecordingLocationMarks.active.collectAsState()
     LaunchedEffect(context) {
         try {
             val repository = withContext(Dispatchers.IO) { SurveyTaskStore.get(context) }
@@ -55,9 +53,6 @@ internal fun SurveyTaskBar() {
                     Text(status, style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-            }
-            if (cqtActive) TextButton(enabled = !busy, onClick = { RecordingLocationMarks.remark?.invoke() }) {
-                Text("重新标点")
             }
             if (task == null) Button(enabled = !busy && store != null, onClick = {
                 name = ""
@@ -85,8 +80,10 @@ internal fun SurveyTaskBar() {
                 OutlinedTextField(name, { name = it.take(80) }, label = { Text("任务名称") }, singleLine = true)
                 Text("位置记法")
                 Text(
-                    if (locationMode == SurveyLocationMode.DT) "基带录制期间写一条 GPX 轨迹，离开本页也继续"
-                    else "同一次基带录制只记一个测点；需要换点时再重新标点",
+                    stringResource(
+                        if (locationMode == SurveyLocationMode.DT) R.string.dt_location_summary
+                        else R.string.cqt_location_summary,
+                    ),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

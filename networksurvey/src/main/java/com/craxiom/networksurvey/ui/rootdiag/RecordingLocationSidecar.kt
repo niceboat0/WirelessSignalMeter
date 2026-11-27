@@ -10,7 +10,6 @@ import java.util.Locale
 /** Hint passed to LocationManager. Android may deliver fixes slower than this. */
 internal const val RECORDING_LOCATION_INTERVAL_MS = 1_000L
 internal const val RECORDING_LOCATION_MIN_DISTANCE_M = 0f
-internal const val CQT_WAIT_MS = 5_000L
 internal const val LOCATION_ALIGN_WINDOW_MS = 10_000L
 internal const val LOCATION_MAX_AGE_MS = 10_000L
 internal const val LOCATION_MAX_ACCURACY_M = 100.0
@@ -67,11 +66,6 @@ internal fun selectCachedFix(fixes: List<RecordedFix>): RecordedFix? {
         ?: qualified.firstOrNull()
 }
 
-internal fun chooseCoarseFix(fixes: List<RecordedFix>): RecordedFix? =
-    fixes.filter { it.accuracyM != null && it.accuracyM >= 0.0 && it.accuracyM.isFinite() }
-        .minByOrNull { it.accuracyM!! }
-        ?: fixes.lastOrNull()
-
 /** A location file exists only for an open recording session whose task already has a DT/CQT choice. */
 internal fun shouldOpenLocationSidecar(recordingSessionOpen: Boolean, mode: SurveyLocationMode?): Boolean =
     recordingSessionOpen && mode != null
@@ -97,10 +91,31 @@ internal class SurveyLocationModeMemory {
     }
 }
 
+internal fun sanitizeTaskId(taskId: String): String =
+    taskId.replace(Regex("[^A-Za-z0-9._-]"), "_").ifEmpty { "task" }
+
+/** Stem shared by an air-interface file and its location sidecars. `.cqt.json` keeps both suffixes. */
+internal fun committedStem(fileName: String): String = when {
+    fileName.endsWith(".cqt.json") -> fileName.removeSuffix(".cqt.json")
+    fileName.endsWith(".cqt-plan") -> fileName.removeSuffix(".cqt-plan")
+    fileName.endsWith(".qmdl") -> fileName.removeSuffix(".qmdl")
+    fileName.endsWith(".dlf") -> fileName.removeSuffix(".dlf")
+    fileName.endsWith(".gpx") -> fileName.removeSuffix(".gpx")
+    else -> fileName.substringBeforeLast('.')
+}
+
+internal fun locationSidecarsFor(root: File, airFiles: List<File>): List<File> {
+    val suffixes = listOf(".gpx", ".cqt.json", ".cqt-plan")
+    return airFiles.map { committedStem(it.name) }.distinct().flatMap { stem ->
+        suffixes.map { File(root, stem + it) }
+    }.filter { file -> file.isFile && file.length() > 0L && airFiles.none { it.absolutePath == file.absolutePath } }
+        .sortedBy { it.name }
+}
+
 /**
  * Location file born with [DiagRecordingSession.start] and archived with its finish.
- * DT appends a GPX track. CQT keeps one marked point until the user asks for another.
- * Map-point dedup (3 m / 15 s, removed in onPause) is intentionally not applied.
+ * DT appends a GPX track. CQT stores floor-plan taps in one JSON file for the whole segment.
+ * Another tap does not open a new air-interface file. Map-point dedup is not applied to the GPX track.
  */
 internal class RecordingLocationSidecar(
     private val root: File,
@@ -114,13 +129,18 @@ internal class RecordingLocationSidecar(
     private var writer: BufferedWriter? = null
     private var active: File? = null
     private var accepting = false
-    private val cqtPoints = mutableListOf<String>()
-    private var cqtMarks = 0
-    private var remarkBudget = 0
+    private var floor = CqtFloorPlan.blank()
+    private val cqtMarks = mutableListOf<CqtCanvasPoint>()
 
     fun isAccepting(): Boolean = synchronized(lock) { accepting }
 
-    fun open(taskId: String, mode: SurveyLocationMode, clockId: String) {
+    fun open(
+        taskId: String,
+        mode: SurveyLocationMode,
+        clockId: String,
+        floor: CqtFloorPlan = CqtFloorPlan.blank(),
+        floorImage: ByteArray? = null,
+    ) {
         val id = taskId.trim()
         require(id.isNotEmpty()) { "task id required" }
         require(clockId.isNotEmpty()) { "clock id required" }
@@ -132,9 +152,8 @@ internal class RecordingLocationSidecar(
             this.mode = mode
             this.clockId = clockId
             segmentClock = null
-            cqtPoints.clear()
-            cqtMarks = 0
-            remarkBudget = 0
+            cqtMarks.clear()
+            this.floor = if (mode == SurveyLocationMode.CQT) floor else CqtFloorPlan.blank()
             val file = File(root, if (mode == SurveyLocationMode.DT) ACTIVE_GPX else ACTIVE_CQT)
             if (mode == SurveyLocationMode.DT) {
                 val out = file.bufferedWriter(Charsets.UTF_8)
@@ -148,7 +167,10 @@ internal class RecordingLocationSidecar(
                 }
                 writer = out
             } else {
-                file.writeText(cqtDocument(id, clockId, emptyList()))
+                val image = floorImage?.takeIf { floor.kind == CqtFloorKind.IMAGE && it.isNotEmpty() }
+                if (floor.kind == CqtFloorKind.IMAGE && image == null) this.floor = CqtFloorPlan.blank()
+                writePlan(image)
+                file.writeText(cqtDocument(id, clockId, this.floor, planFileName(), cqtMarks))
             }
             active = file
             accepting = true
@@ -170,29 +192,58 @@ internal class RecordingLocationSidecar(
         }
     }
 
-    /** One extra CQT mark. Stationary updates do not call this. */
-    fun allowRemark(): Boolean = synchronized(lock) {
-        if (!accepting || mode != SurveyLocationMode.CQT || cqtMarks <= 0) return false
-        remarkBudget++
+    /** Append one floor-plan tap. This does not open or split an air-interface file. */
+    fun mark(point: CqtCanvasPoint): Boolean = synchronized(lock) {
+        val id = taskId ?: return false
+        if (!accepting || mode != SurveyLocationMode.CQT || point.taskId != id) return false
+        if (!point.fits(floor)) return false
+        val stored = point.copy(gnss = point.gnss?.takeIf { it.taskId == id && it.latitude.isFinite() && it.longitude.isFinite() })
+        cqtMarks.add(stored)
+        try {
+            rewriteCqt()
+        } catch (error: IOException) {
+            cqtMarks.removeAt(cqtMarks.lastIndex)
+            throw error
+        }
         true
     }
 
-    fun captureCqt(fix: RecordedFix?, coarse: Boolean): Boolean = synchronized(lock) {
-        val id = taskId ?: return false
-        val clock = clockId ?: return false
-        if (!accepting || mode != SurveyLocationMode.CQT) return false
-        if (fix != null && fix.taskId != id) return false
-        if (cqtMarks > 0 && remarkBudget <= 0) return false
-        if (cqtMarks > 0) remarkBudget--
-        val markedCoarse = coarse || fix == null || !fix.qualified()
-        cqtPoints.add(cqtPoint(fix, markedCoarse, id, clock))
-        cqtMarks++
-        File(root, ACTIVE_CQT).writeText(cqtDocument(id, clock, cqtPoints))
+    fun undo(): Boolean = synchronized(lock) {
+        if (!accepting || mode != SurveyLocationMode.CQT || cqtMarks.isEmpty()) return false
+        val removed = cqtMarks.removeAt(cqtMarks.lastIndex)
+        try {
+            rewriteCqt()
+        } catch (error: IOException) {
+            cqtMarks.add(removed)
+            throw error
+        }
+        true
+    }
+
+    fun replaceFloor(plan: CqtFloorPlan, image: ByteArray?): Boolean = synchronized(lock) {
+        if (!accepting || mode != SurveyLocationMode.CQT || cqtMarks.isNotEmpty()) return false
+        val next = if (plan.kind == CqtFloorKind.IMAGE && (image == null || image.isEmpty())) CqtFloorPlan.blank() else plan
+        val bytes = if (next.kind == CqtFloorKind.IMAGE) image else null
+        floor = next
+        writePlan(bytes)
+        rewriteCqt()
         true
     }
 
     fun stopAccepting() {
         synchronized(lock) { accepting = false }
+    }
+
+    /** Delete the open sidecar. Used when the air-interface segment is discarded. */
+    fun discard() {
+        synchronized(lock) {
+            accepting = false
+            writer?.runCatching { close() }
+            writer = null
+            discardActiveLocationSidecars(root)
+            active = null
+            clearIdentity()
+        }
     }
 
     fun finish(): File? = synchronized(lock) {
@@ -210,8 +261,7 @@ internal class RecordingLocationSidecar(
                 }
                 writer = null
             } else if (currentMode == SurveyLocationMode.CQT && id != null && currentClock != null) {
-                if (cqtPoints.isEmpty()) cqtPoints.add(cqtPoint(null, coarse = true, id, currentClock))
-                file.writeText(cqtDocument(id, currentClock, cqtPoints))
+                file.writeText(cqtDocument(id, currentClock, floor, planFileName(), cqtMarks))
             }
         } catch (error: IOException) {
             writer?.runCatching { close() }
@@ -222,12 +272,24 @@ internal class RecordingLocationSidecar(
         }
         if (!file.exists() || file.length() == 0L) {
             if (file.exists() && !file.delete()) throw IOException("Unable to remove empty location sidecar")
+            discardActiveLocationSidecars(root)
             clearIdentity()
             active = null
             return null
         }
         val extension = if (currentMode == SurveyLocationMode.CQT) CQT_EXTENSION else GPX_EXTENSION
         val dest = uniqueCommitted(id ?: "orphan", extension)
+        if (currentMode == SurveyLocationMode.CQT && id != null && currentClock != null) {
+            val stem = committedStem(dest.name)
+            val plan = File(root, ACTIVE_CQT_PLAN)
+            val planName = if (plan.isFile && plan.length() > 0L) "$stem.cqt-plan" else null
+            file.writeText(cqtDocument(id, currentClock, floor, planName, cqtMarks))
+            if (planName != null && !rename(plan, File(root, planName))) {
+                active = null
+                clearIdentity()
+                throw IOException("Unable to archive floor plan")
+            }
+        }
         if (!rename(file, dest)) {
             active = null
             clearIdentity()
@@ -238,20 +300,40 @@ internal class RecordingLocationSidecar(
         dest
     }
 
+    private fun planFileName(): String? {
+        val plan = File(root, ACTIVE_CQT_PLAN)
+        return if (plan.isFile && plan.length() > 0L) ACTIVE_CQT_PLAN else null
+    }
+
+    private fun rewriteCqt() {
+        val id = taskId ?: return
+        val clock = clockId ?: return
+        File(root, ACTIVE_CQT).writeText(cqtDocument(id, clock, floor, planFileName(), cqtMarks))
+    }
+
+    private fun writePlan(image: ByteArray?) {
+        val plan = File(root, ACTIVE_CQT_PLAN)
+        if (image == null) {
+            if (plan.exists() && !plan.delete()) throw IOException("Unable to remove floor plan")
+        } else {
+            plan.writeBytes(image)
+        }
+    }
+
     private fun clearIdentity() {
         mode = null
         taskId = null
         clockId = null
         segmentClock = null
-        cqtPoints.clear()
-        cqtMarks = 0
-        remarkBudget = 0
+        floor = CqtFloorPlan.blank()
+        cqtMarks.clear()
         writer = null
     }
 
     private fun archiveOrphans() {
         archiveOrphan(ACTIVE_GPX, GPX_EXTENSION, seal = true)
         archiveOrphan(ACTIVE_CQT, CQT_EXTENSION, seal = false)
+        archiveOrphan(ACTIVE_CQT_PLAN, "cqt-plan", seal = false)
     }
 
     private fun archiveOrphan(name: String, extension: String, seal: Boolean) {
@@ -266,16 +348,10 @@ internal class RecordingLocationSidecar(
         if (!rename(file, dest)) throw IOException("Unable to archive orphan location sidecar")
     }
 
-    private fun sealGpx(file: File) {
-        val text = file.readText(Charsets.UTF_8)
-        if (text.contains("</gpx>")) return
-        file.appendText("</trkseg></trk></gpx>\n", Charsets.UTF_8)
-    }
-
     private fun uniqueCommitted(taskId: String, extension: String): File {
         var index = 1
         var dest = File(root, committedName(taskId, extension, index))
-        while (dest.exists() || dest.name == ACTIVE_GPX || dest.name == ACTIVE_CQT) {
+        while (dest.exists() || dest.name == ACTIVE_GPX || dest.name == ACTIVE_CQT || dest.name == ACTIVE_CQT_PLAN) {
             index++
             dest = File(root, committedName(taskId, extension, index))
         }
@@ -283,7 +359,7 @@ internal class RecordingLocationSidecar(
     }
 
     private fun committedName(taskId: String, extension: String, index: Int): String {
-        val safe = taskId.replace(Regex("[^A-Za-z0-9._-]"), "_").ifEmpty { "task" }
+        val safe = sanitizeTaskId(taskId)
         return if (index == 1) "$safe.$extension" else "$safe-$index.$extension"
     }
 
@@ -293,6 +369,62 @@ internal class RecordingLocationSidecar(
         private const val GPX_EXTENSION = "gpx"
         private const val CQT_EXTENSION = "cqt.json"
     }
+}
+
+internal fun discardActiveLocationSidecars(root: File) {
+    for (name in listOf(RecordingLocationSidecar.ACTIVE_GPX, RecordingLocationSidecar.ACTIVE_CQT, ACTIVE_CQT_PLAN)) {
+        val file = File(root, name)
+        if (file.exists() && !file.delete()) throw IOException("Unable to remove location sidecar")
+    }
+}
+
+/** Move leftover sidecars next to the air file that was just archived under [stem]. */
+internal fun archiveActiveLocationSidecars(root: File, stem: String, rename: (File, File) -> Boolean) {
+    moveActiveSidecar(root, RecordingLocationSidecar.ACTIVE_GPX, stem, ".gpx", seal = true, rename)
+    moveActiveSidecar(root, RecordingLocationSidecar.ACTIVE_CQT, stem, ".cqt.json", seal = false, rename)
+    moveActiveSidecar(root, ACTIVE_CQT_PLAN, stem, ".cqt-plan", seal = false, rename)
+}
+
+internal fun latestCommittedAirStem(root: File, taskId: String): String? {
+    val safe = sanitizeTaskId(taskId)
+    return root.listFiles().orEmpty().mapNotNull { file ->
+        if (!file.isFile || file.length() == 0L || file.name.startsWith("active.")) return@mapNotNull null
+        if (!file.name.endsWith(".qmdl") && !file.name.endsWith(".dlf")) return@mapNotNull null
+        val stem = committedStem(file.name)
+        if (stem != safe && !stem.startsWith("$safe-")) return@mapNotNull null
+        val index = if (stem == safe) 1 else stem.removePrefix("$safe-").toIntOrNull() ?: return@mapNotNull null
+        stem to index
+    }.maxByOrNull { it.second }?.first
+}
+
+private fun moveActiveSidecar(
+    root: File,
+    activeName: String,
+    stem: String,
+    suffix: String,
+    seal: Boolean,
+    rename: (File, File) -> Boolean,
+) {
+    val file = File(root, activeName)
+    if (!file.exists()) return
+    if (file.length() == 0L) {
+        if (!file.delete()) throw IOException("Unable to remove empty location sidecar")
+        return
+    }
+    if (seal) sealGpx(file)
+    var index = 1
+    var dest = File(root, stem + suffix)
+    while (dest.exists()) {
+        index++
+        dest = File(root, "$stem-$index$suffix")
+    }
+    if (!rename(file, dest)) throw IOException("Unable to archive location sidecar")
+}
+
+private fun sealGpx(file: File) {
+    val text = file.readText(Charsets.UTF_8)
+    if (text.contains("</gpx>")) return
+    file.appendText("</trkseg></trk></gpx>\n", Charsets.UTF_8)
 }
 
 private fun gpxHeader(taskId: String, clockId: String): String = """
@@ -323,24 +455,50 @@ private fun trackPoint(fix: RecordedFix): String {
     }
 }
 
-private fun cqtDocument(taskId: String, clockId: String, points: List<String>): String =
-    "{\"mode\":\"CQT\",\"task_id\":${jsonString(taskId)},\"clock_id\":${jsonString(clockId)},\"points\":[${points.joinToString(",")}]}\n"
+private fun cqtDocument(
+    taskId: String,
+    clockId: String,
+    floor: CqtFloorPlan,
+    planFileName: String?,
+    points: List<CqtCanvasPoint>,
+): String {
+    val floorJson = buildString {
+        append("{\"kind\":").append(jsonString(if (floor.kind == CqtFloorKind.IMAGE) "image" else "blank"))
+        append(",\"width_px\":").append(floor.widthPx)
+        append(",\"height_px\":").append(floor.heightPx)
+        append(",\"source_name\":").append(if (floor.sourceName == null) "null" else jsonString(floor.sourceName))
+        append(",\"file\":").append(if (planFileName == null) "null" else jsonString(planFileName))
+        append("}")
+    }
+    return "{\"mode\":\"CQT\",\"task_id\":${jsonString(taskId)},\"clock_id\":${jsonString(clockId)}," +
+        "\"floor_plan\":$floorJson,\"points\":[${points.joinToString(",") { cqtPoint(it) }}]}\n"
+}
 
-private fun cqtPoint(fix: RecordedFix?, coarse: Boolean, taskId: String, clockId: String): String {
+private fun cqtPoint(point: CqtCanvasPoint): String = buildString {
+    append("{\"x_px\":").append(jsonNumber(point.xPx))
+    append(",\"y_px\":").append(jsonNumber(point.yPx))
+    append(",\"canvas_width_px\":").append(point.canvasWidthPx)
+    append(",\"canvas_height_px\":").append(point.canvasHeightPx)
+    append(",\"elapsed_realtime_ms\":").append(point.elapsedRealtimeMs)
+    append(",\"wall_time_ms\":").append(point.wallTimeMs)
+    append(",\"clock_id\":").append(jsonString(point.clockId))
+    append(",\"task_id\":").append(jsonString(point.taskId))
+    append(",\"gnss\":").append(gnssJson(point.gnss))
+    append("}")
+}
+
+private fun gnssJson(fix: RecordedFix?): String {
+    if (fix == null) return "null"
     fun num(value: Double?) = if (value == null || !value.isFinite()) "null" else jsonNumber(value)
     return buildString {
-        append("{\"latitude\":").append(num(fix?.latitude))
-        append(",\"longitude\":").append(num(fix?.longitude))
-        append(",\"altitude_m\":").append(num(fix?.altitudeM))
-        append(",\"accuracy_m\":").append(num(fix?.accuracyM))
-        append(",\"speed_mps\":").append(num(fix?.speedMps))
-        append(",\"provider\":").append(if (fix?.provider == null) "null" else jsonString(fix.provider))
-        append(",\"age_ms\":").append(fix?.ageMs?.toString() ?: "null")
-        append(",\"wall_time_ms\":").append(fix?.wallTimeMs?.toString() ?: "null")
-        append(",\"elapsed_realtime_ms\":").append(fix?.elapsedRealtimeMs?.toString() ?: "null")
-        append(",\"clock_id\":").append(jsonString(fix?.clockId ?: clockId))
-        append(",\"task_id\":").append(jsonString(fix?.taskId ?: taskId))
-        append(",\"coarse\":").append(if (coarse) "true" else "false")
+        append("{\"latitude\":").append(num(fix.latitude))
+        append(",\"longitude\":").append(num(fix.longitude))
+        append(",\"accuracy_m\":").append(num(fix.accuracyM))
+        append(",\"age_ms\":").append(fix.ageMs)
+        append(",\"provider\":").append(if (fix.provider == null) "null" else jsonString(fix.provider))
+        append(",\"elapsed_realtime_ms\":").append(fix.elapsedRealtimeMs)
+        append(",\"clock_id\":").append(jsonString(fix.clockId))
+        append(",\"coarse\":").append(if (fix.qualified()) "false" else "true")
         append("}")
     }
 }
