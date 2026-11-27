@@ -164,4 +164,79 @@ class BandLockCommandTest {
         assertEquals(6, modeAttempts)
         assertEquals(false, result.modeConfirmed)
     }
+
+    @Test
+    fun qmiModeCommandBuildsExpectedArguments() {
+        assertEquals(listOf("mode", "auto"), QmiLockCommand.mode(LockNetworkMode.Auto))
+        assertEquals(listOf("mode", "lte"), QmiLockCommand.mode(LockNetworkMode.Lte))
+        assertEquals(listOf("mode", "nr"), QmiLockCommand.mode(LockNetworkMode.Nr))
+    }
+
+    @Test
+    fun prefersQmiModeAfterLockAndSkipsDiagModeWhenQmiSucceeds() = runBlocking {
+        val diagCommands = mutableListOf<List<String>>()
+        val qmiModes = mutableListOf<LockNetworkMode>()
+        val result = BandLockCommand.apply(LockRadio.Nr, LockTarget.Bands, "1", "", "", 30)
+            .executeWithMode(
+                pause = {},
+                executeQmiMode = { mode ->
+                    qmiModes.add(mode)
+                    QmiLockOutcome(0, "VERDICT ok\n", "ok", reachable = true)
+                },
+            ) {
+                diagCommands.add(it.arguments)
+                BandLockOutcome(0, "RESULT restart_sent\n")
+            }
+        assertEquals(listOf(listOf("nr-band", "1")), diagCommands)
+        assertEquals(listOf(LockNetworkMode.Nr), qmiModes)
+        assertEquals(true, result.modeConfirmed)
+    }
+
+    @Test
+    fun fallsBackToDiagModeWhenQmiModeFailsAfterLock() = runBlocking {
+        val diagCommands = mutableListOf<List<String>>()
+        val qmiModes = mutableListOf<LockNetworkMode>()
+        val diagOutcomes = ArrayDeque(listOf(
+            BandLockOutcome(0, "RESULT restart_sent\n"),
+            BandLockOutcome(2, ""),
+            BandLockOutcome(0, "RESULT accepted\n"),
+        ))
+        val result = BandLockCommand.apply(LockRadio.Nr, LockTarget.Bands, "78", "", "", 30)
+            .executeWithMode(
+                pause = {},
+                executeQmiMode = { mode ->
+                    qmiModes.add(mode)
+                    QmiLockOutcome(1, "QMI mode qmi_error=3\nVERDICT rejected\n", "rejected", reachable = true, errorCode = 3)
+                },
+            ) {
+                diagCommands.add(it.arguments)
+                diagOutcomes.removeFirst()
+            }
+        assertEquals(listOf(LockNetworkMode.Nr), qmiModes)
+        assertEquals(listOf(listOf("nr-band", "78"), listOf("mode", "nr"), listOf("mode", "nr")), diagCommands)
+        assertEquals(true, result.modeConfirmed)
+    }
+
+    @Test
+    fun standaloneModePrefersQmiAndFallsBackToDiagWhenUnavailable() = runBlocking {
+        val diagCalls = mutableListOf<List<String>>()
+        val ok = BandLockCommand.mode(LockNetworkMode.Nr).executeWithMode(
+            executeQmiMode = { QmiLockOutcome(0, "VERDICT ok\n", "ok", reachable = true) },
+        ) {
+            diagCalls.add(it.arguments)
+            BandLockOutcome(0, "RESULT accepted\n")
+        }
+        assertTrue(ok.outcome.accepted)
+        assertEquals(null, ok.modeConfirmed)
+        assertTrue(diagCalls.isEmpty())
+
+        val fallback = BandLockCommand.mode(LockNetworkMode.Auto).executeWithMode(
+            executeQmiMode = { QmiLockOutcome(3, "QMI mode fail=lookup\n", "unavailable", reachable = false) },
+        ) {
+            diagCalls.add(it.arguments)
+            BandLockOutcome(0, "RESULT accepted\n")
+        }
+        assertTrue(fallback.outcome.accepted)
+        assertEquals(listOf(listOf("mode", "auto")), diagCalls)
+    }
 }

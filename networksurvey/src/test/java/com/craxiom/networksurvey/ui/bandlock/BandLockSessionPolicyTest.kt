@@ -122,7 +122,19 @@ class BandLockCollectorReuseTest {
         Dispatchers.resetMain()
     }
 
-    private fun model(): BandLockViewModel = BandLockViewModel(app).also { models.put("lock", it) }
+    private class FakeQmiRunner : QmiLockRunner({ java.io.File("unused") }) {
+        var next: QmiLockOutcome = QmiLockOutcome(1, "", "unavailable", false)
+        val calls = mutableListOf<List<String>>()
+        override suspend fun run(arguments: List<String>, timeoutMs: Long): QmiLockOutcome {
+            calls += arguments
+            return next
+        }
+    }
+
+    private fun model(): BandLockViewModel = BandLockViewModel(app).also {
+        it.qmiRunner = FakeQmiRunner()
+        models.put("lock", it)
+    }
 
     private class RecordingRunner(
         private val availability: () -> LockAvailability = { LockAvailability.Unchecked },
@@ -268,5 +280,32 @@ class BandLockCollectorReuseTest {
         assertTrue(runner.calls.first().first.checksCapabilityAndBackup)
         assertEquals(LockAvailability.Ready, model.state.value.availability)
         assertTrue(runner.availabilities.none { it == LockAvailability.Checking })
+    }
+
+    @Test
+    fun qmiModeSuccessSkipsDiagModeAfterLock() {
+        val model = model()
+        val runner = RecordingRunner { model.state.value.availability }.also { it.connected = true }
+        val qmi = FakeQmiRunner().apply {
+            next = QmiLockOutcome(0, "QMI mode ok\nVERDICT ok\n", "ok", reachable = true)
+        }
+        model.commandRunner = runner
+        model.qmiRunner = qmi
+        model.restoreForTest(BandLockState(
+            availability = LockAvailability.Ready,
+            channel = "samsung-diag-router",
+            profile = BandLockProfile(LockSupportLevel.Verified, "qualcomm-diag", "samsung-diag-router"),
+        ))
+
+        model.run(
+            BandLockCommand.apply(LockRadio.Nr, LockTarget.Bands, "1", "", "", 30),
+            collectorRunning = true,
+        )
+        dispatcher.scheduler.advanceUntilIdle()
+
+        assertEquals(listOf("nr-band"), runner.calls.map { it.second.first() })
+        assertEquals(listOf(listOf("mode", "nr")), qmi.calls)
+        assertEquals(LockNetworkMode.Nr, model.state.value.appliedMode)
+        assertEquals(com.craxiom.networksurvey.R.string.lock_and_mode_accepted, model.state.value.result)
     }
 }

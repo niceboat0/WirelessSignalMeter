@@ -93,17 +93,33 @@ internal data class BandLockOutcome(val exit: Int, val output: String) {
 
 internal data class BandLockExecution(val outcome: BandLockOutcome, val modeConfirmed: Boolean? = null)
 
+internal fun BandLockCommand.standaloneMode(): LockNetworkMode? =
+    if (arguments.firstOrNull() == "mode" && arguments.size == 2) {
+        LockNetworkMode.entries.firstOrNull { it.argument == arguments[1] }
+    } else null
+
 internal suspend fun BandLockCommand.executeWithMode(
     pause: suspend (Long) -> Unit = { delay(it) },
     onModemRestartRequested: suspend () -> Unit = {},
+    executeQmiMode: (suspend (LockNetworkMode) -> QmiLockOutcome)? = null,
     execute: suspend (BandLockCommand) -> BandLockOutcome,
 ): BandLockExecution {
+    val standalone = standaloneMode()
+    if (standalone != null && executeQmiMode != null) {
+        if (executeQmiMode(standalone).accepted) {
+            return BandLockExecution(BandLockOutcome(0, "RESULT accepted\n"))
+        }
+        return BandLockExecution(execute(this))
+    }
     val outcome = execute(this)
     val restart = outcome.restartRequested
     if (restart) onModemRestartRequested()
     val mode = modeAfterLock?.takeIf { outcome.accepted } ?: return BandLockExecution(outcome)
     val maxAttempts = if (restart) 6 else 1
     if (restart) pause(5_000)
+    if (executeQmiMode != null && executeQmiMode(mode).accepted) {
+        return BandLockExecution(outcome, true)
+    }
     repeat(maxAttempts) { attempt ->
         val change = execute(BandLockCommand.mode(mode))
         // Retry only if no command was sent; a missing ACK is not safe to retry.

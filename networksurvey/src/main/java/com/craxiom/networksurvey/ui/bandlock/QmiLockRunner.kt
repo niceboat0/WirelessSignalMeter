@@ -12,8 +12,8 @@ import java.io.IOException
  * a plain command line tool: no stdin session, no diag-router socket; it opens
  * its own QRTR socket in a short-lived `su` child and prints one line per step.
  */
-internal class QmiLockRunner(private val helper: () -> File) {
-    suspend fun run(arguments: List<String>, timeoutMs: Long = 25_000): QmiLockOutcome =
+internal open class QmiLockRunner(private val helper: () -> File) {
+    open suspend fun run(arguments: List<String>, timeoutMs: Long = 25_000): QmiLockOutcome =
         withContext(Dispatchers.IO) {
             val binary = helper()
             if (!binary.isFile) {

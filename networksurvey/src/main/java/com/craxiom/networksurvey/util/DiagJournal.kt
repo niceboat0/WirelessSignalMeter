@@ -1,6 +1,7 @@
 package com.craxiom.networksurvey.util
 
 import android.content.Context
+import com.google.gson.JsonParser
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
@@ -97,6 +98,23 @@ object DiagJournal {
             lines
         }.getOrDefault(emptyList())
     }
+
+    /**
+     * Drop stale `status` and `ims_provider` heartbeat rows from earlier
+     * process sessions (`clock_id != currentClockId`) so uptime_s and drop
+     * counters stay monotonic for the active session, while keeping earlier
+     * signaling/event records and session_start markers for post-crash triage.
+     */
+    internal fun filterExportLines(lines: List<String>, currentClockId: String): List<String> =
+        lines.filter { line ->
+            val obj = runCatching { JsonParser.parseString(line) }
+                .getOrNull()?.takeIf { it.isJsonObject }?.asJsonObject
+                ?: return@filter true
+            val type = obj.get("type")?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isString }?.asString
+            if (type != "status" && type != "ims_provider") return@filter true
+            val clockId = obj.get("clock_id")?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isString }?.asString
+            clockId == currentClockId
+        }
 
     fun droppedLines(): Long = dropped.get()
 
