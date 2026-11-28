@@ -26,6 +26,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.livedata.observeAsState
@@ -34,6 +35,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -68,6 +70,7 @@ import com.craxiom.networksurvey.model.CellularProtocol
 import com.craxiom.networksurvey.update.UpdateChecker
 import com.craxiom.networksurvey.update.UpdateDialog
 import com.craxiom.networksurvey.update.UpdateDownloader
+import com.craxiom.networksurvey.util.FramePerformanceDiagnostics
 import com.craxiom.networksurvey.util.ThemePref
 import top.yukonga.miuix.kmp.blur.layerBackdrop
 import top.yukonga.miuix.kmp.blur.rememberLayerBackdrop
@@ -92,6 +95,16 @@ fun HomeScreen(
 ) {
     val pagerState = rememberPagerState { HomeTab.entries.size }
     val pagerScope = rememberCoroutineScope()
+    /* Reading the raw pager state here would re-execute this whole body (and
+     * re-measure the three kept-alive pages) on every drag frame; the derived
+     * values only change when the settled page or a boundary changes. */
+    val currentPage by remember { derivedStateOf { pagerState.currentPage } }
+    val targetPage by remember { derivedStateOf { pagerState.targetPage } }
+    LaunchedEffect(pagerState) {
+        snapshotFlow { HomeTab.entries[pagerState.settledPage].name }.collect { tab ->
+            FramePerformanceDiagnostics.tag("home:${tab.lowercase()}")
+        }
+    }
 
     val colors = MaterialTheme.colorScheme
     val background = colors.background
@@ -183,7 +196,7 @@ fun HomeScreen(
             if (!floatingNavigation) {
                 AppBottomNavigation(
                     items = HomeTab.entries.map { AppNavigationItem(it.title, it.icon) },
-                    selectedIndex = pagerState.currentPage,
+                    selectedIndex = currentPage,
                     onSelected = { index ->
                         pagerScope.launch { pagerState.animateScrollToPage(index, animationSpec = PagerSpringSpec) }
                     },
@@ -199,7 +212,7 @@ fun HomeScreen(
                     WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom + WindowInsetsSides.Horizontal)
                 )
                 .padding(bottom = 8.dp),
-            selectedIndex = pagerState.targetPage,
+            selectedIndex = targetPage,
             onSelected = { index ->
                 pagerScope.launch { pagerState.animateScrollToPage(index, animationSpec = PagerSpringSpec) }
             },

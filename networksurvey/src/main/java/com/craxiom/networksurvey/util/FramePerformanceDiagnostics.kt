@@ -2,9 +2,23 @@ package com.craxiom.networksurvey.util
 
 import android.view.FrameMetrics
 import org.json.JSONObject
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 
+/**
+ * Window frame-time accounting used by the diagnostic export.
+ *
+ * Besides the global averages this keeps a per-screen attribution ("signal",
+ * "band_lock", "signaling", ...) so a jank report can name the screen that
+ * missed its deadline instead of only reporting one aggregate number. A screen
+ * tags itself with [tag] while it is the visible one; frames are then counted
+ * against that tag.
+ */
 object FramePerformanceDiagnostics {
+    /** A frame slower than this is reported as a visible hitch. */
+    private const val HITCH_NS = 24_000_000L
+
     private val frames = AtomicLong()
     private val callbackDrops = AtomicLong()
     private val deadlineSamples = AtomicLong()
@@ -15,6 +29,19 @@ object FramePerformanceDiagnostics {
     private val maxDrawNs = AtomicLong()
     private val maxSyncNs = AtomicLong()
     private val maxGpuNs = AtomicLong()
+
+    private val framesByScreen = ConcurrentHashMap<String, AtomicLong>()
+    private val hitchesByScreen = ConcurrentHashMap<String, AtomicLong>()
+    private val worstNs = AtomicLong()
+    private val worstScreen = AtomicReference("")
+
+    @Volatile
+    private var screen = "app"
+
+    /** Name the screen that is currently visible; pass "" when it goes away. */
+    fun tag(name: String) {
+        screen = name.ifBlank { "app" }
+    }
 
     fun record(metrics: FrameMetrics, droppedSinceLastCallback: Int = 0) {
         if (droppedSinceLastCallback > 0) callbackDrops.addAndGet(droppedSinceLastCallback.toLong())
@@ -27,6 +54,14 @@ object FramePerformanceDiagnostics {
         updateMax(maxDrawNs, metrics.getMetric(FrameMetrics.DRAW_DURATION))
         updateMax(maxSyncNs, metrics.getMetric(FrameMetrics.SYNC_DURATION))
         updateMax(maxGpuNs, metrics.getMetric(FrameMetrics.GPU_DURATION))
+
+        val at = screen
+        framesByScreen.getOrPut(at) { AtomicLong() }.incrementAndGet()
+        if (total > HITCH_NS) hitchesByScreen.getOrPut(at) { AtomicLong() }.incrementAndGet()
+        if (total > worstNs.get()) {
+            worstNs.set(total)
+            worstScreen.set(at)
+        }
 
         val deadline = metrics.getMetric(FrameMetrics.DEADLINE)
         if (deadline > 0L) {
@@ -53,6 +88,17 @@ object FramePerformanceDiagnostics {
         .put("draw_max_ns", maxDrawNs.get())
         .put("sync_max_ns", maxSyncNs.get())
         .put("gpu_max_ns", maxGpuNs.get())
+        .put("screen", screen)
+        .put("worst_screen", worstScreen.get())
+        .put("worst_ms", worstNs.get().toDouble() / 1_000_000.0)
+        .put("hitches_by_screen", counters(hitchesByScreen))
+        .put("frames_by_screen", counters(framesByScreen))
+
+    private fun counters(source: Map<String, AtomicLong>) = JSONObject().apply {
+        source.entries.sortedByDescending { it.value.get() }.forEach { (name, value) ->
+            put(name, value.get())
+        }
+    }
 
     private fun updateMax(target: AtomicLong, value: Long) {
         if (value <= 0L) return

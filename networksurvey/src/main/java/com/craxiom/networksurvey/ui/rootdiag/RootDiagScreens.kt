@@ -38,6 +38,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -500,6 +501,10 @@ internal fun SignalingScreen(viewModel: RootDiagViewModel, onBack: () -> Unit) {
     val qmdl by viewModel.qmdl.collectAsStateWithLifecycle()
     val collectionMode by viewModel.collectionMode.collectAsStateWithLifecycle()
     val exportProgress by viewModel.qmdlExportProgress.collectAsStateWithLifecycle()
+    DisposableEffect(Unit) {
+        com.craxiom.networksurvey.util.FramePerformanceDiagnostics.tag("signaling")
+        onDispose { com.craxiom.networksurvey.util.FramePerformanceDiagnostics.tag("") }
+    }
     val context = LocalContext.current
     var confirmQmdl by rememberSaveable { mutableStateOf(false) }
     var confirmExport by rememberSaveable { mutableStateOf(false) }
