@@ -12,7 +12,8 @@ package com.craxiom.networksurvey.ui.bandlock
  * That helper is not the collector process. The collector speaks libdiag DCI
  * and its stdin is only the QMDL start/stop channel. Mixing EFS and NV writes
  * into that process would stall the live log stream, so lock frames stay on
- * their own socket.
+ * their own socket. The screen-level handoff pauses the collector while this
+ * raw socket is in use on routers that do not support both clients together.
  */
 internal enum class BandLockTransport {
     /** Start the long-lived helper and register with a supported router. */
@@ -42,6 +43,12 @@ internal object BandLockSessionPolicy {
 
     fun normalizedChannel(channel: String?): String? =
         channel?.takeIf { channelName.matches(it) }
+
+    /** Keep vendor transport names internal; the lock UI shows the generic DIAG label. */
+    fun displayChannel(channel: String?): String =
+        channel?.trim()?.let {
+            if (it.startsWith("samsung-", ignoreCase = true)) it.substring(8) else it
+        }.orEmpty()
 
     fun plan(
         collectorRunning: Boolean,

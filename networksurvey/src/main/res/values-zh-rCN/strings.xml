@@ -246,8 +246,8 @@
     <string name="road_task_create_and_record">创建并开始录制</string>
     <string name="road_task_name">任务名称</string>
     <string name="road_task_log_title">此任务录制空口</string>
-    <string name="road_task_log_on_hint">创建后按下面所选的 QMDL 或 DLF 写空口文件。基带监听已在运行时才会开始；监听停着时不会写文件。这不是地图打点。结束任务会停掉这段录制。信令页可以停止当前段，或在停止后再选格式开始下一段。</string>
-    <string name="road_task_log_off_hint">不会自动写空口文件。之后仍可在信令页选择 QMDL 或 DLF，再开始录制。</string>
+    <string name="road_task_log_on_hint">创建后按下面所选的 QMDL 或 DLF 写空口文件。基带监听已在运行时才会开始；监听停着时不会写文件。这不是地图打点。结束任务会停掉这段录制。录制控制在本页。</string>
+    <string name="road_task_log_off_hint">不会自动写空口文件。创建任务后仍可在本页选择 QMDL 或 DLF，再开始录制。</string>
     <string name="road_task_format">空口格式</string>
     <string name="road_task_status_log_on">将录制空口</string>
     <string name="road_task_status_log_off">不自动录制空口</string>

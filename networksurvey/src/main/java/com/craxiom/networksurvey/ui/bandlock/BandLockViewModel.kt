@@ -12,6 +12,7 @@ import com.craxiom.networksurvey.util.AppLogger
 import com.craxiom.networksurvey.util.DiagJournal
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
@@ -107,8 +108,16 @@ internal class BandLockViewModel(application: Application) : AndroidViewModel(ap
         Build.MANUFACTURER, Build.MODEL, Build.SOC_MODEL, Build.HARDWARE, channel, caps.count { it.second },
     )
 
-    fun refresh(collectorRunning: Boolean = false) =
-        run(BandLockCommand.probe(Build.MODEL, Build.SOC_MODEL), collectorRunning = collectorRunning)
+    fun refresh(
+        collectorRunning: Boolean = false,
+        beforeDiag: (suspend () -> Boolean)? = null,
+        afterDiag: (() -> Unit)? = null,
+    ) = run(
+        BandLockCommand.probe(Build.MODEL, Build.SOC_MODEL),
+        collectorRunning = collectorRunning,
+        diagSessionStart = beforeDiag,
+        diagSessionEnd = afterDiag,
+    )
 
     fun clearLog() { if (!mutableState.value.busy) mutableState.value = mutableState.value.copy(log = "") }
 
@@ -135,11 +144,18 @@ internal class BandLockViewModel(application: Application) : AndroidViewModel(ap
         }
     }
 
-    fun checkPreferred(preferDiag: Boolean, collectorRunning: Boolean) {
+    fun checkPreferred(
+        preferDiag: Boolean,
+        collectorRunning: Boolean,
+        beforeDiag: (suspend () -> Boolean)? = null,
+        afterDiag: (() -> Unit)? = null,
+    ) {
         if (preferDiag) {
-            refresh(collectorRunning)
+            refresh(collectorRunning, beforeDiag, afterDiag)
         } else {
-            qmiRun("probe", onUnavailable = { refresh(collectorRunning) }) { step ->
+            qmiRun("probe", onUnavailable = {
+                refresh(collectorRunning, beforeDiag, afterDiag)
+            }) { step ->
                 QmiLockExecution(step(QmiLockCommand.probe()))
             }
         }
@@ -150,6 +166,8 @@ internal class BandLockViewModel(application: Application) : AndroidViewModel(ap
         preferDiag: Boolean,
         collectorRunning: Boolean,
         onModemRestartRequested: () -> Unit,
+        beforeDiag: (suspend () -> Boolean)? = null,
+        afterDiag: (() -> Unit)? = null,
     ) {
         val plan = command.qmi
         val backends = qmiMutable.value.backends
@@ -160,6 +178,8 @@ internal class BandLockViewModel(application: Application) : AndroidViewModel(ap
                 onModemRestartRequested = onModemRestartRequested,
                 confirmOnDemand = true,
                 preferDiag = preferDiag,
+                diagSessionStart = beforeDiag,
+                diagSessionEnd = afterDiag,
             )
         }
         if (plan == null || preferredLockBackend(plan, preferDiag) == LockBackend.Diag) {
@@ -206,6 +226,8 @@ internal class BandLockViewModel(application: Application) : AndroidViewModel(ap
     internal fun retryPendingWithDiag(
         collectorRunning: Boolean,
         onModemRestartRequested: () -> Unit,
+        beforeDiag: (suspend () -> Boolean)? = null,
+        afterDiag: (() -> Unit)? = null,
     ) {
         val command = qmiMutable.value.pendingDiagFallback ?: return
         qmiMutable.update { it.copy(pendingDiagFallback = null, result = null) }
@@ -215,6 +237,8 @@ internal class BandLockViewModel(application: Application) : AndroidViewModel(ap
             onModemRestartRequested = onModemRestartRequested,
             confirmOnDemand = true,
             preferDiag = true,
+            diagSessionStart = beforeDiag,
+            diagSessionEnd = afterDiag,
         )
     }
 
@@ -314,6 +338,8 @@ internal class BandLockViewModel(application: Application) : AndroidViewModel(ap
         onModemRestartRequested: (() -> Unit)? = null,
         confirmOnDemand: Boolean = false,
         preferDiag: Boolean = false,
+        diagSessionStart: (suspend () -> Boolean)? = null,
+        diagSessionEnd: (() -> Unit)? = null,
     ) {
         val current = mutableState.value
         if (current.busy || qmiMutable.value.busy) return
@@ -342,7 +368,36 @@ internal class BandLockViewModel(application: Application) : AndroidViewModel(ap
             )
         }
         viewModelScope.launch {
+            val diagSessionRequested = diagSessionStart != null
             try {
+                if (diagSessionRequested) {
+                    val ready = try {
+                        requireNotNull(diagSessionStart).invoke()
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (error: Exception) {
+                        appendLog("DIAG collector handoff failed: ${error.message ?: error.javaClass.simpleName}")
+                        false
+                    }
+                    if (!ready) {
+                        appendLog("DIAG collector is still active; command was not sent.")
+                        if (probe) {
+                            mutableState.update {
+                                it.copy(
+                                    availability = LockAvailability.Unavailable,
+                                    profile = BandLockProfiles.classify(
+                                        Build.MANUFACTURER, Build.MODEL, Build.SOC_MODEL, Build.HARDWARE, null, 0,
+                                    ),
+                                    result = null,
+                                )
+                            }
+                            probeCache.edit().remove(probeCacheKey).apply()
+                        } else {
+                            mutableState.update { it.copy(result = if (fromConsole) null else R.string.lock_failed) }
+                        }
+                        return@launch
+                    }
+                }
                 BandLockVerification.executeWhenConfirmed(
                     if (needsConfirmation) LockAvailability.Cached else current.availability, kind,
                     confirm = {
@@ -396,6 +451,17 @@ internal class BandLockViewModel(application: Application) : AndroidViewModel(ap
                 )
                 if (checking) probeCache.edit().remove(probeCacheKey).apply()
             } finally {
+                if (diagSessionRequested) {
+                    // Close the raw router client before the collector is
+                    // allowed to claim the vendor DIAG port again.
+                    withContext(NonCancellable) {
+                        withContext(Dispatchers.IO) { commandRunner.close() }
+                        runCatching { diagSessionEnd?.invoke() }
+                            .onFailure {
+                                appendLog("DIAG collector resume failed: ${it.message ?: it.javaClass.simpleName}")
+                            }
+                    }
+                }
                 mutableState.value = mutableState.value.copy(busy = false)
             }
         }
@@ -491,8 +557,17 @@ internal class BandLockViewModel(application: Application) : AndroidViewModel(ap
 
     /** Command console entry: run a raw native command line and stream its
      * output to the log without overwriting the standard result line. */
-    fun runRaw(text: String) {
-        run(BandLockCommand.console(text), fromConsole = true)
+    fun runRaw(
+        text: String,
+        beforeDiag: (suspend () -> Boolean)? = null,
+        afterDiag: (() -> Unit)? = null,
+    ) {
+        run(
+            BandLockCommand.console(text),
+            fromConsole = true,
+            diagSessionStart = beforeDiag,
+            diagSessionEnd = afterDiag,
+        )
     }
 
     private suspend fun runQmiMode(mode: LockNetworkMode): QmiLockOutcome {
@@ -541,6 +616,18 @@ internal class BandLockViewModel(application: Application) : AndroidViewModel(ap
             it.copy(availability = LockAvailability.Unavailable, lteBackup = false, nrBackup = false)
         }
         probeCache.edit().remove(probeCacheKey).apply()
+    }
+
+    /**
+     * Release the raw diag-router client when the lock screen is left.
+     *
+     * The view model lives with the main navigation entry, so onCleared() is
+     * not a reliable screen-lifecycle boundary. Keeping this socket open after
+     * a lock operation can interfere with the live DIAG collector on devices
+     * whose router accepts only a small number of clients.
+     */
+    internal fun releaseSession() {
+        commandRunner.close()
     }
 
     private suspend fun runHelper(command: BandLockCommand, recordDiagnostics: Boolean): BandLockOutcome {
