@@ -498,18 +498,6 @@ internal fun SignalingScreen(viewModel: RootDiagViewModel, onBack: () -> Unit) {
     val status by viewModel.signal.collectAsStateWithLifecycle()
     val records by viewModel.signaling.collectAsStateWithLifecycle()
     val qmdl by viewModel.qmdl.collectAsStateWithLifecycle()
-    val collectionMode by viewModel.collectionMode.collectAsStateWithLifecycle()
-    val exportProgress by viewModel.qmdlExportProgress.collectAsStateWithLifecycle()
-    val context = LocalContext.current
-    var confirmQmdl by rememberSaveable { mutableStateOf(false) }
-    var confirmExport by rememberSaveable { mutableStateOf(false) }
-    var recordDlf by rememberSaveable { mutableStateOf(false) }
-    val qmdlExporter = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri ->
-        if (uri != null) viewModel.exportRecordings(uri)
-    }
-    fun chooseQmdlDestination() {
-        confirmExport = true
-    }
     var workbench by rememberSaveable { mutableStateOf(Workbench.Signaling) }
     var filter by rememberSaveable { mutableStateOf(ProtocolFilter.All) }
     var eventFilter by rememberSaveable { mutableStateOf(EventFilter.All) }
@@ -584,40 +572,6 @@ internal fun SignalingScreen(viewModel: RootDiagViewModel, onBack: () -> Unit) {
         )
         return
     }
-    AppDialog(
-        show = confirmQmdl,
-        onDismissRequest = { confirmQmdl = false },
-        title = stringResource(R.string.diag_qmdl_start),
-        confirmText = stringResource(R.string.diag_qmdl_start),
-        dismissText = stringResource(android.R.string.cancel),
-        onConfirm = {
-            confirmQmdl = false
-            viewModel.startQmdl(if (recordDlf) DiagLogFormat.Dlf else DiagLogFormat.Qmdl)
-        },
-    ) {
-        Text(stringResource(R.string.diag_qmdl_description))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            RadioButton(selected = !recordDlf, onClick = { recordDlf = false })
-            Text(stringResource(R.string.diag_qmdl_format_qmdl))
-        }
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            RadioButton(selected = recordDlf, onClick = { recordDlf = true })
-            Text(stringResource(R.string.diag_qmdl_format_dlf))
-        }
-    }
-    AppDialog(
-        show = confirmExport,
-        onDismissRequest = { confirmExport = false },
-        title = stringResource(R.string.diag_export_privacy_title),
-        confirmText = stringResource(R.string.diag_qmdl_export),
-        dismissText = stringResource(android.R.string.cancel),
-        onConfirm = {
-            confirmExport = false
-            val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.ROOT).format(Date())
-            viewModel.prepareRecordingExport(stamp) { name -> qmdlExporter.launch(name) }
-        },
-    ) { Text(stringResource(R.string.diag_export_privacy_body)) }
-
     Scaffold(
         topBar = {
             TitleBar(stringResource(R.string.tool_signaling_title), compact = true, onBackClick = onBack,
@@ -649,29 +603,6 @@ internal fun SignalingScreen(viewModel: RootDiagViewModel, onBack: () -> Unit) {
                         )
                         HorizontalDivider()
                         AppMenuItem(
-                            title = stringResource(if (qmdl.phase == QmdlPhase.Idle) R.string.diag_qmdl_start else R.string.diag_qmdl_stop),
-                            enabled = qmdl.phase == QmdlPhase.Recording || qmdl.phase == QmdlPhase.Starting ||
-                                qmdl.phase == QmdlPhase.Idle && !qmdl.recovering &&
-                                    status.status == RootDiagStatus.Running &&
-                                    collectionMode == DiagRecordingPolicy.Mode.TaskRecording && exportProgress == null,
-                            onClick = {
-                                menuOpen = false
-                                if (qmdl.phase == QmdlPhase.Idle) confirmQmdl = true else viewModel.stopQmdl()
-                            },
-                        )
-                        if (qmdl.hasRecording) {
-                            AppMenuItem(
-                                title = if (qmdl.segments > 1) stringResource(R.string.diag_qmdl_export_count, qmdl.segments)
-                                    else stringResource(R.string.diag_qmdl_export),
-                                enabled = qmdl.phase == QmdlPhase.Idle && !qmdl.recovering && exportProgress == null,
-                                onClick = {
-                                    menuOpen = false
-                                    chooseQmdlDestination()
-                                },
-                            )
-                        }
-                        HorizontalDivider()
-                        AppMenuItem(
                             title = stringResource(if (running) R.string.diag_pause else R.string.diag_retry),
                             onClick = { menuOpen = false; if (running) viewModel.pause() else viewModel.retry() },
                         )
@@ -685,67 +616,7 @@ internal fun SignalingScreen(viewModel: RootDiagViewModel, onBack: () -> Unit) {
                         )
                     }
             }
-            Text(
-                stringResource(R.string.diag_control_hint),
-                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            if (collectionMode != DiagRecordingPolicy.Mode.TaskRecording &&
-                qmdl.phase != QmdlPhase.Recording && qmdl.phase != QmdlPhase.Starting) {
-                Text(
-                    stringResource(R.string.diag_record_needs_task),
-                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
             CaptureErrors(status)
-            val formatName = if (qmdl.format == DiagLogFormat.Dlf) "DLF" else "QMDL"
-            val qmdlLabel = when (qmdl.phase) {
-                QmdlPhase.Starting, QmdlPhase.Stopping -> null
-                QmdlPhase.Recording -> R.string.diag_qmdl_recording
-                QmdlPhase.Idle -> when (qmdl.result) {
-                    QmdlResult.Saved -> R.string.diag_qmdl_saved
-                    QmdlResult.Limited -> R.string.diag_qmdl_limit
-                    QmdlResult.Interrupted -> R.string.diag_qmdl_interrupted
-                    QmdlResult.Empty -> R.string.diag_qmdl_empty
-                    QmdlResult.Error -> R.string.diag_qmdl_failed
-                    null -> null
-                }
-            }
-            if (qmdlLabel != null || exportProgress != null ||
-                qmdl.phase == QmdlPhase.Starting || qmdl.phase == QmdlPhase.Stopping) {
-                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp),
-                    verticalAlignment = Alignment.CenterVertically) {
-                    val progress = exportProgress
-                    val error = qmdl.errorCode
-                    val label = when {
-                        progress != null -> stringResource(R.string.diag_qmdl_exporting, progress)
-                        qmdl.phase == QmdlPhase.Starting -> stringResource(R.string.diag_air_starting, formatName)
-                        qmdl.phase == QmdlPhase.Stopping -> stringResource(R.string.diag_air_stopping, formatName)
-                        qmdl.phase == QmdlPhase.Recording -> stringResource(R.string.diag_qmdl_recording,
-                            if (qmdl.format == DiagLogFormat.Dlf) "DLF" else "QMDL", qmdl.packets,
-                            android.text.format.Formatter.formatShortFileSize(context, qmdl.bytes))
-                        qmdlLabel != null && error != null ->
-                            "${stringResource(qmdlLabel)} (${stringResource(R.string.diag_error_code, error)})"
-                        qmdlLabel != null && qmdl.bytes > 0 && qmdl.phase == QmdlPhase.Idle ->
-                            "${stringResource(qmdlLabel)} · ${android.text.format.Formatter.formatShortFileSize(context, qmdl.bytes)}"
-                        qmdlLabel != null -> stringResource(qmdlLabel)
-                        else -> ""
-                    }
-                    Text(label, Modifier.weight(1f).padding(vertical = 6.dp), style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    if (qmdl.phase == QmdlPhase.Recording || qmdl.phase == QmdlPhase.Starting) {
-                        TextButton(onClick = viewModel::stopQmdl) { Text(stringResource(R.string.diag_qmdl_stop)) }
-                    } else if (qmdl.phase == QmdlPhase.Idle && qmdl.hasRecording && !qmdl.recovering && progress == null) {
-                        TextButton(onClick = { chooseQmdlDestination() }) {
-                            Text(if (qmdl.segments > 1) stringResource(R.string.diag_qmdl_export_count, qmdl.segments)
-                                else stringResource(R.string.diag_qmdl_export_short))
-                        }
-                    }
-                }
-            }
             Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(3.dp)) {
                 SignalListAction(stringResource(R.string.diag_workbench_signaling), Modifier.weight(1f),
                     selected = workbench == Workbench.Signaling) { workbench = Workbench.Signaling }
@@ -833,6 +704,122 @@ internal fun SignalingScreen(viewModel: RootDiagViewModel, onBack: () -> Unit) {
                     }
                 }
             }
+        }
+    }
+}
+
+/**
+ * Recording controls belong to the active test-task screen. The signaling
+ * workbench remains focused on browsing messages and events.
+ */
+@Composable
+internal fun TaskRecordingControls(viewModel: RootDiagViewModel) {
+    val status by viewModel.signal.collectAsStateWithLifecycle()
+    val qmdl by viewModel.qmdl.collectAsStateWithLifecycle()
+    val collectionMode by viewModel.collectionMode.collectAsStateWithLifecycle()
+    val exportProgress by viewModel.qmdlExportProgress.collectAsStateWithLifecycle()
+    var confirmQmdl by rememberSaveable { mutableStateOf(false) }
+    var confirmExport by rememberSaveable { mutableStateOf(false) }
+    var recordDlf by rememberSaveable { mutableStateOf(false) }
+    val qmdlExporter = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/octet-stream"),
+    ) { uri ->
+        if (uri != null) viewModel.exportRecordings(uri)
+    }
+    val canStart = qmdl.phase == QmdlPhase.Idle && !qmdl.recovering &&
+        status.status == RootDiagStatus.Running &&
+        collectionMode == DiagRecordingPolicy.Mode.TaskRecording &&
+        exportProgress == null
+    val active = qmdl.phase == QmdlPhase.Recording || qmdl.phase == QmdlPhase.Starting
+
+    AppDialog(
+        show = confirmQmdl,
+        onDismissRequest = { confirmQmdl = false },
+        title = stringResource(R.string.diag_qmdl_start),
+        confirmText = stringResource(R.string.diag_qmdl_start),
+        dismissText = stringResource(android.R.string.cancel),
+        onConfirm = {
+            confirmQmdl = false
+            viewModel.startQmdl(if (recordDlf) DiagLogFormat.Dlf else DiagLogFormat.Qmdl)
+        },
+    ) {
+        Text(stringResource(R.string.diag_qmdl_description))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            RadioButton(selected = !recordDlf, onClick = { recordDlf = false })
+            Text(stringResource(R.string.diag_qmdl_format_qmdl))
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            RadioButton(selected = recordDlf, onClick = { recordDlf = true })
+            Text(stringResource(R.string.diag_qmdl_format_dlf))
+        }
+    }
+    AppDialog(
+        show = confirmExport,
+        onDismissRequest = { confirmExport = false },
+        title = stringResource(R.string.diag_export_privacy_title),
+        confirmText = stringResource(R.string.diag_qmdl_export),
+        dismissText = stringResource(android.R.string.cancel),
+        onConfirm = {
+            confirmExport = false
+            val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.ROOT).format(Date())
+            viewModel.prepareRecordingExport(stamp) { name -> qmdlExporter.launch(name) }
+        },
+    ) { Text(stringResource(R.string.diag_export_privacy_body)) }
+
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            TextButton(
+                enabled = active || canStart,
+                onClick = { if (active) viewModel.stopQmdl() else confirmQmdl = true },
+            ) {
+                Text(stringResource(if (active) R.string.diag_qmdl_stop else R.string.diag_qmdl_start))
+            }
+            if (qmdl.hasRecording) {
+                TextButton(
+                    enabled = qmdl.phase == QmdlPhase.Idle && !qmdl.recovering && exportProgress == null,
+                    onClick = { confirmExport = true },
+                ) {
+                    Text(
+                        if (qmdl.segments > 1) stringResource(R.string.diag_qmdl_export_count, qmdl.segments)
+                        else stringResource(R.string.diag_qmdl_export_short),
+                    )
+                }
+            }
+            if (exportProgress != null) {
+                Text(stringResource(R.string.diag_qmdl_exporting, exportProgress))
+            }
+        }
+        val formatName = if (qmdl.format == DiagLogFormat.Dlf) "DLF" else "QMDL"
+        val result = qmdl.result
+        if (active) {
+            Text(
+                stringResource(
+                    R.string.diag_qmdl_recording,
+                    formatName,
+                    qmdl.packets,
+                    android.text.format.Formatter.formatShortFileSize(LocalContext.current, qmdl.bytes),
+                ),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else if (result != null) {
+            Text(
+                stringResource(
+                    when (result) {
+                        QmdlResult.Saved -> R.string.diag_qmdl_saved
+                        QmdlResult.Limited -> R.string.diag_qmdl_limit
+                        QmdlResult.Interrupted -> R.string.diag_qmdl_interrupted
+                        QmdlResult.Empty -> R.string.diag_qmdl_empty
+                        QmdlResult.Error -> R.string.diag_qmdl_failed
+                    },
+                ),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }

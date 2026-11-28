@@ -222,7 +222,7 @@ fun NavGraphBuilder.mainGraph(
         }
 
         composable(NavOption.RoadCoverage.name) {
-            RoadCoverageScreen(onBack = { mainNavController.navigateUp() })
+            RoadCoverageScreen(rootDiag = rootDiag, onBack = { mainNavController.navigateUp() })
         }
 
         composable(NavOption.BandLock.name) { entry ->

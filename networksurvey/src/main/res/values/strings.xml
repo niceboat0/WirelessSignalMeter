@@ -294,8 +294,8 @@
     <string name="road_task_create_and_record">Create and start recording</string>
     <string name="road_task_name">Task name</string>
     <string name="road_task_log_title">Record the air interface for this task</string>
-    <string name="road_task_log_on_hint">After you create the task, the air-interface file uses the format selected below. It starts only while modem listening is already running, and it does not write a file while listening is stopped. This is not map marking. Ending the task stops that recording. The signaling page can stop the segment, or choose a format again for the next one.</string>
-    <string name="road_task_log_off_hint">This does not start an air-interface file. You can still choose QMDL or DLF on the signaling page and start recording there.</string>
+    <string name="road_task_log_on_hint">After you create the task, the air-interface file uses the format selected below. It starts only while modem listening is already running, and it does not write a file while listening is stopped. This is not map marking. Ending the task stops that recording. Recording controls are on this page.</string>
+    <string name="road_task_log_off_hint">This does not start an air-interface file. After creating a task, you can still choose QMDL or DLF and start recording on this page.</string>
     <string name="road_task_format">Air-interface format</string>
     <string name="road_task_status_log_on">Air interface will record</string>
     <string name="road_task_status_log_off">Air interface stays off</string>

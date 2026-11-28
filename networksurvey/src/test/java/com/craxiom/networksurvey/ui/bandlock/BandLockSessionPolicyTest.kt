@@ -80,6 +80,8 @@ class BandLockSessionPolicyTest {
     @Test
     fun unsafeChannelNamesAreNotReused() {
         assertEquals("samsung-diag-router", BandLockSessionPolicy.normalizedChannel("samsung-diag-router"))
+        assertEquals("diag-router", BandLockSessionPolicy.displayChannel("samsung-diag-router"))
+        assertEquals("diag-stream", BandLockSessionPolicy.displayChannel("diag-stream"))
         assertNull(BandLockSessionPolicy.normalizedChannel("diag stream"))
         assertNull(BandLockSessionPolicy.normalizedChannel("diag;reboot"))
         assertNull(BandLockSessionPolicy.normalizedChannel("../diag"))
@@ -313,6 +315,60 @@ class BandLockCollectorReuseTest {
         assertEquals(listOf(listOf("mode", "nr")), qmi.calls)
         assertEquals(LockNetworkMode.Nr, model.state.value.appliedMode)
         assertEquals(com.craxiom.networksurvey.R.string.lock_and_mode_accepted, model.state.value.result)
+    }
+
+    @Test
+    fun diagOperationsUseTheExclusiveSessionCallbacks() = runTest(dispatcher) {
+        val model = model()
+        val runner = RecordingRunner { model.state.value.availability }.also { it.connected = true }
+        model.commandRunner = runner
+        model.restoreForTest(BandLockState(
+            availability = LockAvailability.Ready,
+            channel = "samsung-diag-router",
+            profile = BandLockProfile(LockSupportLevel.Verified, "qualcomm-diag", "samsung-diag-router"),
+        ))
+        var starts = 0
+        var ends = 0
+
+        model.runPreferred(
+            BandLockCommand.apply(LockRadio.Nr, LockTarget.Bands, "78", "", "", 30),
+            preferDiag = true,
+            collectorRunning = true,
+            onModemRestartRequested = {},
+            beforeDiag = { starts++; true },
+            afterDiag = { ends++ },
+        )
+        model.state.first { !it.busy }
+
+        assertEquals(1, starts)
+        assertEquals(1, ends)
+        assertEquals(listOf("nr-band", "mode"), runner.calls.map { it.second.first() })
+    }
+
+    @Test
+    fun failedDiagHandoffDoesNotSendTheCommand() = runTest(dispatcher) {
+        val model = model()
+        val runner = RecordingRunner { model.state.value.availability }.also { it.connected = true }
+        model.commandRunner = runner
+        model.restoreForTest(BandLockState(
+            availability = LockAvailability.Ready,
+            channel = "diag-stream",
+            profile = BandLockProfile(LockSupportLevel.Verified, "qualcomm-diag", "diag-stream"),
+        ))
+        var ends = 0
+
+        model.runPreferred(
+            BandLockCommand.apply(LockRadio.Nr, LockTarget.Bands, "78", "", "", 30),
+            preferDiag = true,
+            collectorRunning = true,
+            onModemRestartRequested = {},
+            beforeDiag = { false },
+            afterDiag = { ends++ },
+        )
+        model.state.first { !it.busy }
+
+        assertTrue(runner.calls.isEmpty())
+        assertEquals(1, ends)
     }
 
     @Test

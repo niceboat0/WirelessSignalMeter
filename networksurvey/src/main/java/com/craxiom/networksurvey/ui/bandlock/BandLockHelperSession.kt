@@ -7,14 +7,16 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.IOException
+import java.util.concurrent.TimeUnit
 
 /**
  * One root helper and one diag-router client for every lock command.
  *
  * The first command starts `su` and connects the router. Later commands are
  * written to that process. This is not the collector's libdiag session: that
- * process only accepts QMDL start/stop on stdin, and lock writes stay off its
- * DCI client so the live log stream is not stalled.
+ * process only accepts QMDL start/stop on stdin. The caller coordinates an
+ * exclusive handoff before opening this raw router client because some vendor
+ * routers do not tolerate both clients at once.
  */
 internal class BandLockHelperSession(
     private val helper: () -> File,
@@ -43,6 +45,9 @@ internal class BandLockHelperSession(
         running?.let { process ->
             runCatching { process.outputStream.close() }
             process.destroy()
+            runCatching {
+                if (!process.waitFor(500, TimeUnit.MILLISECONDS)) process.destroyForcibly()
+            }
         }
     }
 

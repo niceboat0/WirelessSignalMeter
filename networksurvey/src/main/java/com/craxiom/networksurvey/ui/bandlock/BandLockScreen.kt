@@ -36,6 +36,7 @@ import androidx.compose.material3.TooltipDefaults
 import androidx.compose.material3.PlainTooltip
 import androidx.compose.material3.rememberTooltipState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -69,6 +70,9 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
     val state by model.state.collectAsStateWithLifecycle()
     val qmi by model.qmi.collectAsStateWithLifecycle()
     val signal by rootDiag.signal.collectAsStateWithLifecycle()
+    DisposableEffect(model) {
+        onDispose { model.releaseSession() }
+    }
     LaunchedEffect(state.profile) { rootDiag.updateBandLockProfile(state.profile) }
     val now by produceState(SystemClock.elapsedRealtime()) {
         while (true) {
@@ -142,7 +146,12 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
             if (radio == LockRadio.Nr) " · n$nrBand · $scs kHz" else ""
     }
     val operating = qmi.busy || state.busy && state.availability != LockAvailability.Checking
+    val closeAndBack = {
+        model.releaseSession()
+        onBack()
+    }
     BackHandler(operating) { /* Keep the active operation attached until the helper exits. */ }
+    BackHandler(!operating) { closeAndBack() }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -150,7 +159,7 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
         topBar = {
             Column {
                 TitleBar(stringResource(R.string.tool_band_lock_title), compact = true,
-                    onBackClick = onBack.takeUnless { operating })
+                    onBackClick = closeAndBack.takeUnless { operating })
                 TabRowWithContour(
                     tabs = listOf(stringResource(R.string.lock_tab_controls), stringResource(R.string.lock_tab_advanced)),
                     selectedTabIndex = if (advanced) 1 else 0,
@@ -204,14 +213,20 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
                     }
                 }
                 LockIconButton(R.string.lock_refresh, Icons.Rounded.Refresh, !busy) {
-                    model.checkPreferred(preferDiag, signal.status == RootDiagStatus.Running)
+                    model.checkPreferred(
+                        preferDiag = preferDiag,
+                        collectorRunning = signal.status == RootDiagStatus.Running,
+                        beforeDiag = rootDiag::acquireBandLockDiag,
+                        afterDiag = rootDiag::releaseBandLockDiag,
+                    )
                 }
             }
             if (advanced && state.availability == LockAvailability.Ready &&
                 (state.channel.isNotEmpty() || state.caps.isNotEmpty())) {
                 Text(
                     stringResource(R.string.lock_channel_caps,
-                        state.channel.ifEmpty { "-" }, capsLine(state.caps)),
+                        BandLockSessionPolicy.displayChannel(state.channel).ifEmpty { "-" },
+                        capsLine(state.caps)),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -407,6 +422,8 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
                     preferDiag = preferDiag,
                     collectorRunning = signal.status == RootDiagStatus.Running,
                     onModemRestartRequested = rootDiag::recoverAfterModemRestart,
+                    beforeDiag = rootDiag::acquireBandLockDiag,
+                    afterDiag = rootDiag::releaseBandLockDiag,
                 )
             },
         ) {
@@ -456,6 +473,8 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
                 model.retryPendingWithDiag(
                     collectorRunning = signal.status == RootDiagStatus.Running,
                     onModemRestartRequested = rootDiag::recoverAfterModemRestart,
+                    beforeDiag = rootDiag::acquireBandLockDiag,
+                    afterDiag = rootDiag::releaseBandLockDiag,
                 )
             },
         ) {

@@ -78,6 +78,8 @@ import com.craxiom.networksurvey.model.SurveyLocationMode
 import com.craxiom.networksurvey.model.SurveyTask
 import com.craxiom.networksurvey.ui.CqtFloorPlanPanel
 import com.craxiom.networksurvey.ui.SurveyTaskBar
+import com.craxiom.networksurvey.ui.rootdiag.RootDiagViewModel
+import com.craxiom.networksurvey.ui.rootdiag.TaskRecordingControls
 import com.craxiom.networksurvey.ui.main.appbar.TitleBar
 import com.craxiom.networksurvey.util.CoordConverter
 import com.craxiom.networksurvey.util.SignalGrade
@@ -96,7 +98,7 @@ import kotlin.math.floor
 import kotlin.math.roundToInt
 
 @Composable
-internal fun RoadCoverageScreen(onBack: () -> Unit) {
+internal fun RoadCoverageScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val points = remember(context) { MapPointDbHelper.getInstance(context) }
@@ -304,6 +306,7 @@ internal fun RoadCoverageScreen(onBack: () -> Unit) {
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding)) {
             SurveyTaskBar()
+            TaskRecordingControls(rootDiag)
             HorizontalDivider()
             if (locationMode == SurveyLocationMode.CQT && floorPlanVisible) {
                 CqtFloorPlanPanel(Modifier.weight(1f).fillMaxWidth(), onShowReplay = { floorPlanVisible = false })

@@ -47,6 +47,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.yield
 import kotlin.coroutines.coroutineContext
 import org.json.JSONObject
@@ -607,6 +608,12 @@ class RootDiagViewModel internal constructor(
     private var modemRecovery: Job? = null
     private var foreground = false
     private var pausedByUser = false
+    /**
+     * Raw DIAG band-lock commands cannot share every vendor router with the
+     * libdiag DCI client. Keep the collector stopped for the short period in
+     * which the band-lock helper owns that router.
+     */
+    private var bandLockDiagHold = false
 
     private enum class CaptureStop(val trace: String, val restart: Boolean) {
         Paused("paused", false),
@@ -614,6 +621,7 @@ class RootDiagViewModel internal constructor(
         SilentReconnect("silent_reconnect", true),
         ModemRestart("modem_restart", true),
         QmdlTimeout("qmdl_deadline", true),
+        BandLock("band_lock_diag", true),
     }
 
     internal fun enterForeground() {
@@ -691,6 +699,61 @@ class RootDiagViewModel internal constructor(
         }
     }
 
+    /**
+     * Give the raw band-lock helper an exclusive DIAG window.
+     *
+     * The Android UI can keep the root view model alive while navigating to
+     * the lock screen, so merely closing the lock screen is too late: the
+     * collector may still own the vendor router when a DIAG probe starts.
+     * Stop the exact collector process and wait for its socket to be released
+     * before allowing the caller to open a raw router client.
+     */
+    internal suspend fun acquireBandLockDiag(): Boolean {
+        val alreadyHeld = withContext(Dispatchers.Main.immediate) {
+            if (bandLockDiagHold) {
+                true
+            } else {
+                bandLockDiagHold = true
+                modemRecovery?.cancel()
+                modemRecovery = null
+                recordCollectorRecovery("band_lock_diag_requested")
+                capture?.requestStop(CaptureStop.BandLock)
+                lingeringSession?.requestStop(CaptureStop.BandLock)
+                applyCollectionPolicy()
+                false
+            }
+        }
+        if (alreadyHeld) return true
+
+        val stopped = withTimeoutOrNull(BAND_LOCK_DIAG_STOP_TIMEOUT_MS) {
+            while (withContext(Dispatchers.Main.immediate) { collectorSessionActive() }) {
+                delay(BAND_LOCK_DIAG_POLL_MS)
+            }
+            true
+        } ?: false
+        withContext(Dispatchers.Main.immediate) {
+            if (stopped) {
+                recordCollectorRecovery("band_lock_diag_ready")
+            } else {
+                bandLockDiagHold = false
+                recordCollectorRecovery("band_lock_diag_timeout")
+                applyCollectionPolicy(explicitRetry = true)
+            }
+        }
+        return stopped
+    }
+
+    /**
+     * End the exclusive raw-DIAG window and let the normal collection policy
+     * start a fresh collector. A paused-by-user session remains paused.
+     */
+    internal fun releaseBandLockDiag() {
+        if (!bandLockDiagHold) return
+        bandLockDiagHold = false
+        recordCollectorRecovery("band_lock_diag_released")
+        applyCollectionPolicy(explicitRetry = true)
+    }
+
     private fun modemPacketAge(now: Long): Long? {
         val statusAt = lastCollectorStatusAtElapsed.takeIf { it != 0L } ?: return null
         val packetAgeSeconds = lastCollectorStatus?.optLong("last_pkt_age_s", -1)?.takeIf { it >= 0 }
@@ -725,13 +788,19 @@ class RootDiagViewModel internal constructor(
     private fun collectorProcessAlive(): Boolean =
         capture?.processAlive == true || lingeringProcess?.isAlive == true
 
-    private fun currentMode(): DiagRecordingPolicy.Mode = DiagRecordingPolicy.mode(
-        taskRunning = activeTask != null,
-        foreground = foreground,
-        serviceMaintained = RootDiagCollectorService.isMaintained,
-        paused = pausedByUser,
-        collectorAlive = collectorProcessAlive(),
-    )
+    private fun collectorSessionActive(): Boolean =
+        capture != null || lingeringSession != null || lingeringProcess?.isAlive == true
+
+    private fun currentMode(): DiagRecordingPolicy.Mode {
+        if (bandLockDiagHold) return DiagRecordingPolicy.Mode.Idle
+        return DiagRecordingPolicy.mode(
+            taskRunning = activeTask != null,
+            foreground = foreground,
+            serviceMaintained = RootDiagCollectorService.isMaintained,
+            paused = pausedByUser,
+            collectorAlive = collectorProcessAlive(),
+        )
+    }
 
     private fun applyCollectionPolicy(explicitRetry: Boolean = false) {
         val mode = currentMode()
@@ -2379,6 +2448,8 @@ class RootDiagViewModel internal constructor(
         const val MAX_MESSAGES = 4_000
         const val MODEM_WAIT_TIMEOUT = 20_000L
         const val QMDL_ACK_TIMEOUT = 8_000L
+        const val BAND_LOCK_DIAG_STOP_TIMEOUT_MS = 20_000L
+        const val BAND_LOCK_DIAG_POLL_MS = 50L
         const val PERFORMANCE_BUDGET_MS = 16L
         const val LINGERING_PROCESS_POLL_MS = 250L
         const val MAX_DIAGNOSTIC_MESSAGES = 400
