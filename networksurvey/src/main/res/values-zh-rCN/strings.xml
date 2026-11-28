@@ -996,6 +996,11 @@
     <string name="diag_show_paging">显示 Paging</string>
     <string name="diag_hide_paging">隐藏 Paging</string>
     <string name="diag_paging_hidden_count">Paging 已隐藏 %1$d 条</string>
+    <string name="diag_show_private_fields_title">显示隐私诊断字段</string>
+    <string name="diag_show_private_fields_summary_on">信令详情显示已隐藏字段；诊断导出仍会脱敏。</string>
+    <string name="diag_show_private_fields_summary_off">信令详情和诊断导出中的隐私字段保持脱敏。</string>
+    <string name="diag_reveal_private_fields">显示隐私字段</string>
+    <string name="diag_mask_private_fields">隐藏隐私字段</string>
     <string name="diag_report_summary">测量摘要</string>
     <string name="diag_detail_back">返回</string>
     <string name="diag_detail_previous">上一条</string>
