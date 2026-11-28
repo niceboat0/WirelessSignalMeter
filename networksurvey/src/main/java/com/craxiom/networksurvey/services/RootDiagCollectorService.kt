@@ -7,6 +7,7 @@ import android.content.pm.ServiceInfo
 import android.graphics.PixelFormat
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import android.provider.Settings
 import android.view.Gravity
 import android.view.MotionEvent
@@ -15,6 +16,7 @@ import android.view.WindowManager
 import android.widget.LinearLayout
 import android.widget.TextView
 import com.craxiom.networksurvey.R
+import com.craxiom.networksurvey.constants.NetworkSurveyConstants
 import com.craxiom.networksurvey.ui.rootdiag.DiagOverlaySnapshot
 import com.craxiom.networksurvey.ui.rootdiag.DiagOverlayState
 import com.craxiom.networksurvey.ui.rootdiag.DiagRecordingPolicy
@@ -41,6 +43,7 @@ class RootDiagCollectorService : Service() {
     private var window: WindowManager? = null
     private var overlay: View? = null
     private var label: TextView? = null
+    private var wakeLock: PowerManager.WakeLock? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -55,6 +58,7 @@ class RootDiagCollectorService : Service() {
             stopSelf()
             return
         }
+        acquireWakeLock()
         serviceState.value = State.Running
         scope.launch {
             DiagOverlayState.snapshot.collect { snap ->
@@ -79,9 +83,33 @@ class RootDiagCollectorService : Service() {
     override fun onDestroy() {
         serviceState.value = State.Idle
         hideOverlay()
+        releaseWakeLock()
         scope.cancel()
         CaptureServiceNotification.stopDiag(this)
         super.onDestroy()
+    }
+
+    private fun acquireWakeLock() {
+        val powerManager = getSystemService(POWER_SERVICE) as? PowerManager ?: return
+        wakeLock = runCatching {
+            powerManager.newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK,
+                "${NetworkSurveyConstants.WAKE_LOCK_TAG}:diag",
+            ).apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+        }.onFailure {
+            Timber.w(it, "Unable to acquire the DIAG collector wake lock")
+        }.getOrNull()
+    }
+
+    private fun releaseWakeLock() {
+        wakeLock?.let { lock ->
+            runCatching { if (lock.isHeld) lock.release() }
+                .onFailure { Timber.w(it, "Unable to release the DIAG collector wake lock") }
+        }
+        wakeLock = null
     }
 
     private fun startInForeground(): Boolean {
