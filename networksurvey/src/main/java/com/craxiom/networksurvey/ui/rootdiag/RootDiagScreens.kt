@@ -961,13 +961,18 @@ private fun DiagRecord.packetHeader(): String = buildList {
             })
             "nci" -> {
                 val nci = data.optLong("nci")
+                val ncgi = data.optLong("ncgi", 0L)
                 val mcc = data.optInt("mcc", -1)
                 val mnc = data.optInt("mnc", -1)
                 val plmn = if (mcc >= 0 && mnc >= 0) {
                     val digits = data.optInt("mnc_digits", 2).coerceIn(2, 3)
                     "MCC ${mcc.toString().padStart(3, '0')} MNC ${mnc.toString().padStart(digits, '0')} "
                 } else ""
-                add(String.format(Locale.ROOT, "NR Global Cell Identity: %sNCI 0x%09X", plmn, nci))
+                if (ncgi > 0L) {
+                    add("NR Global Cell Identity: ${wrapPrivateValue(ncgi.toString(), "  ")}")
+                } else {
+                    add(String.format(Locale.ROOT, "NR Global Cell Identity: %sNCI 0x%09X", plmn, nci))
+                }
             }
             "sfn_subframe" -> add(String.format(Locale.ROOT, "SFN/Subframe (raw): 0x%06X", data.optLong(field)))
             "arfcn" -> when (rat) {
@@ -1057,9 +1062,14 @@ private fun MessageDetailsScreen(record: DiagRecord, onClose: () -> Unit,
         record, masked, unknownPaging, noFields, extension, partial, nasProtected, showPrivateFields,
     ) {
         if (record.type == "process_event") return@remember ""
+        // Measurement reports have a bounded, structured renderer that also feeds
+        // the summary card. Keep it ahead of the generic decoded trees.
+        if (record.type == "rrc" && record.data.has("measResults")) {
+            return@remember record.messageTree(masked, unknownPaging, noFields, extension, partial, showPrivateFields)
+        }
         if (showPrivateFields) {
             record.data.optString("decoded_tree_private").takeIf { it.isNotBlank() }?.let {
-                return@remember it.trimEnd()
+                return@remember wrapPrivateValues(it.trimEnd())
             }
         }
         if (record.type == "sip") {
@@ -1068,7 +1078,10 @@ private fun MessageDetailsScreen(record: DiagRecord, onClose: () -> Unit,
         }
         val selectedTree = if (showPrivateFields) record.data.optString("decoded_tree_private")
             else record.decodedTree
-        if (selectedTree.isNotBlank()) return@remember selectedTree.trimEnd()
+        if (selectedTree.isNotBlank()) {
+            val tree = selectedTree.trimEnd()
+            return@remember if (showPrivateFields) wrapPrivateValues(tree) else tree
+        }
         val tree = record.messageTree(masked, unknownPaging, noFields, extension, partial, showPrivateFields)
         if (record.data.optJSONObject("dedicatedNAS")?.optInt("nas_security_header", 0) in setOf(2, 4, 5)) {
             "$tree\n\n$nasProtected"
@@ -1079,7 +1092,6 @@ private fun MessageDetailsScreen(record: DiagRecord, onClose: () -> Unit,
     val heading = record.signalingHeading(protocol)
     val info = record.signalingInfo(protocol)
     val warning = if (record.data.optBoolean("decode_incomplete")) stringResource(R.string.diag_decode_incomplete) else ""
-    var showSummary by rememberSaveable(record.id) { mutableStateOf(false) }
     val blocks = remember(body) { body.lineSequence().chunked(48) { it.joinToString("\n") }.toList() }
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -1143,10 +1155,14 @@ private fun MessageDetailsScreen(record: DiagRecord, onClose: () -> Unit,
                         }
                         items(blocks.size) { index -> PacketText(blocks[index]) }
                         if (report != null) item("summary") {
-                            TextButton(onClick = { showSummary = !showSummary }) {
-                                Text(stringResource(R.string.diag_report_summary))
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text(
+                                    stringResource(R.string.diag_report_summary),
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = MaterialTheme.colorScheme.primary,
+                                )
+                                MeasurementReportDetails(report)
                             }
-                            if (showSummary) MeasurementReportDetails(report)
                         }
                     }
                 }
@@ -1280,7 +1296,7 @@ private fun DiagRecord.messageTree(
                         appendLine("        ue-Identity: ${entry.optString("ue_identity_type")}")
                         val identity = entry.optString("ue_identity_value")
                         appendLine(
-                            if (showPrivateFields && identity.isNotBlank()) "          $identity"
+                            if (showPrivateFields && identity.isNotBlank()) "          ${wrapPrivateValue(identity, "          ")}"
                             else "          $masked",
                         )
                         for (key in listOf("accessType", "cn-Domain")) {
@@ -1309,6 +1325,30 @@ private fun DiagRecord.messageTree(
             if (!appendFields(data, "", messageMetadataKeys)) appendLine(noFields)
         }
     }.trimEnd()
+
+internal fun wrapPrivateValue(value: String, continuationPrefix: String = ""): String {
+    val prefixLength = if (value.startsWith("0x", ignoreCase = true)) 2 else 0
+    val prefix = value.take(prefixLength)
+    val content = value.drop(prefixLength)
+    return prefix + content.chunked(16).joinToString("\n$continuationPrefix")
+}
+
+private val privateValueToken = Regex("""(?i)(?<![0-9a-f])0x[0-9a-f]{17,}|(?<![0-9a-f])[0-9a-f]{17,}""")
+
+internal fun wrapPrivateValues(tree: String): String = tree.lineSequence().joinToString("\n") { line ->
+    val colon = line.indexOf(':')
+    val limited = if (colon < 0) {
+        line
+    } else {
+        val valueStart = colon + 1
+        val value = line.substring(valueStart)
+        val leadingWhitespace = value.takeWhile(Char::isWhitespace)
+        val content = value.drop(leadingWhitespace.length)
+        val continuationPrefix = line.takeWhile(Char::isWhitespace) + "  "
+        line.substring(0, valueStart) + leadingWhitespace + wrapPrivateValue(content, continuationPrefix)
+    }
+    privateValueToken.replace(limited) { match -> wrapPrivateValue(match.value) }
+}
 
 
 private fun StringBuilder.appendMeasurementReport(report: JSONObject, indent: String, nr: Boolean) {

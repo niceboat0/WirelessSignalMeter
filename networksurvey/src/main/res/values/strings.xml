@@ -1396,7 +1396,7 @@
     <string name="diag_hide_paging">Hide Paging</string>
     <string name="diag_paging_hidden_count">Paging hidden: %1$d</string>
     <string name="diag_show_private_fields_title">Show private diagnostic fields</string>
-    <string name="diag_show_private_fields_summary_on">Unmask private fields in signaling details. Diagnostic exports stay redacted.</string>
+    <string name="diag_show_private_fields_summary_on">Show private fields in signaling details, wrapping long values every 16 characters. Diagnostic exports stay redacted.</string>
     <string name="diag_show_private_fields_summary_off">Private fields stay masked in signaling details and diagnostic exports.</string>
     <string name="diag_reveal_private_fields">Show private fields</string>
     <string name="diag_mask_private_fields">Hide private fields</string>
