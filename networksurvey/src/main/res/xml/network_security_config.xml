@@ -1,12 +1,20 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
-    <base-config cleartextTrafficPermitted="true" />
+    <!-- 默认禁止明文流量：只有下面显式列出的主机允许 HTTP。
+         新增明文服务前必须先把域名加进白名单，否则请求会被系统拒绝。 -->
+    <base-config cleartextTrafficPermitted="false" />
     <domain-config cleartextTrafficPermitted="true">
+        <!-- 本地瓦片代理（TencentTileProxy 监听 127.0.0.1:18088） -->
         <domain includeSubdomains="true">localhost</domain>
+        <domain includeSubdomains="true">127.0.0.1</domain>
+        <!-- Android 模拟器访问宿主机 -->
         <domain includeSubdomains="true">10.0.2.2</domain>
+        <!-- 自建服务：更新元数据、测速节点、诊断日志上传 -->
         <domain includeSubdomains="true">47.108.209.162</domain>
         <domain includeSubdomains="true">rsrp.top</domain>
         <domain includeSubdomains="true">rsrp.cn</domain>
         <domain includeSubdomains="true">101.132.159.118</domain>
+        <!-- 腾讯地图瓦片（m0-m3.map.gtimg.com），经本地代理解析后直连 -->
+        <domain includeSubdomains="true">map.gtimg.com</domain>
     </domain-config>
 </network-security-config>
