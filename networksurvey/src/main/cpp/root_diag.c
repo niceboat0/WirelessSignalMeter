@@ -660,7 +660,8 @@ static const char *msg_type(int nr, int ch, const uint8_t *m, int len) {
 #include "sigdec.c"
 
 static char g_signal_tree[262144];
-static char g_signal_json[2 * sizeof(g_signal_tree) + 8192];
+static char g_signal_tree_private[262144];
+static char g_signal_json[4 * sizeof(g_signal_tree) + 65536];
 
 static void signal_json_string(int *offset, const char *value) {
     int p = *offset;
@@ -681,7 +682,7 @@ static void signal_json_string(int *offset, const char *value) {
     *offset = p;
 }
 
-static void emit_signaling(struct jb *j, const struct sd_out *out, int incomplete,
+static void emit_signaling(struct jb *j, const struct sd_out *out, const struct sd_out *private_out, int incomplete,
                            const char *name, const char *nested_nas) {
     int n = snprintf(g_signal_json, sizeof(g_signal_json), "%s,\"decode_incomplete\":%s",
                      j->b, incomplete ? "true" : "false");
@@ -696,6 +697,10 @@ static void emit_signaling(struct jb *j, const struct sd_out *out, int incomplet
     if (out->n) {
         n += snprintf(g_signal_json + n, sizeof(g_signal_json) - (size_t)n, ",\"decoded_tree\":");
         signal_json_string(&n, out->b);
+    }
+    if (private_out && private_out->n) {
+        n += snprintf(g_signal_json + n, sizeof(g_signal_json) - (size_t)n, ",\"decoded_tree_private\":");
+        signal_json_string(&n, private_out->b);
     }
     g_signal_json[n++] = '}';
     g_signal_json[n] = 0;
@@ -1045,7 +1050,11 @@ static void emit_rrc_signaling(struct jb *j, int nr, int ch, int pci, const uint
     const char *root = can_decode ? signaling_root(nr, ch) : NULL;
     struct sd_summary summary = {0};
     struct sd_out out = { g_signal_tree, 0, sizeof(g_signal_tree), 0 };
-    int incomplete = !root || sd_decode(nr ? "NR" : "LTE", root, pdu, len, 0, &out, 0, &summary);
+    struct sd_out private_out = { g_signal_tree_private, 0, sizeof(g_signal_tree_private), 0 };
+    int incomplete = !root || sd_decode(nr ? "NR" : "LTE", root, pdu, len, 0, 0, &out, 0, &summary);
+    if (root && strstr(out.b, "已隐藏")) {
+        sd_decode(nr ? "NR" : "LTE", root, pdu, len, 0, 1, &private_out, 0, NULL);
+    }
     if (root && ch == CH_UL_DCCH && summary.message && !strcmp(summary.message, "measurementReport")) {
         struct mr_out mr = { .meas_id = 0, .serving_rsrp = -1, .best_rsrp = -1, .best_pci = -1 };
         add_measurement_report(j, nr, pci, pdu, len,
@@ -1154,7 +1163,7 @@ static void emit_rrc_signaling(struct jb *j, int nr, int ch, int pci, const uint
     if (summary.mobility_flags) jb_add(j, ",\"mobility_command\":true");
     if (summary.target_pci_plus_one) jb_i(j, "target_pci", summary.target_pci_plus_one - 1);
     if (summary.reest_handover_failure) jb_add(j, ",\"reestablishment_cause\":\"handoverFailure\"");
-    emit_signaling(j, &out, incomplete, summary.message, summary.nas);
+    emit_signaling(j, &out, &private_out, incomplete, summary.message, summary.nas);
 }
 
 enum { RRC_SEGMENT_LAST = 7 };
@@ -1222,8 +1231,38 @@ static void rrc_events(const char *rat, const char *msg) {
     jb_emit(&j);
 }
 
+/* Encode an MSB-first bit range without changing its bit order. */
+static int bits_hex(char *out, int cap, const uint8_t *buf, int len, int start, int width) {
+    static const char hex[] = "0123456789abcdef";
+    int digits = (width + 3) / 4;
+    if (!out || cap <= digits || width <= 0) return 0;
+    for (int i = 0; i < digits; i++) {
+        int remaining = width - i * 4;
+        int take = remaining >= 4 ? 4 : remaining;
+        int value = msbbits(buf, len, start + i * 4, take);
+        if (value < 0) return 0;
+        if (take < 4) value <<= 4 - take;
+        out[i] = hex[value & 0xF];
+    }
+    out[digits] = 0;
+    return 1;
+}
+
+static int bits_imsi_digits(char *out, int cap, const uint8_t *buf, int len, int start, int width) {
+    int digits = width / 4;
+    if (!out || cap <= digits || width % 4 != 0 || width <= 0) return 0;
+    for (int i = 0; i < digits; i++) {
+        int digit = msbbits(buf, len, start + i * 4, 4);
+        if (digit < 0 || digit > 9) return 0;
+        out[i] = (char)('0' + digit);
+    }
+    out[digits] = 0;
+    return 1;
+}
+
 /* Decode the base PCCH Paging list (TS 36.331 / 38.331, unaligned PER).
-   Only emit identifier types and access/domain flags. Skip the identity values. */
+   Identity values stay in the in-memory record for the opt-in detail view;
+   Kotlin diagnostic exports remove ue_identity_value before writing. */
 static void add_paging_details(struct jb *j, int nr, const uint8_t *b, int n) {
     int bit = nr ? 2 : 1; /* c1; NR also encodes the paging/spare1 choice */
     int option_bits = nr ? 3 : 4;
@@ -1240,7 +1279,7 @@ static void add_paging_details(struct jb *j, int nr, const uint8_t *b, int n) {
         bit += count_bits;
     }
 
-    int identities[32], access[32];
+    int identities[32], access[32], identity_start[32], identity_width[32];
     for (int i = 0; i < count; i++) {
         if (msbbits(b, n, bit++, 1) != 0) return; /* PagingRecord extension */
         int non3gpp = nr ? msbbits(b, n, bit++, 1) : 0;
@@ -1255,6 +1294,8 @@ static void add_paging_details(struct jb *j, int nr, const uint8_t *b, int n) {
             identity_bits = (digits + 6) * 4;
         }
         if (identity_bits > n * 8 - bit) return;
+        identity_start[i] = bit;
+        identity_width[i] = identity_bits;
         bit += identity_bits;
         access[i] = nr ? non3gpp : msbbits(b, n, bit++, 1);
         if (access[i] < 0) return;
@@ -1266,6 +1307,11 @@ static void add_paging_details(struct jb *j, int nr, const uint8_t *b, int n) {
         const char *identity = nr ? (identities[i] ? "fullI-RNTI" : "ng-5G-S-TMSI")
                                   : (identities[i] ? "imsi" : "s-TMSI");
         jb_add(j, "%s{\"ue_identity_type\":\"%s\"", i ? "," : "", identity);
+        char identity_value[32];
+        int decoded = !nr && identities[i]
+            ? bits_imsi_digits(identity_value, sizeof(identity_value), b, n, identity_start[i], identity_width[i])
+            : bits_hex(identity_value, sizeof(identity_value), b, n, identity_start[i], identity_width[i]);
+        if (decoded) jb_add(j, ",\"ue_identity_value\":\"%s\"", identity_value);
         if (nr && access[i]) jb_add(j, ",\"accessType\":\"non3GPP\"");
         if (!nr) jb_add(j, ",\"cn-Domain\":\"%s\"", access[i] ? "cs" : "ps");
         jb_add(j, "}");
@@ -4512,8 +4558,8 @@ static void parse_nr_b883(const uint8_t *b, int n) {
    0x156E v1 header (SCAT diag1xlogparser, 16 B):
      u8 ver, u8 dir (0 DL / 1 UL), u8 has_sdp, u8 call_id_len, u16 len, u16 sip_len, u16 msg_type, u16 status, u32 ?
      then call_id[call_id_len] (NUL included), then the SIP text [sip_len] (NUL included).
-   Privacy: JSON never carries URIs, numbers, IMSI/IMPU/IMPI or IP addresses; Call-ID only as a 32-bit hash.
-   The raw qmdl keeps the full messages (needed for offline decoding). */
+   Summary fields never carry URIs, numbers, identities or IP addresses; Call-ID is a 32-bit hash.
+   The private detail tree is retained only in the live signaling view and removed from diagnostics exports. */
 static uint32_t fnv1a(const char *p, int n) { uint32_t h = 2166136261u; for (int i = 0; i < n; i++) { h ^= (uint8_t)p[i]; h *= 16777619u; } return h; }
 static int is_hexc(int c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'); }
 /* copy a short free-text field with identifiers removed and JSON-unsafe chars replaced */
@@ -4778,7 +4824,14 @@ static void parse_ims_sip(const uint8_t *b, int n) {
     if (pani[0]) jb_add(&j, ",\"access\":\"%s\"", pani);
     if (expires >= 0) jb_add(&j, ",\"expires\":%d", expires);
     if (rsn[0]) jb_add(&j, ",\"reason_hdr\":\"%s\"", rsn);
-    jb_emit(&j);
+    int json_n = j.n;
+    memcpy(g_signal_json, j.b, (size_t)json_n);
+    json_n += snprintf(g_signal_json + json_n, sizeof(g_signal_json) - (size_t)json_n,
+                       ",\"decoded_tree_private\":");
+    signal_json_string(&json_n, t);
+    g_signal_json[json_n++] = '}';
+    g_signal_json[json_n] = 0;
+    emit_locked(g_signal_json);
     uc_sip(ev_ms(), dir == 1, method, code, cseqm, cseqn);
     g_diag_ims_pkts++;
 
@@ -5628,7 +5681,7 @@ static void parse_lte_esm_plain(const uint8_t *b, int n, int dl) {
     }
 }
 
-/* Plain NAS mandatory fields. Mobile identities and security material stay out of the view. */
+/* Plain NAS summary fields omit mobile identities; the detail tree has the explicit private-field view. */
 static void add_nas_detail(struct jb *j, int nr, int pd, const uint8_t *p, int n) {
     if (nr && pd == 0x2e && n >= 4) {
         jb_add(j, ",\"psi\":%d,\"pti\":%d", p[1], p[2]);
@@ -5727,8 +5780,10 @@ static void emit_nas(uint16_t code, const uint8_t *body, int len) {
     char name[96];
     nas_msg_name(pdu, remaining, !ul, name, sizeof(name));
     struct sd_out out = { g_signal_tree, 0, sizeof(g_signal_tree), 0 };
-    int incomplete = nas_render(&out, pdu, remaining, !ul, 0, 0) != 0 || out.trunc;
-    emit_signaling(&j, &out, incomplete, name, NULL);
+    struct sd_out private_out = { g_signal_tree_private, 0, sizeof(g_signal_tree_private), 0 };
+    int incomplete = nas_render(&out, pdu, remaining, !ul, 0, 0, 0) != 0 || out.trunc;
+    if (strstr(out.b, "已隐藏")) nas_render(&private_out, pdu, remaining, !ul, 0, 0, 1);
+    emit_signaling(&j, &out, &private_out, incomplete, name, NULL);
     if (plain && type_offset < remaining) emit_nas_mobility(nr, ul, pd, pdu, remaining);
 }
 

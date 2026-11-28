@@ -1,5 +1,6 @@
 package com.craxiom.networksurvey.ui.rootdiag
 
+import android.content.SharedPreferences
 import android.text.format.DateFormat
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -27,6 +28,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.Visibility
+import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -496,6 +499,7 @@ private fun DiagRecord.matches(filter: ProtocolFilter, includeDiagnostics: Boole
 
 @Composable
 internal fun SignalingScreen(viewModel: RootDiagViewModel, onBack: () -> Unit) {
+    val context = LocalContext.current
     val status by viewModel.signal.collectAsStateWithLifecycle()
     val records by viewModel.signaling.collectAsStateWithLifecycle()
     val qmdl by viewModel.qmdl.collectAsStateWithLifecycle()
@@ -510,11 +514,22 @@ internal fun SignalingScreen(viewModel: RootDiagViewModel, onBack: () -> Unit) {
     var searchOpen by rememberSaveable { mutableStateOf(false) }
     var showPaging by rememberSaveable { mutableStateOf(true) }
     var showDiagnostics by rememberSaveable { mutableStateOf(false) }
+    var showPrivateFields by remember { mutableStateOf(RootDiagPrefs.showPrivateFields(context)) }
     var menuOpen by remember { mutableStateOf(false) }
     var followLatest by rememberSaveable { mutableStateOf(true) }
     var openedMessages by remember { mutableStateOf(emptyList<DiagRecord>()) }
     var openedIndex by remember { mutableStateOf(-1) }
     var linkedPacket by remember { mutableStateOf<DiagRecord?>(null) }
+    DisposableEffect(context) {
+        val prefs = RootDiagPrefs.store(context)
+        val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key == RootDiagPrefs.SHOW_PRIVATE_FIELDS) {
+                showPrivateFields = RootDiagPrefs.showPrivateFields(context)
+            }
+        }
+        prefs.registerOnSharedPreferenceChangeListener(listener)
+        onDispose { prefs.unregisterOnSharedPreferenceChangeListener(listener) }
+    }
     val visible = remember(records, workbench, filter, eventFilter, search, showPaging, showDiagnostics) {
         val query = search.trim()
         records.filter { record ->
@@ -573,6 +588,11 @@ internal fun SignalingScreen(viewModel: RootDiagViewModel, onBack: () -> Unit) {
                 val expected = detail.data.optJSONArray("message_ids")?.length() ?: 0
                 expected - detail.linkedMessages(records).size
             } else 0,
+            showPrivateFields = showPrivateFields,
+            onShowPrivateFieldsChange = {
+                RootDiagPrefs.setShowPrivateFields(context, it)
+                showPrivateFields = it
+            },
             onOpenLinked = { linkedPacket = it },
         )
         return
@@ -921,7 +941,8 @@ private val packetHeaderKeys = listOf(
 )
 private val messageMetadataKeys = packetHeaderKeys.toSet() + setOf(
     "t", "type", "msg", "display_msg", "dir", "guess", "tentative", "nci_hex", "mr_status", "mr_bit",
-    "decoded_tree", "decode_incomplete", "nested_nas", "mcc", "mnc", "mnc_digits",
+    "decoded_tree", "decoded_tree_private", "ue_identity_value", "decode_incomplete", "nested_nas",
+    "mcc", "mnc", "mnc_digits",
 )
 
 private fun DiagRecord.packetHeader(): String = buildList {
@@ -1013,8 +1034,16 @@ private fun MessageDetailsScreen(record: DiagRecord, onClose: () -> Unit,
                                  onRelatedPacket: (() -> Unit)?,
                                  linkedMessages: List<DiagRecord> = emptyList(),
                                  missingLinks: Int = 0,
+                                 showPrivateFields: Boolean,
+                                 onShowPrivateFieldsChange: (Boolean) -> Unit,
                                  onOpenLinked: (DiagRecord) -> Unit = {}) {
     val context = LocalContext.current
+    val hasPrivateFields = record.data.optString("decoded_tree_private").isNotBlank() ||
+        record.data.optJSONArray("paging_records")?.let { records ->
+            (0 until records.length()).any {
+                records.optJSONObject(it)?.optString("ue_identity_value").orEmpty().isNotBlank()
+            }
+        } == true
     val masked = stringResource(R.string.diag_identity_masked)
     val unknownPaging = stringResource(R.string.diag_paging_unsupported)
     val noFields = stringResource(R.string.diag_no_decoded_fields)
@@ -1024,14 +1053,23 @@ private fun MessageDetailsScreen(record: DiagRecord, onClose: () -> Unit,
     val nasProtected = stringResource(R.string.diag_nas_protected)
     val report = record.data.optJSONObject("measResults")
     val header = remember(record) { record.packetHeader() }
-    val body = remember(record, masked, unknownPaging, noFields, extension, partial, nasProtected) {
+    val body = remember(
+        record, masked, unknownPaging, noFields, extension, partial, nasProtected, showPrivateFields,
+    ) {
         if (record.type == "process_event") return@remember ""
+        if (showPrivateFields) {
+            record.data.optString("decoded_tree_private").takeIf { it.isNotBlank() }?.let {
+                return@remember it.trimEnd()
+            }
+        }
         if (record.type == "sip") {
             val tree = sipMessageTree(record.data)
             if (tree.isNotBlank()) return@remember tree
         }
-        if (record.decodedTree.isNotBlank()) return@remember record.decodedTree.trimEnd()
-        val tree = record.messageTree(masked, unknownPaging, noFields, extension, partial)
+        val selectedTree = if (showPrivateFields) record.data.optString("decoded_tree_private")
+            else record.decodedTree
+        if (selectedTree.isNotBlank()) return@remember selectedTree.trimEnd()
+        val tree = record.messageTree(masked, unknownPaging, noFields, extension, partial, showPrivateFields)
         if (record.data.optJSONObject("dedicatedNAS")?.optInt("nas_security_header", 0) in setOf(2, 4, 5)) {
             "$tree\n\n$nasProtected"
         } else tree
@@ -1073,6 +1111,25 @@ private fun MessageDetailsScreen(record: DiagRecord, onClose: () -> Unit,
                                 if (record.isEstimated()) DiagEstimate()
                                 if (warning.isNotBlank()) Text(warning, color = MaterialTheme.colorScheme.error,
                                     style = MaterialTheme.typography.labelMedium)
+                                if (hasPrivateFields) {
+                                    TextButton(onClick = {
+                                        val next = !showPrivateFields
+                                        onShowPrivateFieldsChange(next)
+                                    }) {
+                                        Icon(
+                                            imageVector = if (showPrivateFields) Icons.Rounded.VisibilityOff
+                                            else Icons.Rounded.Visibility,
+                                            contentDescription = null,
+                                        )
+                                        Text(
+                                            stringResource(
+                                                if (showPrivateFields) R.string.diag_mask_private_fields
+                                                else R.string.diag_reveal_private_fields,
+                                            ),
+                                            modifier = Modifier.padding(start = 6.dp),
+                                        )
+                                    }
+                                }
                             }
                         }
                         if (record.type == "process_event") item("process") {
@@ -1203,6 +1260,7 @@ private fun PacketText(body: String, modifier: Modifier = Modifier) {
 
 private fun DiagRecord.messageTree(
     masked: String, unknownPaging: String, noFields: String, extension: String, partial: String,
+    showPrivateFields: Boolean,
 ): String =
     buildString {
         if (type == "rrc") {
@@ -1220,7 +1278,11 @@ private fun DiagRecord.messageTree(
                         val entry = records.getJSONObject(i)
                         appendLine("      PagingRecord ${i + 1}")
                         appendLine("        ue-Identity: ${entry.optString("ue_identity_type")}")
-                        appendLine("          $masked")
+                        val identity = entry.optString("ue_identity_value")
+                        appendLine(
+                            if (showPrivateFields && identity.isNotBlank()) "          $identity"
+                            else "          $masked",
+                        )
                         for (key in listOf("accessType", "cn-Domain")) {
                             if (entry.has(key)) appendLine("        $key: ${entry.getString(key)}")
                         }

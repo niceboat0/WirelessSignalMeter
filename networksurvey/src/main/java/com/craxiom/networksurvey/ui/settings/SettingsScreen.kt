@@ -1,6 +1,7 @@
 package com.craxiom.networksurvey.ui.settings
 
 import android.widget.Toast
+import android.content.SharedPreferences
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -26,6 +27,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -202,7 +204,18 @@ private fun DiagCollectionSettings(rootDiag: RootDiagViewModel? = null) {
     var showRf by remember { mutableStateOf(RootDiagPrefs.showRf(context)) }
     var showIms by remember { mutableStateOf(RootDiagPrefs.showIms(context)) }
     var showQueue by remember { mutableStateOf(RootDiagPrefs.showQueue(context)) }
+    var showPrivateFields by remember { mutableStateOf(RootDiagPrefs.showPrivateFields(context)) }
     var showOverlayHelp by rememberSaveable { mutableStateOf(false) }
+    DisposableEffect(context) {
+        val prefs = RootDiagPrefs.store(context)
+        val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key == RootDiagPrefs.SHOW_PRIVATE_FIELDS) {
+                showPrivateFields = RootDiagPrefs.showPrivateFields(context)
+            }
+        }
+        prefs.registerOnSharedPreferenceChangeListener(listener)
+        onDispose { prefs.unregisterOnSharedPreferenceChangeListener(listener) }
+    }
     SwitchPreference(
         title = stringResource(R.string.diag_overlay_title),
         summary = stringResource(R.string.diag_overlay_subtitle),
@@ -241,6 +254,18 @@ private fun DiagCollectionSettings(rootDiag: RootDiagViewModel? = null) {
             RootDiagCollectorService.refreshOverlay(context)
         }
     }
+    SwitchPreference(
+        title = stringResource(R.string.diag_show_private_fields_title),
+        summary = stringResource(
+            if (showPrivateFields) R.string.diag_show_private_fields_summary_on
+            else R.string.diag_show_private_fields_summary_off,
+        ),
+        checked = showPrivateFields,
+        onCheckedChange = { enabled ->
+            RootDiagPrefs.setShowPrivateFields(context, enabled)
+            showPrivateFields = enabled
+        },
+    )
     AppDialog(
         show = showOverlayHelp,
         onDismissRequest = { showOverlayHelp = false },

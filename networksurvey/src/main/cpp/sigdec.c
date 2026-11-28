@@ -108,7 +108,8 @@ struct sd_br { const uint8_t *p; long nbits, pos; int err; };
 struct sd_out { char *b; int n, cap, trunc; };
 struct sd {
     struct sd_out *o;
-    int canon;          /* 1: no masking / conversions (host test only) */
+    int canon;          /* 1: canonical host-test output */
+    int show_private;
     int nr;             /* RAT of the schema in use */
     int rat_type;       /* last decoded rat-Type enum index, -1 none */
     char rat_name[16];
@@ -263,7 +264,7 @@ static void sd_put(struct sd_out *o, const char *fmt, ...) {
 static void sd_ind(struct sd_out *o, int depth) { for (int i = 0; i < depth && !o->trunc; i++) sd_put(o, "  "); }
 static const char *sd_s(uint32_t off) { return k_rs_str + off; }
 
-/* field names whose whole subtree is hidden in display mode */
+/* field names masked in the default signaling detail tree */
 static int sd_masked(const char *name) {
     static const char *k[] = { "tmsi", "imsi", "imei", "i-rnti", "resumeid", "resumeidentity", "ue-identity", "randomvalue",
         "nas-container", "location", "gnss", "ellipsoid", "altitude", "velocity",
@@ -334,7 +335,7 @@ static int32_t sd_root(const char *rat, const char *name) {
 }
 static void sd_val(struct sd *d, struct sd_br *r, uint32_t ni, int depth, const char *label, int hide);
 static void sd_val_impl(struct sd *d, struct sd_br *r, uint32_t ni, int depth, const char *label, int hide);
-static int nas_render(struct sd_out *o, const uint8_t *m, int len, int dl, int depth, int level);
+static int nas_render(struct sd_out *o, const uint8_t *m, int len, int dl, int depth, int level, int reveal);
 static const char *nas_msg_name(const uint8_t *m, int len, int dl, char *buf, size_t cap);
 
 static void sd_size(struct sd_br *r, const struct rs_node *n, long *cnt) {
@@ -505,7 +506,7 @@ static void sd_val_impl(struct sd *d, struct sd_br *r, uint32_t ni, int depth, c
     if (++d->nodes > 400000 || depth > 48) { r->err = 1; return; }
     const struct rs_node *n = &k_rs_node[ni];
     struct sd_out *o = d->o;
-    if (!hide && !d->canon && sd_masked(label)) {
+    if (!hide && !d->canon && !d->show_private && sd_masked(label)) {
         sd_ind(o, depth); sd_put(o, "%s: ***（已隐藏）\n", label);
         hide = 1;
     }
@@ -814,13 +815,13 @@ static void sd_val_impl(struct sd *d, struct sd_br *r, uint32_t ni, int depth, c
             break;
         }
         /* NAS PDU inside RRC: rendered by nasdec (identities masked there) */
-        if (!d->canon && n->kind == 9 && (!strcmp(label, "dedicatedNAS-Message") || !strcmp(label, "dedicatedInfoNAS") || (d->naslist && label[0] == '['))) {
+        if (n->kind == 9 && (!strcmp(label, "dedicatedNAS-Message") || !strcmp(label, "dedicatedInfoNAS") || (d->naslist && label[0] == '['))) {
             if (!hide) {
                 if (d->summary && !d->summary->nas[0])
                     nas_msg_name(buf, (int)nbytes, d->dl, d->summary->nas, sizeof(d->summary->nas));
                 sd_ind(o, depth);
                 sd_put(o, "%s (NAS, %ld 字节)\n", label, nbytes);
-                if (nas_render(o, buf, (int)nbytes, d->dl, depth + 1, 0)) d->nested_error = 1;
+                if (nas_render(o, buf, (int)nbytes, d->dl, depth + 1, 0, d->show_private)) d->nested_error = 1;
             }
             break;
         }
@@ -842,7 +843,7 @@ static void sd_val_impl(struct sd *d, struct sd_br *r, uint32_t ni, int depth, c
         if (!hide) {
             sd_ind(o, depth); sd_put(o, "%s: ", label);
             if (n->kind == 8 && nb <= 32) { sd_put(o, "'"); for (long i = 0; i < nb; i++) sd_put(o, "%d", (buf[i >> 3] >> (7 - (i & 7))) & 1); sd_put(o, "'B"); if (!d->canon) sd_put(o, " (%ld bits)", nb); }
-            else if (d->canon) {
+            else if (d->canon || (d->show_private && sd_masked(label))) {
                 sd_put(o, "0x"); sd_hex(o, buf, nbytes, 100000);
                 if (n->kind == 8) sd_put(o, " (%ld bits)", nb);
             } else if (n->kind == 8) sd_put(o, "<%ld bits>", nb);
@@ -855,12 +856,12 @@ static void sd_val_impl(struct sd *d, struct sd_br *r, uint32_t ni, int depth, c
     }
 }
 /* decode one PDU with root type (rat "NR"/"LTE", name e.g. "UL-DCCH-Message"). Returns 0 ok, 1 error (partial output kept) */
-static int sd_decode(const char *rat, const char *root, const uint8_t *pdu, int len, int canon,
+static int sd_decode(const char *rat, const char *root, const uint8_t *pdu, int len, int canon, int show_private,
                      struct sd_out *o, int depth, struct sd_summary *summary) {
     int32_t ri = sd_root(rat, root);
     if (ri < 0) { sd_put(o, "<不支持的消息类型 %s %s>\n", rat, root); return 1; }
     struct sd d; memset(&d, 0, sizeof(d));
-    d.o = o; d.canon = canon; d.nr = !strcmp(rat, "NR"); d.rat_type = -1;
+    d.o = o; d.canon = canon; d.show_private = show_private; d.nr = !strcmp(rat, "NR"); d.rat_type = -1;
     d.summary = summary;
     d.dl = strncmp(root, "UL-", 3) != 0 && strcmp(root, "RRCReconfigurationComplete") != 0;
     struct sd_br r = { pdu, (long)len * 8, 0, 0 };
@@ -886,8 +887,8 @@ int main(int argc, char **argv) {
         int n = 0; for (char *p = line + off; p[0] && p[1] && isxdigit((unsigned char)p[0]); p += 2) { unsigned v; sscanf(p, "%2x", &v); pdu[n++] = (uint8_t)v; }
         struct sd_out o = { ob, 0, sizeof(ob), 0 }; ob[0] = 0;
         int rc;
-        if (!strncmp(rat, "NAS", 3)) { char nm[96]; nas_msg_name(pdu, n, !strcmp(root, "DL"), nm, sizeof(nm)); sd_put(&o, "NAME %s\n", nm); rc = nas_render(&o, pdu, n, !strcmp(root, "DL"), 0, 0) ? 1 : 0; }
-        else rc = sd_decode(rat, root, pdu, n, canon, &o, 0, NULL);
+        if (!strncmp(rat, "NAS", 3)) { char nm[96]; nas_msg_name(pdu, n, !strcmp(root, "DL"), nm, sizeof(nm)); sd_put(&o, "NAME %s\n", nm); rc = nas_render(&o, pdu, n, !strcmp(root, "DL"), 0, 0, canon) ? 1 : 0; }
+        else rc = sd_decode(rat, root, pdu, n, canon, canon, &o, 0, NULL);
         printf("%s== rc=%d\n", ob, rc);
     }
     return 0;

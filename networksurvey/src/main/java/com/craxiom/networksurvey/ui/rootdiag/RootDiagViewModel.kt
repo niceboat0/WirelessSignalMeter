@@ -1151,7 +1151,8 @@ class RootDiagViewModel internal constructor(
                     signalingState.value = (pending.reversed() + signalingState.value).asSequence()
                         .take(MAX_MESSAGES)
                         .takeWhile { record ->
-                            detailChars += record.decodedTree.length
+                            detailChars += record.decodedTree.length +
+                                record.data.optString("decoded_tree_private").length
                             detailChars <= MAX_DETAIL_CHARS
                         }.toList()
                 }
@@ -2455,7 +2456,7 @@ class RootDiagViewModel internal constructor(
         const val MAX_COLLECTOR_RUNS = 8
         const val MAX_NEIGHBOR_SAMPLES_PER_CODE = 6
         val neighborProbeSampleCodes = setOf("0xB119", "0xB123", "0xB96A", "0xB96D", "0xB96E", "0xB96F", "0xB992")
-        const val MAX_LINE_BYTES = 540_672
+        const val MAX_LINE_BYTES = 1_150_000
         /* A decoded line that takes longer than this is recorded as a slow line;
            the count and the worst type pin a stall to a message class. */
         const val SLOW_LINE_MS = 200L
@@ -2538,11 +2539,12 @@ private fun AndroidLteSinrReader.Sample.toDiagnosticJson() = JSONObject().apply 
    then discarded at export time. */
 private val excludedDiagnosticKeys = setOf(
     "ncgi", "nci", "nci_hex", "cid", "ci", "tac", "call_id", "raw", "access",
-    "reason_hdr", "reason", "dnn", "apn", "imsi", "imei", "tmsi", "ue_identity", "uper_hex", "decoded_tree",
+    "reason_hdr", "reason", "dnn", "apn", "imsi", "imei", "tmsi", "ue_identity", "ue_identity_value",
+    "uper_hex", "decoded_tree", "decoded_tree_private",
     "from", "to", "contact", "via", "uri", "ip", "impu", "impi", "msisdn", "phone", "user", "p_asserted",
 )
 
-private fun redactDiagnostic(data: JSONObject): JSONObject = JSONObject().apply {
+internal fun redactDiagnostic(data: JSONObject): JSONObject = JSONObject().apply {
     for (key in data.keys()) {
         if (key in excludedDiagnosticKeys ||
             (key == "msg" && data.optString("type") == "event" && data.optString("rat") == "IMS")

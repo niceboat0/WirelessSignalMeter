@@ -1,7 +1,7 @@
 /* 2.4: NAS (24.501 5GS / 24.301 EPS) renderer for the signaling page.
    Header, security wrapper, message name and IE list; a few IEs are interpreted (causes, DNN/APN, S-NSSAI,
    PDU session id, registration/update types, timers, identity TYPE). Identities, keys/nonces, addresses,
-   PCO, TFT/QoS rules (contain IP filters), SMS/LPP containers and unknown IEs are masked (length only). */
+   PCO, TFT/QoS rules (contain IP filters), SMS/LPP containers and unknown IEs are masked by default. */
 struct nas_ie { uint8_t iei; uint8_t fmt; uint8_t len; uint8_t flags; const char *name; };
 /* fmt: 1 TV1(half octet IEI) 2 T(type 2) 3 TV(len incl. IEI) 4 TLV 5 TLV-E
          mandatory: 10 V(len) 11 LV 12 LV-E 13 V half octets (one octet carrying 2 values) */
@@ -376,12 +376,12 @@ static const struct nas_msg *nas_find(int pd, int type, int dl) {
     return any;
 }
 /* name of a NAS message (for list rows); buf gets e.g. "Registration request" or "Security protected (ciphered)" */
-static int nas_render(struct sd_out *o, const uint8_t *m, int len, int dl, int depth, int level);
+static int nas_render(struct sd_out *o, const uint8_t *m, int len, int dl, int depth, int level, int reveal);
 static void nas_hex_or_mask(struct sd_out *o, const uint8_t *v, int l, int mask) {
     if (mask) sd_put(o, "***（已隐藏，%d 字节）", l);
     else { sd_put(o, "0x"); sd_hex(o, v, l, 48); if (l > 1) sd_put(o, " (%d 字节)", l); }
 }
-static void nas_ie_value(struct sd_out *o, const struct nas_ie *ie, const uint8_t *v, int l, int dl, int depth, int level, int hdr_nib, uint8_t *pct) {
+static void nas_ie_value(struct sd_out *o, const struct nas_ie *ie, const uint8_t *v, int l, int dl, int depth, int level, int hdr_nib, uint8_t *pct, int reveal) {
     int f = ie ? ie->flags : NF_MASK;
     char s[128];
     switch (f) {
@@ -396,27 +396,29 @@ static void nas_ie_value(struct sd_out *o, const struct nas_ie *ie, const uint8_
         sd_put(o, "]"); p += 1 + sl; k++; } break; }
     case NF_PSI: if (l >= 1) sd_put(o, "%d", v[0]); break;
     case NF_ID5G: { static const char *tn[8] = { "No identity", "SUCI", "5G-GUTI", "IMEI", "5G-S-TMSI", "IMEISV", "MAC address", "EUI-64" };
-        sd_put(o, "%s ***（已隐藏，%d 字节）", l >= 1 ? tn[v[0] & 7] : "?", l); break; }
+        sd_put(o, "%s ", l >= 1 ? tn[v[0] & 7] : "?"); nas_hex_or_mask(o, v, l, !reveal); break; }
     case NF_IDEPS: { static const char *tn[8] = { "No identity", "IMSI", "IMEI", "IMEISV", "TMSI/P-TMSI/M-TMSI", "TMGI", "GUTI", "?" };
-        sd_put(o, "%s ***（已隐藏，%d 字节）", l >= 1 ? tn[v[0] & 7] : "?", l); break; }
+        sd_put(o, "%s ", l >= 1 ? tn[v[0] & 7] : "?"); nas_hex_or_mask(o, v, l, !reveal); break; }
     case NF_TIMER2: if (l >= 1) { static const int mul[8] = { 2, 60, 360, 0, 0, 0, 0, -1 }; int u = v[0] >> 5, x = v[0] & 31;
         if (mul[u] > 0) sd_put(o, "%d s (0x%02X)", x * mul[u], v[0]); else if (u == 7) sd_put(o, "deactivated (0x%02X)", v[0]); else sd_put(o, "0x%02X", v[0]); } break;
     case NF_TIMER3: if (l >= 1) { static const long mul[8] = { 600, 3600, 36000, 2, 30, 60, 1152000, -1 }; int u = v[0] >> 5, x = v[0] & 31;
         if (u == 7) sd_put(o, "deactivated (0x%02X)", v[0]); else sd_put(o, "%ld s (0x%02X)", x * mul[u], v[0]); } break;
     case NF_QCI: if (l >= 1) sd_put(o, "QCI %d (%d 字节)", v[0], l); break;
     case NF_PAYLOAD:
-        if (pct && *pct == 1) { sd_put(o, "N1 SM information (%d 字节)\n", l); nas_render(o, v, l, dl, depth + 1, level + 1); return; }
-        sd_put(o, "***（已隐藏，类型 %d，%d 字节）", pct ? *pct : -1, l); break;
-    case NF_NASC5G: sd_put(o, "(%d 字节)\n", l); nas_render(o, v, l, dl, depth + 1, level + 1); return;
-    case NF_NASCEPS: sd_put(o, "(%d 字节)\n", l); nas_render(o, v, l, dl, depth + 1, level + 1); return;
-    case NF_ESMC: sd_put(o, "(%d 字节)\n", l); nas_render(o, v, l, dl, depth + 1, level + 1); return;
+        if (pct && *pct == 1) { sd_put(o, "N1 SM information (%d 字节)\n", l); nas_render(o, v, l, dl, depth + 1, level + 1, reveal); return; }
+        if (reveal) nas_hex_or_mask(o, v, l, 0);
+        else sd_put(o, "***（已隐藏，类型 %d，%d 字节）", pct ? *pct : -1, l);
+        break;
+    case NF_NASC5G: sd_put(o, "(%d 字节)\n", l); nas_render(o, v, l, dl, depth + 1, level + 1, reveal); return;
+    case NF_NASCEPS: sd_put(o, "(%d 字节)\n", l); nas_render(o, v, l, dl, depth + 1, level + 1, reveal); return;
+    case NF_ESMC: sd_put(o, "(%d 字节)\n", l); nas_render(o, v, l, dl, depth + 1, level + 1, reveal); return;
     case NF_PCT: sd_put(o, "%d%s", hdr_nib, hdr_nib == 1 ? " (N1 SM information)" : hdr_nib == 2 ? " (SMS)" : hdr_nib == 3 ? " (LPP)" : ""); if (pct) *pct = (uint8_t)hdr_nib; break;
-    case NF_MASK: nas_hex_or_mask(o, v, l, 1); break;
-    default: nas_hex_or_mask(o, v, l, l > 1 || (ie && sd_masked(ie->name)));
+    case NF_MASK: nas_hex_or_mask(o, v, l, !reveal); break;
+    default: nas_hex_or_mask(o, v, l, !reveal && (l > 1 || (ie && sd_masked(ie->name))));
     }
     sd_put(o, "\n");
 }
-static int nas_ies(struct sd_out *o, const struct nas_ie *t, const uint8_t *m, int len, int p, int dl, int depth, int level, int eps) {
+static int nas_ies(struct sd_out *o, const struct nas_ie *t, const uint8_t *m, int len, int p, int dl, int depth, int level, int eps, int reveal) {
     uint8_t pct = 0;
     /* mandatory part */
     int i = 0;
@@ -434,7 +436,7 @@ static int nas_ies(struct sd_out *o, const struct nas_ie *t, const uint8_t *m, i
         else { if (p + 1 >= len) return -1; l = m[p] << 8 | m[p + 1]; hl = 2; }
         if (p + hl + l > len) return -1;
         sd_ind(o, depth); sd_put(o, "%s: ", ie->name);
-        nas_ie_value(o, ie, m + p + hl, l, dl, depth, level, 0, &pct);
+        nas_ie_value(o, ie, m + p + hl, l, dl, depth, level, 0, &pct, reveal);
         p += hl + l;
     }
     /* optional part */
@@ -456,7 +458,7 @@ static int nas_ies(struct sd_out *o, const struct nas_ie *t, const uint8_t *m, i
         if (p + hl + l > len) return -1;
         sd_ind(o, depth);
         if (ie) sd_put(o, "%s: ", ie->name); else sd_put(o, "IE 0x%02X: ", iei);
-        nas_ie_value(o, ie, m + p + hl, l, dl, depth, level, 0, &pct);
+        nas_ie_value(o, ie, m + p + hl, l, dl, depth, level, 0, &pct, reveal);
         p += hl + l;
     }
     return 0;
@@ -493,7 +495,7 @@ static const char *nas_msg_name(const uint8_t *m, int len, int dl, char *buf, si
     snprintf(buf, cap, "NAS ?");
     return buf;
 }
-static int nas_render(struct sd_out *o, const uint8_t *m, int len, int dl, int depth, int level) {
+static int nas_render(struct sd_out *o, const uint8_t *m, int len, int dl, int depth, int level, int reveal) {
     if (level > 4 || len < 2) { sd_ind(o, depth); sd_put(o, "<NAS 过短>\n"); return -1; }
     int rc = 0;
     if (m[0] == 0x7E) {
@@ -506,12 +508,12 @@ static int nas_render(struct sd_out *o, const uint8_t *m, int len, int dl, int d
             if (sht == 2 || sht == 4) { sd_ind(o, depth); sd_put(o, "<已加密 %d 字节；明文见同时刻的 NAS-5GS 条目>\n", len - 7); return 0; }
             if (sht != 1 && sht != 3) return -1;
             sd_ind(o, depth); sd_put(o, "Plain NAS message\n");
-            return nas_render(o, m + 7, len - 7, dl, depth + 1, level + 1);
+            return nas_render(o, m + 7, len - 7, dl, depth + 1, level + 1, reveal);
         }
         if (len < 3) return -1;
         const struct nas_msg *x = nas_find(0x7E, m[2], dl);
         sd_ind(o, depth); sd_put(o, "Message type: %s (0x%02X)\n", x ? x->name : "?", m[2]);
-        if (x && x->ie) rc = nas_ies(o, x->ie, m, len, 3, dl, depth, level, 0);
+        if (x && x->ie) rc = nas_ies(o, x->ie, m, len, 3, dl, depth, level, 0, reveal);
         else if (len > 3) { sd_ind(o, depth); sd_put(o, "内容: ***（未解析，%d 字节）\n", len - 3); }
     } else if (m[0] == 0x2E) {
         if (len < 4) return -1;
@@ -520,7 +522,7 @@ static int nas_render(struct sd_out *o, const uint8_t *m, int len, int dl, int d
         sd_ind(o, depth); sd_put(o, "PDU session identity: %d\n", m[1]);
         sd_ind(o, depth); sd_put(o, "Procedure transaction identity: %d\n", m[2]);
         sd_ind(o, depth); sd_put(o, "Message type: %s (0x%02X)\n", x ? x->name : "?", m[3]);
-        if (x && x->ie) rc = nas_ies(o, x->ie, m, len, 4, dl, depth, level, 0);
+        if (x && x->ie) rc = nas_ies(o, x->ie, m, len, 4, dl, depth, level, 0, reveal);
         else if (len > 4) { sd_ind(o, depth); sd_put(o, "内容: ***（未解析，%d 字节）\n", len - 4); }
     } else {
         int pd = m[0] & 15, hi = m[0] >> 4;
@@ -537,11 +539,11 @@ static int nas_render(struct sd_out *o, const uint8_t *m, int len, int dl, int d
                 if (hi == 2 || hi == 4) { sd_ind(o, depth); sd_put(o, "<已加密 %d 字节；明文见同时刻的 NAS-EPS 条目>\n", len - 6); return 0; }
                 if (hi != 1 && hi != 3) return -1;
                 sd_ind(o, depth); sd_put(o, "Plain NAS message\n");
-                return nas_render(o, m + 6, len - 6, dl, depth + 1, level + 1);
+                return nas_render(o, m + 6, len - 6, dl, depth + 1, level + 1, reveal);
             }
             const struct nas_msg *x = nas_find(7, m[1], dl);
             sd_ind(o, depth); sd_put(o, "Message type: %s (0x%02X)\n", x ? x->name : "?", m[1]);
-            if (x && x->ie) rc = nas_ies(o, x->ie, m, len, 2, dl, depth, level, 1);
+            if (x && x->ie) rc = nas_ies(o, x->ie, m, len, 2, dl, depth, level, 1, reveal);
             else if (len > 2) { sd_ind(o, depth); sd_put(o, "内容: ***（未解析，%d 字节）\n", len - 2); }
         } else if (pd == 2) {
             if (len < 3) return -1;
@@ -550,7 +552,7 @@ static int nas_render(struct sd_out *o, const uint8_t *m, int len, int dl, int d
             sd_ind(o, depth); sd_put(o, "EPS bearer identity: %d\n", hi);
             sd_ind(o, depth); sd_put(o, "Procedure transaction identity: %d\n", m[1]);
             sd_ind(o, depth); sd_put(o, "Message type: %s (0x%02X)\n", x ? x->name : "?", m[2]);
-            if (x && x->ie) rc = nas_ies(o, x->ie, m, len, 3, dl, depth, level, 1);
+            if (x && x->ie) rc = nas_ies(o, x->ie, m, len, 3, dl, depth, level, 1, reveal);
             else if (len > 3) { sd_ind(o, depth); sd_put(o, "内容: ***（未解析，%d 字节）\n", len - 3); }
         } else { sd_ind(o, depth); sd_put(o, level ? "<内容已加密或格式未知，%d 字节，已隐藏>\n" : "<未知协议，%d 字节，已隐藏>\n", len); return level ? 0 : -1; }
     }
