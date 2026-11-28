@@ -1,4 +1,5 @@
 #include "../../main/cpp/diag_queue.c"
+#include "../../main/cpp/diag_recovery.h"
 #include <string.h>
 #ifndef DIAG_QUEUE_HOST_DLL
 #include <stdio.h>
@@ -88,6 +89,14 @@ static int run_queue_tests(void) {
     CHECK(diag_code_priority(0xB184) == DIAG_PRIO_HIGH);   /* LTE CA config */
     CHECK(diag_code_priority(0xB0ED) == DIAG_PRIO_HIGH);   /* LTE NAS */
     CHECK(diag_code_priority(0x156E) == DIAG_PRIO_HIGH);   /* IMS SIP */
+
+    /* No-output recovery is bounded and backs off before its one retry. */
+    CHECK(!diag_recovery_due(-1, 0));
+    CHECK(!diag_recovery_due(DIAG_RECOVERY_FIRST_MS - 1, 0));
+    CHECK(diag_recovery_due(DIAG_RECOVERY_FIRST_MS, 0));
+    CHECK(!diag_recovery_due(DIAG_RECOVERY_FIRST_MS + DIAG_RECOVERY_RETRY_MS - 1, 1));
+    CHECK(diag_recovery_due(DIAG_RECOVERY_FIRST_MS + DIAG_RECOVERY_RETRY_MS, 1));
+    CHECK(!diag_recovery_due(100000, DIAG_RECOVERY_MAX_ATTEMPTS));
 
     /* split-queue behaviour: a counter flood on the low priority queue must
        never evict a high-priority record, and the high queue drains first. */

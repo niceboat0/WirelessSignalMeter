@@ -206,6 +206,7 @@ static void on_sig(int signo) {
 }
 
 #include "diag_queue.c"
+#include "diag_recovery.h"
 #include "ims_logcat.c"
 #include "nr_csf_window.h"
 
@@ -5998,6 +5999,11 @@ static struct dci_mask_result g_base_mask, g_details_mask;
 static int g_dci_init_rc = -1, g_dci_init_errno;
 static int g_dci_client_rc = -1, g_dci_support_rc = -1, g_dci_stream_rc = -1, g_dci_stream_per_client;
 static int g_live_details_before_first_packet;
+static atomic_int g_diag_recovery_attempts = ATOMIC_VAR_INIT(0);
+static atomic_int g_diag_recovery_last_rc = ATOMIC_VAR_INIT(-2);
+static atomic_llong g_diag_recovery_last_ms = ATOMIC_VAR_INIT(0);
+static atomic_llong g_diag_recovery_silent_ms = ATOMIC_VAR_INIT(0);
+static atomic_ulong g_diag_recovery_callbacks = ATOMIC_VAR_INIT(0);
 
 static void emit_status_locked(const char *state, int rc) {
     struct jb j; jb_init(&j, "status");
@@ -6022,6 +6028,12 @@ static void emit_status_locked(const char *state, int rc) {
         jb_add(&j, ",\"dci_details_mask\":{\"requested\":%d,\"batch_rc\":%d,\"accepted\":%d,\"before_first_packet\":%s}",
                g_details_mask.count, g_details_mask.batch_rc, g_details_mask.accepted,
                g_live_details_before_first_packet ? "true" : "false");
+    int recovery_attempts = atomic_load_explicit(&g_diag_recovery_attempts, memory_order_relaxed);
+    int recovery_rc = atomic_load_explicit(&g_diag_recovery_last_rc, memory_order_relaxed);
+    int64_t recovery_last_ms = atomic_load_explicit(&g_diag_recovery_last_ms, memory_order_relaxed);
+    if (recovery_attempts) jb_i(&j, "diag_recovery_attempts", recovery_attempts);
+    if (recovery_rc != -2) jb_i(&j, "diag_recovery_last_rc", recovery_rc);
+    if (recovery_last_ms) jb_i(&j, "diag_recovery_age_s", (now - recovery_last_ms) / 1000);
     jb_add(&j, ",\"decode_queued\":%u,\"decode_dropped\":%lu,\"decode_high_water\":%u,\"decode_oversized\":%lu",
            diag_q_count(&g_dq) + diag_q_count(&g_dq_lo) + diag_latest_count(&g_latest),
            g_dq.stats.dropped + g_dq_lo.stats.dropped,
@@ -6170,7 +6182,12 @@ static void dci_enable_optional_live(void) {
     elog("optional live B9A7 subscription -> %d", ca_rc);
 }
 
-enum live_mask_action { LIVE_MASK_NONE = 0, LIVE_MASK_ADD_DETAILS = 1, LIVE_MASK_ADD_OPTIONAL = 2 };
+enum live_mask_action {
+    LIVE_MASK_NONE = 0,
+    LIVE_MASK_ADD_DETAILS = 1,
+    LIVE_MASK_ADD_OPTIONAL = 2,
+    LIVE_MASK_RECOVER = 4,
+};
 
 static unsigned live_mask_actions(int64_t elapsed_ms, unsigned long packets, unsigned requested) {
     unsigned ready = packets ? LIVE_MASK_ADD_DETAILS | LIVE_MASK_ADD_OPTIONAL :
@@ -6181,6 +6198,26 @@ static unsigned live_mask_actions(int64_t elapsed_ms, unsigned long packets, uns
 static void dci_enable_live_details(void) {
     g_enabled_count = N_DEFAULT;
     dci_enable_logs(g_codes + N_LIVE_BASE, N_DEFAULT - N_LIVE_BASE, &g_details_mask);
+}
+
+static void dci_resubscribe_base(int attempt) {
+    struct dci_mask_result result = {0};
+    int accepted = dci_enable_logs(g_codes, N_LIVE_BASE, &result);
+    int64_t now = mono_ms();
+    int64_t silent_ms = atomic_load_explicit(&g_diag_recovery_silent_ms, memory_order_relaxed);
+    unsigned long callbacks = atomic_load_explicit(&g_diag_recovery_callbacks, memory_order_relaxed);
+    atomic_store_explicit(&g_diag_recovery_last_rc, result.batch_rc, memory_order_relaxed);
+    atomic_store_explicit(&g_diag_recovery_last_ms, now, memory_order_relaxed);
+
+    pthread_mutex_lock(&g_mu);
+    struct jb j;
+    jb_init(&j, "diag_recovery");
+    jb_add(&j, ",\"reason\":\"no_diag_output\",\"attempt\":%d,\"silent_ms\":%lld,\"callbacks\":%lu"
+               ",\"requested\":%d,\"batch_rc\":%d,\"accepted\":%d,\"result\":\"%s\"",
+           attempt, (long long)silent_ms, callbacks, result.count, result.batch_rc, accepted,
+           accepted == result.count ? "ok" : accepted ? "partial" : "failed");
+    jb_emit(&j);
+    pthread_mutex_unlock(&g_mu);
 }
 
 static void dci_stop(void) {
@@ -6201,7 +6238,7 @@ static void dci_stop(void) {
 static pthread_mutex_t g_qmdl_mask_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_qmdl_mask_cond = PTHREAD_COND_INITIALIZER;
 static pthread_t g_qmdl_mask_thread;
-static int g_qmdl_mask_started, g_qmdl_mask_wanted, g_qmdl_mask_exit;
+static int g_qmdl_mask_started, g_qmdl_mask_wanted, g_qmdl_mask_exit, g_live_mask_queued;
 static unsigned g_pending_live_mask;
 
 static void *qmdl_mask_worker(void *unused) {
@@ -6215,9 +6252,13 @@ static void *qmdl_mask_worker(void *unused) {
         if (enabled == g_qmdl_mask_wanted) {
             unsigned actions = g_pending_live_mask;
             g_pending_live_mask = LIVE_MASK_NONE;
+            g_live_mask_queued = 0;
             pthread_mutex_unlock(&g_qmdl_mask_mu);
             if ((actions & LIVE_MASK_ADD_DETAILS) && !g_stop) dci_enable_live_details();
             if ((actions & LIVE_MASK_ADD_OPTIONAL) && !g_stop) dci_enable_optional_live();
+            if ((actions & LIVE_MASK_RECOVER) && !g_stop)
+                dci_resubscribe_base(atomic_fetch_add_explicit(
+                    &g_diag_recovery_attempts, 1, memory_order_relaxed) + 1);
             pthread_mutex_lock(&g_qmdl_mask_mu);
             continue;
         }
@@ -6250,7 +6291,14 @@ static int request_mask_work(int qmdl_enabled, unsigned live_actions) {
         g_qmdl_mask_started = 1;
     }
     pthread_mutex_lock(&g_qmdl_mask_mu);
-    if (live_actions != LIVE_MASK_NONE) g_pending_live_mask |= live_actions;
+    if (live_actions != LIVE_MASK_NONE) {
+        if (g_live_mask_queued) {
+            pthread_mutex_unlock(&g_qmdl_mask_mu);
+            return 0;
+        }
+        g_pending_live_mask |= live_actions;
+        g_live_mask_queued = 1;
+    }
     else g_qmdl_mask_wanted = qmdl_enabled;
     pthread_cond_signal(&g_qmdl_mask_cond);
     pthread_mutex_unlock(&g_qmdl_mask_mu);
@@ -6341,6 +6389,8 @@ int main(int argc, char **argv) {
     pthread_mutex_unlock(&g_mu);
     if (rc == 0 && !g_stop) logcat_start();
     int64_t connected_at = mono_ms(), last_snapshot = connected_at;
+    int64_t last_diag_output = connected_at;
+    unsigned long last_diag_callbacks = atomic_load_explicit(&g_dci_callbacks, memory_order_relaxed);
     unsigned live_requested = LIVE_MASK_NONE;
     while (!g_stop && rc == 0) {
         struct pollfd input = { .fd = STDIN_FILENO, .events = POLLIN };
@@ -6362,6 +6412,20 @@ int main(int argc, char **argv) {
         if (ready < 0 && errno != EINTR) break;
         int64_t now = mono_ms();
         if (now - last_snapshot < 1000) continue;
+        unsigned long diag_callbacks = atomic_load_explicit(&g_dci_callbacks, memory_order_relaxed);
+        if (diag_callbacks != last_diag_callbacks) {
+            last_diag_callbacks = diag_callbacks;
+            last_diag_output = now;
+            atomic_store_explicit(&g_diag_recovery_attempts, 0, memory_order_relaxed);
+        } else {
+            int attempts = atomic_load_explicit(&g_diag_recovery_attempts, memory_order_relaxed);
+            int64_t silent_ms = now - last_diag_output;
+            if (diag_recovery_due(silent_ms, attempts)) {
+                atomic_store_explicit(&g_diag_recovery_silent_ms, silent_ms, memory_order_relaxed);
+                atomic_store_explicit(&g_diag_recovery_callbacks, diag_callbacks, memory_order_relaxed);
+                request_mask_work(0, LIVE_MASK_RECOVER);
+            }
+        }
         pthread_mutex_lock(&g_mu);
         if (g_qmdl_fd >= 0 && !g_qmdl_error) qmdl_flush(g_qmdl_fd);
         int finish_qmdl = g_qmdl_fd >= 0 && (g_qmdl_limit || g_qmdl_error);
