@@ -943,6 +943,17 @@ private val messageMetadataKeys = packetHeaderKeys.toSet() + setOf(
 
 private fun DiagRecord.packetHeader(): String = buildList {
     val rat = data.optString("rat")
+    val measurementReport = type == "rrc" && data.has("measResults")
+    if (measurementReport) {
+        data.opt("ver")?.let { add("Pkt Version : $it") }
+        data.opt("rrc_release")?.let { add("RRC Release Number : $it") }
+        val globalCellId = data.optLong("ncgi", 0L).takeIf { it > 0L }?.toString()
+            ?: data.optLong("nci", 0L).takeIf { it > 0L }?.toString()
+        globalCellId?.let { add("NR Cell Global ID : ${wrapPrivateValue(it, "  ")}") }
+        data.opt("pci")?.let { add("Physical Cell ID : $it") }
+        data.opt("arfcn")?.let { add("Frequency : $it") }
+        return@buildList
+    }
     if (type == "rrc") add(if (rat == "NR") "NR5G RRC OTA Packet" else "LTE RRC OTA Packet")
     for (field in packetHeaderKeys) {
         if (data.isNull(field) || (field == "ncgi" && data.has("nci"))) continue
@@ -1229,9 +1240,9 @@ private fun MeasurementReportCell(cell: JSONObject) {
         val values = listOf("RSRP" to "rsrp_index", "RSRQ" to "rsrq_index", "SINR" to "sinr_index")
             .mapNotNull { (metric, key) ->
                 val index = result.optInt(key, -1)
-                val value = result.reportedQuantity(key, rat)
+                val value = result.reportedQuantity(key, rat, singleReading = true)
                 when {
-                    value != null -> DiagField(metric, "$value ($index)")
+                    value != null -> DiagField(metric, "$index($value)")
                     index >= 0 -> DiagField(metric, stringResource(R.string.diag_quantity_index, index))
                     else -> null
                 }
@@ -1279,7 +1290,7 @@ private fun DiagRecord.messageTree(
             val channel = data.optString("ch")
             appendLine(if (channel.isBlank()) "RRC" else "$channel-Message")
             val messageName = data.optString("msg")
-            if (messageName.isNotBlank()) appendLine("  message: $messageName")
+            if (messageName.isNotBlank() && !data.has("measResults")) appendLine("  message : $messageName")
             if (channel == "PCCH" && messageName == "Paging") {
                 val records = data.optJSONArray("paging_records")
                 if (records == null) {
@@ -1308,11 +1319,10 @@ private fun DiagRecord.messageTree(
             }
             val report = data.optJSONObject("measResults")
             if (report != null) {
-                val nr = data.optString("rat") == "NR"
-                val choice = if (nr) "measurementReport" else "measurementReport-r8"
-                appendLine("    criticalExtensions → $choice")
+                appendLine("  message : MeasurementReport")
+                appendLine("    criticalExtensions : MeasurementReport-IEs")
                 appendLine("      measResults")
-                appendMeasurementReport(report, "        ", nr)
+                appendMeasurementReport(report, "        ", data.optString("rat") == "NR")
                 if (report.optBoolean("partial")) appendLine("        $partial")
                 return@buildString
             }
@@ -1348,48 +1358,89 @@ internal fun wrapPrivateValues(tree: String): String = tree.lineSequence().joinT
 
 
 private fun StringBuilder.appendMeasurementReport(report: JSONObject, indent: String, nr: Boolean) {
-    appendLine("${indent}measId: ${report.optInt("measId")}")
+    appendLine("${indent}measId : ${report.optInt("measId")}")
     val servingKey = if (nr) "measResultServingMOList" else "measResultPCell"
     val serving = report.optJSONArray(servingKey)
     if (serving != null) {
         appendLine("$indent$servingKey")
         for (index in 0 until serving.length()) {
             val cell = serving.optJSONObject(index) ?: continue
-            val prefix = if (nr) "$indent    " else "$indent  "
             if (nr) {
-                appendLine("$indent  [$index]")
-                cell.opt("servCellId")?.let { appendLine("${prefix}servCellId: $it") }
-                appendLine("${prefix}measResultServingCell")
+                appendLine("$indent  MeasResultServMO")
+                val servingIndent = "$indent    "
+                cell.opt("servCellId")?.let { appendLine("${servingIndent}servCellId : $it") }
+                appendLine("${servingIndent}measResultServingCell")
+                appendReportCell(cell, "$servingIndent  ", "physCellId")
             }
-            appendReportCell(cell, if (nr) "$prefix  " else prefix, "physCellId")
+            else {
+                appendLine("$indent  MeasResultPCell")
+                appendReportCell(cell, "$indent    ", "physCellId")
+            }
         }
     }
     for ((key, pciLabel) in listOf("measResultListNR" to "physCellId",
         "measResultListEUTRA" to if (nr) "eutra-PhysCellId" else "physCellId")) {
         val neighbors = report.optJSONArray(key) ?: continue
-        appendLine("${indent}measResultNeighCells → $key")
+        appendLine("$indent${if (nr) "measResultNeighCellsNR" else "measResultNeighCellsEUTRA"}")
         for (index in 0 until neighbors.length()) {
             val cell = neighbors.optJSONObject(index) ?: continue
-            appendLine("$indent  [$index]")
+            appendLine("$indent  ${if (key == "measResultListNR") "MeasResultNR" else "MeasResultEUTRA"}")
             appendReportCell(cell, "$indent    ", pciLabel)
         }
     }
     report.optJSONObject("measResultBestNeighCell")?.let {
-        appendLine("${indent}measResultBestNeighCell")
+        appendLine("$indent MeasResultBestNeighCell")
         appendReportCell(it, "$indent  ", "physCellId")
     }
 }
 
 private fun StringBuilder.appendReportCell(cell: JSONObject, indent: String, pciLabel: String) {
-    cell.opt("physCellId")?.let { appendLine("$indent$pciLabel: $it") }
+    cell.opt("physCellId")?.let { appendLine("$indent$pciLabel : $it") }
     val rat = cell.optString("rat")
+    appendLine("${indent}measResult")
     val measurements = cell.optJSONObject("measResult")
     if (measurements != null) {
-        appendField("measResult", "measResult", measurements, indent, rat)
-    } else {
-        appendLine("${indent}measResult")
-        cell.optJSONObject("cellResults")?.let { appendField("cellResults", "cellResults", it, "$indent  ", rat) }
-        cell.optJSONObject("rsIndexResults")?.let { appendField("rsIndexResults", "rsIndexResults", it, "$indent  ", rat) }
+        appendReportQuantities(measurements, "$indent  ", rat)
+    }
+    cell.optJSONObject("cellResults")?.let { results ->
+        appendLine("$indent  cellResults")
+        for (key in listOf("resultsSSB-Cell", "resultsCSI-RS-Cell")) {
+            val values = results.optJSONObject(key) ?: continue
+            appendLine("$indent    $key")
+            appendReportQuantities(values, "$indent      ", rat)
+        }
+    }
+    cell.optJSONObject("rsIndexResults")?.let { beams ->
+        appendLine("$indent  rsIndexResults")
+        for ((listKey, indexKey, resultKey) in listOf(
+            Triple("resultsSSB-Indexes", "ssb-Index", "ssb-Results"),
+            Triple("resultsCSI-RS-Indexes", "csi-RS-Index", "csi-RS-Results"),
+        )) {
+            val list = beams.optJSONArray(listKey) ?: continue
+            appendLine("$indent    $listKey [${list.length()}]")
+            for (index in 0 until list.length()) {
+                val beam = list.optJSONObject(index) ?: continue
+                appendLine("$indent      [${index + 1}]")
+                beam.opt(indexKey)?.let { appendLine("$indent        $indexKey : $it") }
+                beam.optJSONObject(resultKey)?.let { values ->
+                    appendLine("$indent        $resultKey")
+                    appendReportQuantities(values, "$indent          ", rat)
+                }
+            }
+        }
+    }
+}
+
+private fun StringBuilder.appendReportQuantities(values: JSONObject, indent: String, rat: String) {
+    for ((label, key) in listOf(
+        "rsrp" to "rsrp_index",
+        "rsrq" to "rsrq_index",
+        "sinr" to "sinr_index",
+    )) {
+        val index = values.optInt(key, -1)
+        if (index < 0) continue
+        val quantity = values.reportedQuantity(key, rat, singleReading = true) ?: continue
+        appendLine("$indent$label : $index($quantity)")
     }
 }
 
