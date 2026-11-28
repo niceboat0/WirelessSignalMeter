@@ -38,7 +38,7 @@ class CaptureServiceNotificationTest {
             CaptureServiceNotification.startSurvey(survey, ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION, "Recording")
             assertEquals(survey.getString(R.string.network_survey_notification_title), title())
 
-            CaptureServiceNotification.startDiag(diag, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE, "listening")
+            CaptureServiceNotification.startDiag(diag, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC, "listening")
             assertEquals(shadowOf(survey).lastForegroundNotificationId, shadowOf(diag).lastForegroundNotificationId)
             assertEquals(diag.getString(R.string.diag_overlay_listening), title())
 
@@ -66,7 +66,7 @@ class CaptureServiceNotificationTest {
         fun title() = manager.activeNotifications.single().notification.extras.getCharSequence(Notification.EXTRA_TITLE).toString()
         fun text() = manager.activeNotifications.single().notification.extras.getCharSequence(Notification.EXTRA_TEXT).toString()
         try {
-            CaptureServiceNotification.startDiag(diag, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE, "recording")
+            CaptureServiceNotification.startDiag(diag, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC, "recording")
             assertEquals(diag.getString(R.string.diag_overlay_recording), title())
             assertEquals(diag.getString(R.string.diag_bg_notification_text_recording), text())
 
