@@ -36,6 +36,7 @@ import androidx.compose.material3.TooltipDefaults
 import androidx.compose.material3.PlainTooltip
 import androidx.compose.material3.rememberTooltipState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -56,6 +57,7 @@ import com.craxiom.networksurvey.ui.main.appbar.TitleBar
 import com.craxiom.networksurvey.ui.rootdiag.DiagRecord
 import com.craxiom.networksurvey.ui.rootdiag.RootDiagStatus
 import com.craxiom.networksurvey.ui.rootdiag.RootDiagViewModel
+import com.craxiom.networksurvey.util.FramePerformanceDiagnostics
 import androidx.compose.ui.res.stringResource
 import kotlinx.coroutines.delay
 import top.yukonga.miuix.kmp.basic.HorizontalDivider
@@ -70,6 +72,10 @@ internal fun BandLockScreen(rootDiag: RootDiagViewModel, onBack: () -> Unit, mod
     val qmi by model.qmi.collectAsStateWithLifecycle()
     val signal by rootDiag.signal.collectAsStateWithLifecycle()
     LaunchedEffect(state.profile) { rootDiag.updateBandLockProfile(state.profile) }
+    DisposableEffect(Unit) {
+        FramePerformanceDiagnostics.tag("band_lock")
+        onDispose { FramePerformanceDiagnostics.tag("") }
+    }
     val now by produceState(SystemClock.elapsedRealtime()) {
         while (true) {
             delay(1_000)

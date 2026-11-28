@@ -41,6 +41,7 @@ class RootDiagCollectorService : Service() {
     private var window: WindowManager? = null
     private var overlay: View? = null
     private var label: TextView? = null
+    private var overlayText: String? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -169,7 +170,16 @@ class RootDiagCollectorService : Service() {
             manager.addView(card, params)
             overlay = card
             overlayJob = scope.launch {
-                DiagOverlayState.snapshot.collect { snap -> label?.text = formatOverlay(snap) }
+                /* The snapshot is republished every few hundred ms; a TextView
+                 * setText always requests a window layout, so only push text
+                 * that actually changed. */
+                DiagOverlayState.snapshot.collect { snap ->
+                    val text = formatOverlay(snap)
+                    if (overlayText != text) {
+                        overlayText = text
+                        label?.text = text
+                    }
+                }
             }
         } catch (error: RuntimeException) {
             Timber.w(error, "Unable to add the DIAG overlay")
@@ -219,6 +229,7 @@ class RootDiagCollectorService : Service() {
     private fun hideOverlay() {
         overlayJob?.cancel()
         overlayJob = null
+        overlayText = null
         overlay?.let { view ->
             runCatching { window?.removeView(view) }
         }
