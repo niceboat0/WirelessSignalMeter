@@ -1492,7 +1492,9 @@ private fun JSONObject.neighborMetric(key: String, rat: String, singleReading: B
     fun format(value: Double) = String.format(Locale.ROOT, if (value % 1.0 == 0.0) "%.0f" else "%.1f", value)
     val lower = edge + step * (code - 1)
     val representative = when (key) {
-        "rsrq_index" -> (code - if (nr) 87 else 40) / 2.0
+        "rsrq_index" -> (code - if (nr && singleReading) 85 else if (nr) 87 else 40) / 2.0
+        "sinr_index", "ssb_beam_sinr_index", "csi_beam_sinr_index" ->
+            if (nr && singleReading) (code - 45) / 2.0 else edge + step * code
         else -> edge + step * code
     }
     val text = when {
@@ -1505,5 +1507,6 @@ private fun JSONObject.neighborMetric(key: String, rat: String, singleReading: B
 }
 
 /** L3 quantization bins, per TS 38.133 / 36.133. */
-internal fun JSONObject.reportedQuantity(key: String, rat: String): String? =
-    neighborMetric(key, rat)?.let { "${it.text} ${if (key == "rsrp_index") "dBm" else "dB"}" }
+internal fun JSONObject.reportedQuantity(key: String, rat: String, singleReading: Boolean = false): String? =
+    neighborMetric(key, rat, singleReading = singleReading)
+        ?.let { "${it.text} ${if (key == "rsrp_index") "dBm" else "dB"}" }
