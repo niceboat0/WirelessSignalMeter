@@ -57,7 +57,7 @@ void diag_q_drop_epoch(struct diag_queue *q, uint16_t len);
 #define DIAG_LANE_HIGH 0
 #define DIAG_LANE_LOW 1
 #define DIAG_LANE_COALESCE 2
-#define DIAG_LATEST_SLOTS 6
+#define DIAG_LATEST_SLOTS 16
 
 struct diag_latest {
     uint16_t code;

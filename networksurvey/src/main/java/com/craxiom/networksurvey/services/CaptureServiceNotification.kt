@@ -53,7 +53,11 @@ internal object CaptureServiceNotification {
     fun stopSurvey(service: Service) {
         if (surveyText == null) return
         surveyText = null
-        ServiceCompat.stopForeground(service, ServiceCompat.STOP_FOREGROUND_REMOVE)
+        ServiceCompat.stopForeground(
+            service,
+            if (diagPresence != null) ServiceCompat.STOP_FOREGROUND_DETACH
+            else ServiceCompat.STOP_FOREGROUND_REMOVE,
+        )
         refresh(service)
     }
 
@@ -61,7 +65,11 @@ internal object CaptureServiceNotification {
     fun stopDiag(service: Service) {
         if (diagPresence == null) return
         diagPresence = null
-        ServiceCompat.stopForeground(service, ServiceCompat.STOP_FOREGROUND_REMOVE)
+        ServiceCompat.stopForeground(
+            service,
+            if (surveyText != null) ServiceCompat.STOP_FOREGROUND_DETACH
+            else ServiceCompat.STOP_FOREGROUND_REMOVE,
+        )
         refresh(service)
     }
 

@@ -125,13 +125,17 @@ int diag_code_priority(uint16_t code) {
     }
 }
 
-/* Absolute counters. Replacing an unread frame does not lose the byte delta.
-   Per-TB (B887/B883), power (B884) and CQI (B8A7) stay on the sample queue. */
+/* High-rate state snapshots. An unread frame is superseded by a newer one;
+   this keeps live measurements responsive without dropping the signalling
+   lane. Per-TB (B887/B883) and power (B884) stay on the sample queue. */
 int diag_code_coalesce(uint16_t code) {
     switch (code) {
     case 0xB888:
     case 0xB842: case 0xB860: case 0xB84D:
     case 0xB868: case 0xB881:
+    case 0xB193:                 /* LTE serving/neighbour measurement burst (~75/s) */
+    case 0xB119: case 0xB123:    /* optional LL1 diagnostic probes */
+    case 0xB14D: case 0xB13C:    /* aggregate LTE CQI / PUCCH power snapshots */
         return 1;
     default:
         return 0;

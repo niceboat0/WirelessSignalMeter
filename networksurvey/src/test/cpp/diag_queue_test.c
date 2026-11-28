@@ -52,6 +52,9 @@ static int run_queue_tests(void) {
     CHECK(diag_code_coalesce(0xB888) && diag_code_lane(0xB888) == DIAG_LANE_COALESCE);
     CHECK(diag_code_coalesce(0xB842) && diag_code_coalesce(0xB860));
     CHECK(diag_code_coalesce(0xB84D) && diag_code_coalesce(0xB868) && diag_code_coalesce(0xB881));
+    CHECK(diag_code_coalesce(0xB193) && diag_code_lane(0xB193) == DIAG_LANE_COALESCE);
+    CHECK(diag_code_coalesce(0xB119) && diag_code_coalesce(0xB123));
+    CHECK(diag_code_coalesce(0xB14D) && diag_code_coalesce(0xB13C));
     CHECK(!diag_code_coalesce(0xB887) && diag_code_lane(0xB887) == DIAG_LANE_LOW);
     CHECK(!diag_code_coalesce(0xB883) && diag_code_lane(0xB883) == DIAG_LANE_LOW);
     CHECK(!diag_code_coalesce(0xB884) && diag_code_lane(0xB884) == DIAG_LANE_LOW);
@@ -80,7 +83,7 @@ static int run_queue_tests(void) {
     CHECK(diag_code_priority(0xB8D8) == DIAG_PRIO_HIGH);   /* nr_snr source */
     CHECK(diag_code_priority(0xB80B) == DIAG_PRIO_HIGH);   /* NR NAS */
     CHECK(diag_code_priority(0xB0C0) == DIAG_PRIO_HIGH);   /* LTE RRC */
-    CHECK(diag_code_priority(0xB193) == DIAG_PRIO_HIGH);   /* LTE serving/neighbor */
+    CHECK(diag_code_lane(0xB193) == DIAG_LANE_COALESCE);   /* LTE serving/neighbor */
     CHECK(diag_code_priority(0xB179) == DIAG_PRIO_HIGH);   /* LTE neighbor */
     CHECK(diag_code_priority(0xB184) == DIAG_PRIO_HIGH);   /* LTE CA config */
     CHECK(diag_code_priority(0xB0ED) == DIAG_PRIO_HIGH);   /* LTE NAS */
