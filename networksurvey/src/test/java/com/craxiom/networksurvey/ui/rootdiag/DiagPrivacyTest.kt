@@ -13,6 +13,18 @@ import org.robolectric.annotation.Config
 @Config(sdk = [34])
 class DiagPrivacyTest {
     @Test
+    fun nrMeasurementReportUsesIndexThenConvertedValue() {
+        val quantities = JSONObject()
+            .put("rsrp_index", 59)
+            .put("rsrq_index", 64)
+            .put("sinr_index", 63)
+
+        assertEquals("-97 dBm", quantities.reportedQuantity("rsrp_index", "NR", singleReading = true))
+        assertEquals("-10.5 dB", quantities.reportedQuantity("rsrq_index", "NR", singleReading = true))
+        assertEquals("9 dB", quantities.reportedQuantity("sinr_index", "NR", singleReading = true))
+    }
+
+    @Test
     fun privateValuesWrapAfterSixteenDigitsInTheDetailView() {
         assertEquals("0010101234567890\n12345", wrapPrivateValue("001010123456789012345"))
         assertEquals("0x0011223344556677\n8899", wrapPrivateValue("0x00112233445566778899"))
