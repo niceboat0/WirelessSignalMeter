@@ -47,6 +47,10 @@ class RootDiagCollectorService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        Timber.i(
+            "Root DIAG collector service creating (sdk=%d, foregroundType=dataSync)",
+            Build.VERSION.SDK_INT,
+        )
         if (!startInForeground()) {
             serviceState.value = State.Idle
             stopSelf()
@@ -83,12 +87,15 @@ class RootDiagCollectorService : Service() {
 
     private fun startInForeground(): Boolean {
         try {
+            // Keep this type aligned with AndroidManifest.xml. SPECIAL_USE requires a separate
+            // manifest type and permission and causes startForeground() to fail on newer Android
+            // versions when the API30-compatible build is installed there.
             CaptureServiceNotification.startDiag(
                 this,
-                if (Build.VERSION.SDK_INT >= 34) ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
-                else ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
                 DiagOverlayState.snapshot.value.presence(),
             )
+            Timber.i("Root DIAG collector service entered foreground")
             return true
         } catch (error: RuntimeException) {
             Timber.w(error, "Unable to start the DIAG foreground service")
