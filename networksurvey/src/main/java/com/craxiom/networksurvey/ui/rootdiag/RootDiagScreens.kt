@@ -731,6 +731,7 @@ internal fun TaskRecordingControls(viewModel: RootDiagViewModel) {
         collectionMode == DiagRecordingPolicy.Mode.TaskRecording &&
         exportProgress == null
     val active = qmdl.phase == QmdlPhase.Recording || qmdl.phase == QmdlPhase.Starting
+    val progress = exportProgress
 
     AppDialog(
         show = confirmQmdl,
@@ -780,7 +781,7 @@ internal fun TaskRecordingControls(viewModel: RootDiagViewModel) {
             }
             if (qmdl.hasRecording) {
                 TextButton(
-                    enabled = qmdl.phase == QmdlPhase.Idle && !qmdl.recovering && exportProgress == null,
+                    enabled = qmdl.phase == QmdlPhase.Idle && !qmdl.recovering && progress == null,
                     onClick = { confirmExport = true },
                 ) {
                     Text(
@@ -789,8 +790,8 @@ internal fun TaskRecordingControls(viewModel: RootDiagViewModel) {
                     )
                 }
             }
-            if (exportProgress != null) {
-                Text(stringResource(R.string.diag_qmdl_exporting, exportProgress))
+            if (progress != null) {
+                Text(stringResource(R.string.diag_qmdl_exporting, progress))
             }
         }
         val formatName = if (qmdl.format == DiagLogFormat.Dlf) "DLF" else "QMDL"
