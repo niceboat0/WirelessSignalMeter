@@ -21,7 +21,7 @@ internal object RootDiagPrefs {
     fun showIms(context: Context) = store(context).getBoolean(OVERLAY_SHOW_IMS, true)
     fun showQueue(context: Context) = store(context).getBoolean(OVERLAY_SHOW_QUEUE, false)
 
-    fun showPrivateFields(context: Context) = store(context).getBoolean(SHOW_PRIVATE_FIELDS, false)
+    fun showPrivateFields(context: Context) = store(context).getBoolean(SHOW_PRIVATE_FIELDS, true)
     fun setShowPrivateFields(context: Context, value: Boolean) {
         store(context).edit().putBoolean(SHOW_PRIVATE_FIELDS, value).apply()
     }

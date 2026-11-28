@@ -3,6 +3,7 @@ package com.craxiom.networksurvey.ui.rootdiag
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -11,6 +12,15 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 class DiagPrivacyTest {
+    @Test
+    fun privateValuesWrapAfterSixteenDigitsInTheDetailView() {
+        assertEquals("0010101234567890\n12345", wrapPrivateValue("001010123456789012345"))
+        assertEquals("0x0011223344556677\n8899", wrapPrivateValue("0x00112233445566778899"))
+        assertEquals("IMSI: 0010101234567890\n  12345", wrapPrivateValues("IMSI: 001010123456789012345"))
+        assertEquals("From: sip:alice@exampl\n  e.invalid", wrapPrivateValues("From: sip:alice@example.invalid"))
+        assertTrue(wrapPrivateValues("short 001010123456789").contains("001010123456789"))
+    }
+
     @Test
     fun diagnosticRedactionRemovesPrivateSignalingTreesAndPagingIdentityRecursively() {
         val input = JSONObject(
