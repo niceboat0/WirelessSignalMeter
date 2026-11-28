@@ -7,8 +7,10 @@ import android.net.NetworkRequest
 import android.net.wifi.ScanResult
 import android.net.wifi.WifiInfo
 import android.net.wifi.WifiManager
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import androidx.annotation.RequiresApi
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -130,6 +132,33 @@ fun WifiListScreen(
 
 private data class WifiConnection(val name: String, val rssi: Int?, val mhz: Int?, val linkMbps: Int?)
 
+private interface WifiConnectionCallbackListener {
+    fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities)
+    fun onLost(network: Network)
+}
+
+private fun createWifiConnectionCallback(listener: WifiConnectionCallbackListener): ConnectivityManager.NetworkCallback {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) return createLocationAwareWifiConnectionCallback(listener)
+    return object : ConnectivityManager.NetworkCallback() {
+        override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) =
+            listener.onCapabilitiesChanged(network, capabilities)
+
+        override fun onLost(network: Network) = listener.onLost(network)
+    }
+}
+
+@RequiresApi(Build.VERSION_CODES.S)
+private fun createLocationAwareWifiConnectionCallback(
+    listener: WifiConnectionCallbackListener,
+): ConnectivityManager.NetworkCallback = object : ConnectivityManager.NetworkCallback(
+    ConnectivityManager.NetworkCallback.FLAG_INCLUDE_LOCATION_INFO,
+) {
+    override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) =
+        listener.onCapabilitiesChanged(network, capabilities)
+
+    override fun onLost(network: Network) = listener.onLost(network)
+}
+
 @Composable
 private fun rememberWifiConnection(): WifiConnection? {
     val context = LocalContext.current.applicationContext
@@ -150,7 +179,7 @@ private fun rememberWifiConnection(): WifiConnection? {
         @Suppress("DEPRECATION")
         val lastInfo = runCatching { wifiManager?.connectionInfo }.getOrNull()
         update(lastInfo?.takeIf { it.networkId >= 0 && wifiManager?.isWifiEnabled == true })
-        val callback = object : ConnectivityManager.NetworkCallback(ConnectivityManager.NetworkCallback.FLAG_INCLUDE_LOCATION_INFO) {
+        val listener = object : WifiConnectionCallbackListener {
             override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
                 val info = capabilities.transportInfo as? WifiInfo
                 handler.post {
@@ -160,6 +189,7 @@ private fun rememberWifiConnection(): WifiConnection? {
                     }
                 }
             }
+
             override fun onLost(network: Network) {
                 handler.post {
                     if (resumed && active == network) {
@@ -169,6 +199,7 @@ private fun rememberWifiConnection(): WifiConnection? {
                 }
             }
         }
+        val callback = createWifiConnectionCallback(listener)
         val registered = manager != null && runCatching {
             manager.registerNetworkCallback(NetworkRequest.Builder()
                 .addTransportType(NetworkCapabilities.TRANSPORT_WIFI).build(), callback)

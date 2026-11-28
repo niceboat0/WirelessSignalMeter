@@ -3,6 +3,7 @@ package com.craxiom.networksurvey.model;
 import com.craxiom.messaging.NrRecord;
 
 import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
 
 /**
@@ -16,7 +17,7 @@ public class NrRecordWrapper extends CellularRecordWrapper
 
     public NrRecordWrapper(NrRecord nrRecord, int[] bands)
     {
-        this(nrRecord, bands, List.of());
+        this(nrRecord, bands, Collections.emptyList());
     }
 
     public NrRecordWrapper(NrRecord nrRecord, int[] bands, Collection<String> additionalPlmns)

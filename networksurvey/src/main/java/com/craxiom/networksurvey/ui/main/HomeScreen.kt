@@ -69,12 +69,9 @@ import com.craxiom.networksurvey.update.UpdateChecker
 import com.craxiom.networksurvey.update.UpdateDialog
 import com.craxiom.networksurvey.update.UpdateDownloader
 import com.craxiom.networksurvey.util.ThemePref
-import top.yukonga.miuix.kmp.blur.layerBackdrop
-import top.yukonga.miuix.kmp.blur.rememberLayerBackdrop
 import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
 import top.yukonga.miuix.kmp.basic.ScrollBehavior
-import top.yukonga.miuix.kmp.material.isRuntimeShaderSupported
 
 private enum class HomeTab(@StringRes val title: Int, val icon: ImageVector) {
     Signal(R.string.home_signal, Icons.Rounded.SignalCellularAlt),
@@ -112,10 +109,6 @@ fun HomeScreen(
     val bottomPadding = if (floatingNavigation) {
         FloatingNavigationClearance + WindowInsets.safeDrawing.asPaddingValues().calculateBottomPadding()
     } else 24.dp
-    val glassEnabled = remember(context, themeVersion) {
-        floatingNavigation && ThemePref.isLiquidGlassEnabled(context) && isRuntimeShaderSupported()
-    }
-    val backdrop = if (glassEnabled) rememberLayerBackdrop() else null
     val pendingUpdate by UpdateChecker.pendingUpdate
     pendingUpdate?.let { update ->
         UpdateDialog(
@@ -137,7 +130,6 @@ fun HomeScreen(
         Column(Modifier.fillMaxSize()) {
             Box(
                 Modifier.fillMaxWidth().weight(1f)
-                    .then(if (backdrop != null) Modifier.layerBackdrop(backdrop) else Modifier)
                     .background(background),
             ) {
                 HorizontalPager(
@@ -203,7 +195,6 @@ fun HomeScreen(
             onSelected = { index ->
                 pagerScope.launch { pagerState.animateScrollToPage(index, animationSpec = PagerSpringSpec) }
             },
-            backdrop = backdrop,
         )
     }
 }

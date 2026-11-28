@@ -22,6 +22,7 @@ import com.google.protobuf.Descriptors;
 import com.google.protobuf.GeneratedMessage;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 /**
@@ -663,7 +664,7 @@ public class CellularUtils
      */
     public static List<NrRecordWrapper> selectAllSecondaryServingNrCells(List<NrRecordWrapper> nrRecords)
     {
-        if (nrRecords == null || nrRecords.isEmpty()) return List.of();
+        if (nrRecords == null || nrRecords.isEmpty()) return Collections.emptyList();
         final List<NrRecordWrapper> selected = new ArrayList<>();
         for (NrRecordWrapper wrapper : nrRecords)
         {

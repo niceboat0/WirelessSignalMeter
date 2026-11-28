@@ -30,6 +30,7 @@ import com.craxiom.networksurvey.services.controller.CellularController;
 import com.craxiom.networksurvey.ui.main.appbar.FragmentTopBarScroll;
 
 import java.util.List;
+import java.util.Collections;
 
 
 /**
@@ -221,7 +222,7 @@ public class MainCellularFragment extends AServiceDataFragment
 
     private void setActiveSubscriptions(List<SubscriptionInfo> subscriptions)
     {
-        activeSubscriptionInfoList = subscriptions == null ? List.of() : subscriptions;
+        activeSubscriptionInfoList = subscriptions == null ? Collections.emptyList() : subscriptions;
         if (currentSimIndex >= activeSubscriptionInfoList.size()) currentSimIndex = 0;
     }
 

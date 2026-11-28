@@ -25,6 +25,7 @@ import com.craxiom.networksurvey.ui.cellular.CellularChartViewModel
 import com.craxiom.networksurvey.util.AndroidLteSinrReader
 import com.craxiom.networksurvey.util.AppLogger
 import com.craxiom.networksurvey.util.DiagJournal
+import com.craxiom.networksurvey.util.DeviceSoc
 import com.craxiom.networksurvey.util.FramePerformanceDiagnostics
 import com.craxiom.networksurvey.util.LteSinrUtils
 import com.craxiom.networksurvey.services.CaptureServiceNotification
@@ -487,8 +488,8 @@ class RootDiagViewModel internal constructor(
                 .put("model", Build.MODEL)
                 .put("manufacturer", Build.MANUFACTURER)
                 .put("hardware", Build.HARDWARE)
-                .put("soc_manufacturer", Build.SOC_MANUFACTURER)
-                .put("soc_model", Build.SOC_MODEL)
+                .put("soc_manufacturer", DeviceSoc.manufacturer)
+                .put("soc_model", DeviceSoc.model)
                 .put("baseband", Build.getRadioVersion().orEmpty())
                 .put("collector_state", snapshot.status.name)
                 .put("frame_performance", FramePerformanceDiagnostics.snapshot())
@@ -873,7 +874,7 @@ class RootDiagViewModel internal constructor(
             supportedAbis = Build.SUPPORTED_ABIS,
             manufacturer = Build.MANUFACTURER,
             model = Build.MODEL,
-            soc = Build.SOC_MODEL,
+            soc = DeviceSoc.model,
             hardware = Build.HARDWARE,
             simCount = simCount,
             selectedSubscriptionId = selectedSubscriptionId,

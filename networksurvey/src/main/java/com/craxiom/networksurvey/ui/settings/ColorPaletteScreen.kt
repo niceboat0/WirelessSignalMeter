@@ -13,7 +13,6 @@ import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.BlurOn
 import androidx.compose.material.icons.rounded.Build
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.DarkMode
@@ -57,9 +56,6 @@ import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.HorizontalDivider
 import top.yukonga.miuix.kmp.basic.LinearProgressIndicator
 import top.yukonga.miuix.kmp.basic.Scaffold
-import top.yukonga.miuix.kmp.blur.layerBackdrop
-import top.yukonga.miuix.kmp.blur.rememberLayerBackdrop
-import top.yukonga.miuix.kmp.material.isRuntimeShaderSupported
 import top.yukonga.miuix.kmp.preference.ArrowPreference
 import top.yukonga.miuix.kmp.preference.RadioButtonLocation
 import top.yukonga.miuix.kmp.preference.RadioButtonPreference
@@ -83,10 +79,7 @@ fun ColorPaletteScreen(onBack: () -> Unit) {
     val colorSpec = remember(version, context) { ThemePref.getColorSpec(context) }
     val amoled = remember(version, context) { ThemePref.isAmoled(context) }
     val dark = mode == ThemePref.MODE_DARK || (mode == ThemePref.MODE_SYSTEM && isSystemInDarkTheme())
-    val glassSupported = remember { isRuntimeShaderSupported() }
-    val glassPreference = remember(version, context) { ThemePref.isLiquidGlassEnabled(context) }
     val floatingNavigation = remember(version, context) { ThemePref.isFloatingNavigationEnabled(context) }
-    val glass = floatingNavigation && glassSupported && glassPreference
     val interfaceStyle = LocalInterfaceStyle.current
     val colors = MaterialTheme.colorScheme
 
@@ -102,7 +95,7 @@ fun ColorPaletteScreen(onBack: () -> Unit) {
                 contentPadding = PaddingValues(horizontal = DashboardCardDefaults.margin, vertical = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(interfaceStyle.sectionSpacing),
             ) {
-                item("preview") { ThemePreview(glass, floatingNavigation, dark, dark && amoled) }
+                item("preview") { ThemePreview(floatingNavigation, dark, dark && amoled) }
                 item("interface-style") {
                     ThemeGroup(stringResource(R.string.interface_style)) {
                         Column(Modifier.selectableGroup()) {
@@ -194,18 +187,6 @@ fun ColorPaletteScreen(onBack: () -> Unit) {
                             null,
                             floatingNavigation,
                         ) { ThemePref.setFloatingNavigationEnabled(context, it) }
-                        ThemeDivider()
-                        ThemeToggle(
-                            Icons.Rounded.BlurOn,
-                            stringResource(R.string.liquid_glass),
-                            when {
-                                !glassSupported -> stringResource(R.string.liquid_glass_unsupported)
-                                !floatingNavigation -> stringResource(R.string.liquid_glass_needs_floating)
-                                else -> null
-                            },
-                            glassSupported && glassPreference,
-                            enabled = floatingNavigation && glassSupported,
-                        ) { ThemePref.setLiquidGlassEnabled(context, it) }
                     }
                 }
             }
@@ -347,10 +328,9 @@ private fun ThemeOptions(title: String, current: String, items: List<String>, on
 }
 
 @Composable
-private fun ThemePreview(glass: Boolean, floatingNavigation: Boolean, dark: Boolean, amoled: Boolean) {
+private fun ThemePreview(floatingNavigation: Boolean, dark: Boolean, amoled: Boolean) {
     val colors = MaterialTheme.colorScheme
     val style = LocalInterfaceStyle.current
-    val backdrop = if (glass) rememberLayerBackdrop() else null
     var page by rememberSaveable { mutableIntStateOf(0) }
     val icons = listOf(Icons.Rounded.SignalCellularAlt, Icons.Rounded.Build, Icons.Rounded.Settings)
     val labels = listOf(R.string.home_signal, R.string.home_tools, R.string.settings)
@@ -369,7 +349,6 @@ private fun ThemePreview(glass: Boolean, floatingNavigation: Boolean, dark: Bool
                 Column {
                     Column(
                         Modifier.fillMaxWidth()
-                            .then(if (backdrop != null) Modifier.layerBackdrop(backdrop) else Modifier)
                             .padding(style.cardPadding)
                             .padding(bottom = if (floatingNavigation) 88.dp else 0.dp),
                         verticalArrangement = Arrangement.spacedBy(style.sectionSpacing),
@@ -406,7 +385,6 @@ private fun ThemePreview(glass: Boolean, floatingNavigation: Boolean, dark: Bool
                     modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 9.dp),
                     selectedIndex = page,
                     onSelected = { page = it },
-                    backdrop = backdrop,
                 )
             }
         }

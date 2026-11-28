@@ -31,7 +31,6 @@ import top.yukonga.miuix.kmp.basic.NavigationBar
 import top.yukonga.miuix.kmp.basic.NavigationBarDefaults
 import top.yukonga.miuix.kmp.basic.NavigationBarDisplayMode
 import top.yukonga.miuix.kmp.basic.NavigationBarItem
-import top.yukonga.miuix.kmp.blur.Backdrop
 import kotlin.math.abs
 
 internal data class AppNavigationItem(@param:StringRes val labelRes: Int, val icon: ImageVector)
@@ -73,7 +72,6 @@ internal fun AppFloatingNavigation(
     selectedIndex: Int,
     onSelected: (Int) -> Unit,
     modifier: Modifier = Modifier,
-    backdrop: Backdrop? = null,
 ) {
     val colors = MaterialTheme.colorScheme
     var bubbleProgress by remember { mutableFloatStateOf(selectedIndex.toFloat()) }
@@ -81,9 +79,7 @@ internal fun AppFloatingNavigation(
         modifier = modifier,
         selectedIndex = selectedIndex,
         onSelected = onSelected,
-        backdrop = backdrop,
         tabsCount = items.size,
-        isBlurEnabled = backdrop != null,
         onBubbleProgress = { bubbleProgress = it },
     ) { activateTab ->
         items.forEachIndexed { index, item ->

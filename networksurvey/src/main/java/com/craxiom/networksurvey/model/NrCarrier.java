@@ -1,6 +1,7 @@
 package com.craxiom.networksurvey.model;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -71,7 +72,7 @@ public record NrCarrier(Identity identity, Role role, int index, String band, in
             final int channelOrder = Integer.compare(a.identity.arfcn, b.identity.arfcn);
             return channelOrder != 0 ? channelOrder : Integer.compare(a.identity.pci, b.identity.pci);
         });
-        return List.copyOf(sorted);
+        return Collections.unmodifiableList(sorted);
     }
 
     public static Role androidRole(boolean nrAnchor, boolean selected, boolean primary, boolean secondary)

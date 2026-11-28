@@ -9,6 +9,7 @@ import androidx.lifecycle.viewModelScope
 import com.craxiom.networksurvey.BuildConfig
 import com.craxiom.networksurvey.R
 import com.craxiom.networksurvey.util.AppLogger
+import com.craxiom.networksurvey.util.DeviceSoc
 import com.craxiom.networksurvey.util.DiagJournal
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -51,11 +52,11 @@ internal class BandLockViewModel(application: Application) : AndroidViewModel(ap
     private val app = application
     private val mutableState = MutableStateFlow(BandLockState())
     val state = mutableState.asStateFlow()
-    val device = "${Build.MANUFACTURER} ${Build.MODEL} · ${Build.SOC_MODEL}"
-    private val identity = DeviceIdentity(Build.MODEL, Build.SOC_MODEL, Build.FINGERPRINT)
+    val device = "${Build.MANUFACTURER} ${Build.MODEL} · ${DeviceSoc.model}"
+    private val identity = DeviceIdentity(Build.MODEL, DeviceSoc.model, Build.FINGERPRINT)
     private val probeCache = app.getSharedPreferences("band_lock_probe", 0)
     private val probeCacheKey = BandLockVerification.cacheKey(
-        BuildConfig.VERSION_CODE, Build.FINGERPRINT, Build.SOC_MODEL,
+        BuildConfig.VERSION_CODE, Build.FINGERPRINT, DeviceSoc.model,
     )
     private var collectorProved = false
     private val backendPreferences = app.getSharedPreferences("band_lock_backend", 0)
@@ -104,11 +105,11 @@ internal class BandLockViewModel(application: Application) : AndroidViewModel(ap
     }
 
     private fun classify(channel: String?, caps: List<Pair<String, Boolean>>) = BandLockProfiles.classify(
-        Build.MANUFACTURER, Build.MODEL, Build.SOC_MODEL, Build.HARDWARE, channel, caps.count { it.second },
+        Build.MANUFACTURER, Build.MODEL, DeviceSoc.model, Build.HARDWARE, channel, caps.count { it.second },
     )
 
     fun refresh(collectorRunning: Boolean = false) =
-        run(BandLockCommand.probe(Build.MODEL, Build.SOC_MODEL), collectorRunning = collectorRunning)
+        run(BandLockCommand.probe(Build.MODEL, DeviceSoc.model), collectorRunning = collectorRunning)
 
     fun clearLog() { if (!mutableState.value.busy) mutableState.value = mutableState.value.copy(log = "") }
 
@@ -233,7 +234,7 @@ internal class BandLockViewModel(application: Application) : AndroidViewModel(ap
                 .put("run_id", started).put("operation", operation).put("stage", stage)
                 .put("detail", detail).put("t", System.currentTimeMillis()))
         }
-        report("start", "model=${Build.MODEL} soc=${Build.SOC_MODEL} api=${Build.VERSION.SDK_INT}")
+        report("start", "model=${Build.MODEL} soc=${DeviceSoc.model} api=${Build.VERSION.SDK_INT}")
         mutableState.update { it.copy(result = null) }
         qmiMutable.update { it.copy(busy = true, result = null, pendingDiagFallback = null) }
         viewModelScope.launch {
@@ -346,7 +347,7 @@ internal class BandLockViewModel(application: Application) : AndroidViewModel(ap
                 BandLockVerification.executeWhenConfirmed(
                     if (needsConfirmation) LockAvailability.Cached else current.availability, kind,
                     confirm = {
-                        val check = BandLockCommand.probe(Build.MODEL, Build.SOC_MODEL)
+                        val check = BandLockCommand.probe(Build.MODEL, DeviceSoc.model)
                         val checked = BandLockExecution(execute(check, recordDiagnostics = !fromConsole))
                         updateExecution(check, checked, fromConsole, keepBusy = true)
                         (mutableState.value.availability == LockAvailability.Ready).also { confirmed ->
@@ -390,7 +391,7 @@ internal class BandLockViewModel(application: Application) : AndroidViewModel(ap
                         LockAvailability.Unavailable else mutableState.value.availability,
                     profile = if (checking)
                         BandLockProfiles.classify(
-                            Build.MANUFACTURER, Build.MODEL, Build.SOC_MODEL, Build.HARDWARE, null, 0,
+                            Build.MANUFACTURER, Build.MODEL, DeviceSoc.model, Build.HARDWARE, null, 0,
                         ) else mutableState.value.profile,
                     result = if (fromConsole || probe) null else R.string.lock_failed,
                 )
@@ -499,7 +500,7 @@ internal class BandLockViewModel(application: Application) : AndroidViewModel(ap
         val arguments = QmiLockCommand.mode(mode)
         val started = SystemClock.elapsedRealtime()
         AppLogger.i(AppLogger.BAND_LOCK_TAG,
-            "run=$started backend=qmi cmd=mode stage=start model=${Build.MODEL} soc=${Build.SOC_MODEL} api=${Build.VERSION.SDK_INT} args=${mode.argument}")
+            "run=$started backend=qmi cmd=mode stage=start model=${Build.MODEL} soc=${DeviceSoc.model} api=${Build.VERSION.SDK_INT} args=${mode.argument}")
         appendLog("${LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm:ss"))} > qmi ${arguments.joinToString(" ")}")
         val outcome = qmiRunner.run(arguments)
         outcome.output.lineSequence().map { it.trim() }
@@ -563,7 +564,7 @@ internal class BandLockViewModel(application: Application) : AndroidViewModel(ap
                     .any(line::startsWith) ||
                 line.startsWith("No recognized modem acknowledgement.")) diagnostic(line)
         }
-        diagnostic("start model=${Build.MODEL} soc=${Build.SOC_MODEL} baseband=${Build.getRadioVersion().orEmpty()} " +
+        diagnostic("start model=${Build.MODEL} soc=${DeviceSoc.model} baseband=${Build.getRadioVersion().orEmpty()} " +
             "transport=${plan.transport} discover=${plan.discoverChannel} spawn=${plan.spawnRootShell} " +
             "collector=$collectorProved args=${command.arguments.drop(1).joinToString(",")}")
         appendLog("${LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm:ss"))} > ${command.arguments.joinToString(" ")}")

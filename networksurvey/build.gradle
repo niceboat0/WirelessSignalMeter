@@ -16,7 +16,7 @@ import org.gradle.process.ExecOperations
 import org.gradle.api.file.ConfigurableFileCollection
 import javax.inject.Inject
 
-def appVersion = "1.2.1"
+def appVersion = "1.2.1-api30"
 base {
     archivesName = "$applicationName-$appVersion"
 }
@@ -47,8 +47,8 @@ android {
         buildConfigField "String", "MESSAGING_API_VERSION", "\"${libs.versions.networkSurveyMessaging.get()}\""
         buildConfigField 'String', "NS_API_KEY", "\"${nsApiKey}\""
         applicationId "com.wireless.signalmeter.new"
-        minSdkVersion 33
-        targetSdkVersion 37
+        minSdkVersion 30
+        targetSdkVersion 30
         versionCode 121
         versionName appVersion
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
@@ -141,6 +141,9 @@ abstract class CompileRootDiag extends DefaultTask {
     @Input
     abstract Property<String> getNdkVersion()
 
+    @Input
+    abstract Property<Integer> getAndroidApiLevel()
+
     @OutputDirectory
     abstract DirectoryProperty getOutputDirectory()
 
@@ -158,7 +161,7 @@ abstract class CompileRootDiag extends DefaultTask {
         def binary = outputDirectory.file("arm64-v8a/${binaryName.get()}").get().asFile
         binary.parentFile.mkdirs()
         execOperations.exec {
-            commandLine clang, "--target=aarch64-linux-android33", "-std=gnu17", "-O2", "-fPIE", "-pie",
+            commandLine clang, "--target=aarch64-linux-android${androidApiLevel.get()}", "-std=gnu17", "-O2", "-fPIE", "-pie",
                 "-Wl,-z,max-page-size=16384", "-Wl,-z,relro,-z,now", sourceFile.get().asFile,
                 "-o", binary, "-ldl", "-llog", "-lm"
         }
@@ -171,6 +174,7 @@ def compileRootDiag = tasks.register("compileRootDiag", CompileRootDiag) {
     decoderSources.from(fileTree("src/main/cpp") { include "sigdec.c", "nasdec.c", "rrc_schema.h", "diag_queue.c", "diag_queue.h", "ims_logcat.c", "ims_logcat.h", "lte_b193_sinr.h", "nr_band_guess.h", "nr_csf_window.h" })
     ndkDirectory.set(androidComponents.sdkComponents.ndkDirectory)
     ndkVersion.set(android.ndkVersion)
+    androidApiLevel.set(30)
     outputDirectory.set(layout.buildDirectory.dir("generated/rootDiag/jniLibs"))
 }
 
@@ -183,6 +187,7 @@ def compileBandLock = tasks.register("compileBandLock", CompileRootDiag) {
     decoderSources.from(layout.projectDirectory.file("src/main/cpp/band_lock_protocol.h"))
     ndkDirectory.set(androidComponents.sdkComponents.ndkDirectory)
     ndkVersion.set(android.ndkVersion)
+    androidApiLevel.set(30)
     outputDirectory.set(layout.buildDirectory.dir("generated/bandLock/jniLibs"))
     binaryName.set("libwireless_band_lock.so")
 }
@@ -196,6 +201,7 @@ def compileQmiProbe = tasks.register("compileQmiProbe", CompileRootDiag) {
     decoderSources.from(layout.projectDirectory.file("src/main/cpp/qmi_probe_msg.h"))
     ndkDirectory.set(androidComponents.sdkComponents.ndkDirectory)
     ndkVersion.set(android.ndkVersion)
+    androidApiLevel.set(30)
     outputDirectory.set(layout.buildDirectory.dir("generated/qmiProbe/jniLibs"))
     binaryName.set("libwireless_qmi_probe.so")
 }
@@ -284,7 +290,6 @@ dependencies {
 
     implementation(libs.miuix.ui)
     implementation(libs.miuix.preference)
-    implementation(libs.miuix.blur)
 
     implementation(libs.androidx.localbroadcastmanager)
     implementation(libs.androidx.cardview)

@@ -7,6 +7,7 @@ import android.telephony.SignalStrength;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 /**
@@ -108,7 +109,9 @@ public final class AndroidLteSinrReader
         {
             add(new Sample(System.currentTimeMillis(), nowMs, subscriptionId, true,
                     connectionStatus, eligibleCells, cellTimestamp, raw, cellSinr,
-                    snapshotTimestamp, List.copyOf(snapshotRssnr), List.copyOf(snapshotSinr),
+                    snapshotTimestamp,
+                    Collections.unmodifiableList(new ArrayList<>(snapshotRssnr)),
+                    Collections.unmodifiableList(new ArrayList<>(snapshotSinr)),
                     decision, error, selected, source, taskId, clockId));
         }
         return selected;
@@ -122,7 +125,7 @@ public final class AndroidLteSinrReader
 
     public static synchronized List<Sample> snapshot()
     {
-        return List.copyOf(samples);
+        return Collections.unmodifiableList(new ArrayList<>(samples));
     }
 
     public static synchronized void clear()

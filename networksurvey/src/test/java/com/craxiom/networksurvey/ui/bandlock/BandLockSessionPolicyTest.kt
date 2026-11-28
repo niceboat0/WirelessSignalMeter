@@ -2,6 +2,7 @@ package com.craxiom.networksurvey.ui.bandlock
 
 import android.app.Application
 import androidx.lifecycle.ViewModelStore
+import com.craxiom.networksurvey.util.DeviceSoc
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.first
@@ -183,7 +184,7 @@ class BandLockCollectorReuseTest {
         dispatcher.scheduler.advanceUntilIdle()
 
         val (plan, args) = runner.calls.single()
-        assertEquals(listOf("probe", android.os.Build.MODEL, android.os.Build.SOC_MODEL), args)
+        assertEquals(listOf("probe", android.os.Build.MODEL, DeviceSoc.model), args)
         assertEquals(BandLockTransport.ReuseSession, plan.transport)
         assertFalse(plan.spawnRootShell)
         assertFalse(plan.discoverChannel)

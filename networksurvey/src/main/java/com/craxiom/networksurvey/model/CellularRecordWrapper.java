@@ -14,6 +14,8 @@ import com.craxiom.networksurvey.util.NsUtils;
 import com.google.protobuf.GeneratedMessage;
 
 import java.util.Collection;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 
@@ -32,7 +34,7 @@ public class CellularRecordWrapper
 
     public CellularRecordWrapper(CellularProtocol cellularProtocol, GeneratedMessage cellularRecord)
     {
-        this(cellularProtocol, cellularRecord, List.of());
+        this(cellularProtocol, cellularRecord, Collections.emptyList());
     }
 
     public CellularRecordWrapper(CellularProtocol cellularProtocol, GeneratedMessage cellularRecord,
@@ -40,7 +42,7 @@ public class CellularRecordWrapper
     {
         this.cellularProtocol = cellularProtocol;
         this.cellularRecord = cellularRecord;
-        this.additionalPlmns = List.copyOf(additionalPlmns);
+        this.additionalPlmns = Collections.unmodifiableList(new ArrayList<>(additionalPlmns));
 
         comparableString = getComparableString(this);
         hash = Objects.hash(cellularProtocol, comparableString);

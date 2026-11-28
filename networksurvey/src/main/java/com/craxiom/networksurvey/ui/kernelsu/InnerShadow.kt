@@ -3,6 +3,7 @@
 
 package com.craxiom.networksurvey.ui.kernelsu
 
+import android.os.Build
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.Stable
 import androidx.compose.ui.Modifier
@@ -49,7 +50,11 @@ data class InnerShadow(
 fun Modifier.innerShadow(
     shape: Shape,
     shadow: () -> InnerShadow?,
-): Modifier = this then InnerShadowElement(shape, shadow)
+): Modifier = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+    this then InnerShadowElement(shape, shadow)
+} else {
+    this
+}
 
 private class InnerShadowElement(
     val shape: Shape,
@@ -101,6 +106,7 @@ private class InnerShadowNode(
     override fun ContentDrawScope.draw() {
         drawContent()
 
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
         val shadow = shadow() ?: return
         val layer = shadowLayer ?: return
 

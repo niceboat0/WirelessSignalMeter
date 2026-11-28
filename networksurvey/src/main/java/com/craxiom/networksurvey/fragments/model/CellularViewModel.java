@@ -17,6 +17,7 @@ import com.craxiom.networksurvey.util.TelephonyStateUtils.NrMode;
 
 import java.util.Objects;
 import java.util.List;
+import java.util.Collections;
 import java.util.SortedSet;
 
 /**
@@ -74,7 +75,7 @@ public class CellularViewModel extends ViewModel
     // The 5G NR secondary cell details card (the NSA data leg, or an NR CA SCell under SA); null
     // means "hide the card".
     private final DistinctLiveData<NrSecondaryCellViewState> nrSecondaryCell = new DistinctLiveData<>();
-    private final DistinctLiveData<List<NrCarrier>> nrCarriers = new DistinctLiveData<>(List.of());
+    private final DistinctLiveData<List<NrCarrier>> nrCarriers = new DistinctLiveData<>(Collections.emptyList());
     // The idle card's "Last seen ..." line, kept separate from the card's view state so that the
     // ticking age does not invalidate the whole card once per scan; an empty string hides it.
     private final DistinctLiveData<String> nrLastSeenText = new DistinctLiveData<>("");

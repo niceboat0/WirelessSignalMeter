@@ -2,6 +2,7 @@ package com.craxiom.networksurvey.model;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.stream.Collectors;
 
@@ -27,12 +28,12 @@ public final class AndroidNrCarriers
                         int nrRows, int servingNrRows, int freshRows, int retainedRows, long oldestFreshAgeMs) {}
 
     private Anchor anchor;
-    private List<NrCarrier> lastMulti = List.of();
+    private List<NrCarrier> lastMulti = Collections.emptyList();
 
     public synchronized void clear()
     {
         anchor = null;
-        lastMulti = List.of();
+        lastMulti = Collections.emptyList();
     }
 
     public synchronized List<NrCarrier> update(Anchor current, List<NrCarrier> fresh, long now)
@@ -53,7 +54,7 @@ public final class AndroidNrCarriers
         // A newly reported NR cell outside the previous set might be a different PSCell in NSA.
         // Do not manufacture a multi-carrier group by combining it with the old one.
         if (fresh.stream().anyMatch(row -> lastMulti.stream().noneMatch(old -> old.identity().equals(row.identity())))) {
-            lastMulti = List.of();
+            lastMulti = Collections.emptyList();
             return fresh;
         }
         lastMulti = lastMulti.stream().filter(row -> retainable(row, now)).collect(Collectors.toList());
@@ -91,6 +92,6 @@ public final class AndroidNrCarriers
 
     public static synchronized List<Batch> diagnostics()
     {
-        return List.copyOf(DIAGNOSTICS);
+        return Collections.unmodifiableList(new ArrayList<>(DIAGNOSTICS));
     }
 }

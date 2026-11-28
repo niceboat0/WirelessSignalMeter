@@ -73,6 +73,7 @@ import com.mackhartley.roundedprogressbar.RoundedProgressBar;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
@@ -311,7 +312,7 @@ public class NetworkDetailsFragment extends AServiceDataFragment implements ICel
         // explicit values so nothing appears or disappears during normal use.
         if (!TelephonyStateUtils.shouldShowPillRow(hero.state(), technologyInfo.voiceDisplay(),
                 technologyInfo.dataDisplay(),
-                Set.of(NetworkSurveyConstants.UNKNOWN, getString(R.string.voice_bearer_none))))
+                new HashSet<>(Arrays.asList(NetworkSurveyConstants.UNKNOWN, getString(R.string.voice_bearer_none)))))
         {
             viewModel.setVoicePillValue(null);
             viewModel.setDataPillValue(null);
@@ -538,7 +539,7 @@ public class NetworkDetailsFragment extends AServiceDataFragment implements ICel
                         final int bandwidth = nrServingBandwidth(technology, singleCarrier && cellMatches);
                         final int[] reported = technology != null ? technology.cellBandwidthsKhz() : null;
                         viewModel.setNrBandwidthDiagnostic(new CellularViewModel.NrBandwidthDiagnostic(
-                                reported == null ? List.of() : Arrays.stream(reported).boxed().collect(Collectors.toList()),
+                                reported == null ? Collections.emptyList() : Arrays.stream(reported).boxed().collect(Collectors.toList()),
                                 technology == null ? 0 : technology.registeredDataRat(),
                                 technology == null ? 0 : technology.baseDataRat(), singleCarrier, cellMatches, bandwidth));
                         processNrServingCell(nrData, (NrRecordWrapper) cellularRecord, bandwidth);
@@ -624,7 +625,7 @@ public class NetworkDetailsFragment extends AServiceDataFragment implements ICel
     {
         synchronized (androidNrCarriers) {
             androidNrCarriers.clear();
-            viewModel.setNrCarriers(List.of());
+            viewModel.setNrCarriers(Collections.emptyList());
         }
     }
 
@@ -666,12 +667,12 @@ public class NetworkDetailsFragment extends AServiceDataFragment implements ICel
     private static List<NrCarrier> reportedNrCarriers(CellularRecordWrapper serving, List<NrRecordWrapper> otherNr, long now)
     {
         if (serving == null || (serving.cellularProtocol != CellularProtocol.NR
-                && serving.cellularProtocol != CellularProtocol.LTE)) return List.of();
+                && serving.cellularProtocol != CellularProtocol.LTE)) return Collections.emptyList();
         final boolean nrPrimary = serving.cellularProtocol == CellularProtocol.NR;
         final List<NrCarrier> candidates = new ArrayList<>();
         if (nrPrimary) {
             final NrRecordWrapper primary = (NrRecordWrapper) serving;
-            if (!NrCarrier.isFreshAndroid(primary.measuredAtElapsedMs, now)) return List.of();
+            if (!NrCarrier.isFreshAndroid(primary.measuredAtElapsedMs, now)) return Collections.emptyList();
             candidates.add(androidNrCarrier(primary, NrCarrier.Role.PRIMARY));
         }
         for (NrRecordWrapper wrapper : otherNr) {
@@ -1035,7 +1036,7 @@ public class NetworkDetailsFragment extends AServiceDataFragment implements ICel
             return builder.build();
         }).sorted().collect(Collectors.toCollection(TreeSet::new));
 
-        viewModel.setLteNeighbors(List.copyOf(lteNeighbors));
+        viewModel.setLteNeighbors(Collections.unmodifiableList(new ArrayList<>(lteNeighbors)));
     }
 
     /**
@@ -1057,7 +1058,7 @@ public class NetworkDetailsFragment extends AServiceDataFragment implements ICel
             return builder.build();
         }).sorted().collect(Collectors.toCollection(TreeSet::new));
 
-        viewModel.setNrNeighbors(List.copyOf(nrNeighbors));
+        viewModel.setNrNeighbors(Collections.unmodifiableList(new ArrayList<>(nrNeighbors)));
     }
     /**
      * Builds the two-tone pill text: the label in the faded label color, the separator and value in
@@ -1137,7 +1138,7 @@ public class NetworkDetailsFragment extends AServiceDataFragment implements ICel
      */
     private void setMccMncOnViewModel(String plmn, Integer mcc, Integer mnc)
     {
-        setMccMncOnViewModel(plmn, mcc, mnc, List.of());
+        setMccMncOnViewModel(plmn, mcc, mnc, Collections.emptyList());
     }
 
     private void setMccMncOnViewModel(String plmn, Integer mcc, Integer mnc, List<String> additionalPlmns)
