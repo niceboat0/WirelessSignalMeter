@@ -1011,6 +1011,15 @@ class RootDiagViewModel internal constructor(
         val outputFramer = DiagOutputFramer(MAX_LINE_BYTES)
         var lastFlush = 0L
         var lastHeartbeat = SystemClock.elapsedRealtime()
+        /* A 2026-11-28 export showed runs whose status line stopped for up to
+           754 s while other records kept arriving; the old watchdog only counted
+           status lines and killed such a process after 16 s, which is what
+           turned a native stall into a dead collector. Any line proves the
+           child is alive, so liveness and status freshness are tracked apart. */
+        var lastLineAt = SystemClock.elapsedRealtime()
+        var maxStatusGapMs = 0L
+        var statusStalls = 0
+        var statusStalled = false
         /* Liveness diagnostics. A 2026-11-27 export showed a run that stayed
            "running" for 223 s while its last status was at 29 s: the loop ran
            but the heartbeat path never fired. These markers make the stall
@@ -1227,6 +1236,7 @@ class RootDiagViewModel internal constructor(
 
         private suspend fun receive(value: JSONObject) {
             val now = SystemClock.elapsedRealtime()
+            lastLineAt = now
             val receivedTime = System.currentTimeMillis()
             val type = value.optString("type")
             // Task ownership is metadata for replay; it never gates the live stream.
@@ -1345,6 +1355,9 @@ class RootDiagViewModel internal constructor(
                 else -> return
             }
             if (next == RootDiagStatus.Running && readyAt == null) readyAt = now
+            val statusGap = now - lastHeartbeat
+            if (statusGap > maxStatusGapMs) maxStatusGapMs = statusGap
+            statusStalled = false
             status = next
             errorCode = value.optInt("rc").takeIf { it != 0 }
             lastCollectorStatusAtElapsed = now
@@ -2103,6 +2116,7 @@ class RootDiagViewModel internal constructor(
                 }
                 val now = SystemClock.elapsedRealtime()
                 loopBeatAt = now
+                noteStatusGap(now)
                 phaseMarker = "publish"
                 if (now - lastFlush >= 400) {
                     publish(now)
@@ -2147,7 +2161,7 @@ class RootDiagViewModel internal constructor(
                     }
                 }
                 val timeout = if (status == RootDiagStatus.Checking) 25_000 else 16_000
-                if (now - lastHeartbeat >= timeout) { exitReason = "heartbeat_timeout"; break }
+                if (now - maxOf(lastHeartbeat, lastLineAt) >= timeout) { exitReason = "heartbeat_timeout"; break }
                 if (size < buffer.size) delay(40) else yield()
             } while (true)
             status = when (status) {
@@ -2195,6 +2209,7 @@ class RootDiagViewModel internal constructor(
                 for (line in output.lines) receiveLine(line)
                 val now = SystemClock.elapsedRealtime()
                 loopBeatAt = now
+                noteStatusGap(now)
                 publishIfDue(now)
                 requestedExit()?.let { return it }
                 if (size < 0 || (!running.isAlive && size == 0)) return "eof"
@@ -2205,7 +2220,9 @@ class RootDiagViewModel internal constructor(
                     return "qmdl_deadline"
                 }
                 val timeout = if (status == RootDiagStatus.Checking) 25_000 else 16_000
-                if (now - lastHeartbeat >= timeout) return "heartbeat_timeout"
+                /* Only a fully silent stream is dead. A missing status line while
+                 * other records still arrive is recorded, not fatal. */
+                if (now - maxOf(lastHeartbeat, lastLineAt) >= timeout) return "heartbeat_timeout"
                 if (size < buffer.size) delay(40) else yield()
             }
         }
@@ -2334,8 +2351,25 @@ class RootDiagViewModel internal constructor(
             phaseMarker = "read"
         }
 
-        private fun publishIfDue(now: Long) {
-            if (now - lastFlush < 400) return
+        /* Status freshness is reported, never fatal on its own: the native main
+         * loop can block on its own snapshot work while decode records still
+         * arrive. Killing such a run used to leave only a restart as recovery. */
+        private fun noteStatusGap(now: Long) {
+            val gap = now - lastHeartbeat
+            if (gap > maxStatusGapMs) maxStatusGapMs = gap
+            if (gap < STATUS_STALL_MS || statusStalled) return
+            statusStalled = true
+            statusStalls++
+            DiagJournal.append(app, JSONObject().put("type", "collector_status_stall")
+                .put("t", System.currentTimeMillis())
+                .put("collector_run", run.optLong("id"))
+                .put("status_gap_ms", gap)
+                .put("last_type", lastLineType)
+                .put("lines_since_status", linesSinceStatus)
+                .put("status", status.name))
+        }
+
+        private fun publishIfDue(now: Long) {            if (now - lastFlush < 400) return
             phaseMarker = "publish"
             val publishStarted = SystemClock.elapsedRealtime()
             publish(now)
@@ -2382,6 +2416,8 @@ class RootDiagViewModel internal constructor(
                     .put("slowest_line_type", slowestLineType)
                     .put("slow_publishes", slowPublishes)
                     .put("slowest_publish_ms", slowestPublishMs)
+                    .put("max_status_gap_ms", maxStatusGapMs)
+                    .put("status_stalls", statusStalls)
                     .put("invalid_lines", invalidLineCount))
             DiagJournal.append(app, redactDiagnostic(run))
         }
@@ -2446,6 +2482,7 @@ class RootDiagViewModel internal constructor(
 
     private companion object {
         const val MAX_MESSAGES = 4_000
+        const val STATUS_STALL_MS = 8_000L
         const val MODEM_WAIT_TIMEOUT = 20_000L
         const val QMDL_ACK_TIMEOUT = 8_000L
         const val BAND_LOCK_DIAG_STOP_TIMEOUT_MS = 20_000L
